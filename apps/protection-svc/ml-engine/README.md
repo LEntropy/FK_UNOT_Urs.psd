@@ -350,55 +350,59 @@ degradation being a stated goal (`PROJECT_DESIGN.md` §3-3), **no version of
 this project had ever actually trained a LoRA and checked**, cloaked or
 not, until this experiment.
 
-**Method**: two identical SD1.5 LoRA training runs (`network_dim=32`,
-`network_alpha=16`, `AdamW8bit`, `lr=5e-5`, 10 epochs / 200 steps, seed 42,
-resolution 512 — kohya_ss's `sd-scripts/train_network.py`), single-image
-style-overfit on 20 repeats of one real painting
-(`out/real/starry_night.jpg`), the only variable being whether that image
-was cloaked first (`L3_ANTI_TRAIN`, style-target `out/real/great_wave.jpg`,
-cloaked *at the actual training resolution*, 512px, not the 256px this
-project's epsilon/EOT numbers were otherwise tuned at). Each trained LoRA
-then generated 6 samples (fixed prompt/seed range), scored by **CLIP
-image-image cosine similarity** against the true uncloaked painting — CLIP
-is architecturally independent of the VGG19 space the cloak optimizes
-against, so unlike this README's other metrics, this one isn't circular
-with the attack's own objective. Scripts:
+**Method**: SD1.5 LoRA training (`network_dim=32`, `network_alpha=16`,
+`AdamW8bit`, `lr=5e-5`, 10 epochs / 200 steps, resolution 512 —
+kohya_ss's `sd-scripts/train_network.py`), single-image style-overfit on
+20 repeats of a real painting, the only variable per pair being whether
+that image was cloaked first (`L3_ANTI_TRAIN`, cloaked *at the actual
+training resolution*, 512px, not the 256px this project's epsilon/EOT
+numbers were otherwise tuned at). Each trained LoRA then generated 6
+samples, scored by **CLIP image-image cosine similarity** against the
+true uncloaked painting — CLIP is architecturally independent of the
+VGG19 space the cloak optimizes against, so unlike this README's other
+metrics, this one isn't circular with the attack's own objective. Scripts:
 `experiments/lora_validation/{prepare_dataset,generate_and_score}.py`,
 orchestrated by `remote/run_lora_validation.ps1`.
 
-**Result** (one run, n=6 samples per condition — a single data point, not a
-calibrated study):
+**First pass** (one image, one seed) found delta +0.0315 and reported it
+as a "PASS." **That result did not replicate.** Re-run across 2 real
+paintings (`starry_night.jpg`, `great_wave.jpg`, each cross-cloaked toward
+the other) × 3 training seeds each (n=6 image×seed combinations):
 
-| condition | avg CLIP similarity to true painting | min | max |
-|---|---|---|---|
-| baseline (uncloaked) LoRA | 0.8884 | 0.8465 | 0.9442 |
-| cloaked LoRA | 0.8569 | 0.8283 | 0.8799 |
+| image | seed | baseline CLIP sim | cloaked CLIP sim | delta |
+|---|---|---|---|---|
+| starry_night | 1 | 0.8794 | 0.8602 | +0.0192 |
+| starry_night | 2 | 0.8803 | 0.8540 | +0.0264 |
+| starry_night | 3 | 0.8907 | 0.8653 | +0.0254 |
+| great_wave | 1 | 0.8610 | 0.8377 | +0.0233 |
+| great_wave | 2 | 0.8507 | 0.8593 | **-0.0086** |
+| great_wave | 3 | 0.8477 | 0.8510 | **-0.0032** |
 
-Delta: **+0.0315** (cloak reduced style fidelity), just above the
-(deliberately conservative, not independently calibrated) 0.03 threshold
-this experiment set for "measurable."
+**mean delta: +0.0137, stdev 0.0155, 95% CI (t-approx): [-0.0026, +0.0300]**
+— the confidence interval includes zero. Two of six runs (both on
+`great_wave`) show the cloaked LoRA reproducing the true style *more*
+faithfully than the baseline, the opposite of the intended effect.
+`starry_night` alone looked consistent (all 3 seeds positive) and would
+have supported the original claim; `great_wave` alone would not have.
+Averaged together, this dataset cannot distinguish the cloak's effect on
+real LoRA training from noise.
 
-Eyeballing the actual generated images confirms the number isn't noise:
-the baseline LoRA reproduces Starry Night's composition and brushwork
-almost exactly (expected — single-image overfit training does this
-regardless of cloaking). The cloaked LoRA's output is still unmistakably
-"Starry Night" — same cypress-tree silhouette, same swirling sky, same
-village — but visibly loses fine brushstroke texture, coming out smoother
-and more blob-like than the crisp impasto strokes the baseline reproduces.
-
-**Honest reading of this**: this is the first real (non-circular) evidence
-that the cloak has *some* effect on actual LoRA training — not nothing,
-matching this project's "suppress, don't block" framing (`PROJECT_DESIGN.md`
-§12) better than either "does nothing" or "fully blocks" would. But it's a
-thin margin (+0.0315 against a threshold of 0.03, both somewhat arbitrary)
-from a single run, single seed, single image, single style-target, at one
-preset. It does **not** show the cloak prevents LoRA training or even
-reliably degrades it by a large margin — composition/subject learning
-clearly survived. Don't treat 0.03 as a validated product threshold; it's
-this experiment's own stated-up-front bar, not derived from a broader
-calibration study. A real confidence interval would need multiple images,
-multiple seeds, and ideally multiple style-targets before this number
-means more than "one real training run, one real (small) effect."
+**Honest reading of this**: the original single-run "PASS" was a real
+number, correctly measured, non-circular — and still wrong to generalize
+from, exactly the failure mode multi-seed/multi-image validation exists
+to catch. With n=6 spanning two paintings, the mean effect is small,
+noisy, and not statistically distinguishable from zero at 95% confidence.
+This does **not** mean the cloak has no effect — `starry_night`'s three
+seeds were consistently positive, and a larger n could still resolve a
+real but small effect, or could confirm it really is closer to zero. It
+does mean **the earlier single-run claim should not be repeated or relied
+on** without more data. Composition/subject learning survived cloaking in
+every run regardless of condition (expected for single-image overfit
+training) — nothing here suggests the cloak prevents LoRA training,
+only that its effect on style *fidelity*, if real, is small enough to
+need a properly powered study (more images, more seeds, possibly a paired
+statistical test rather than raw CLIP deltas) to pin down, not something
+this project can currently claim with confidence in either direction.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

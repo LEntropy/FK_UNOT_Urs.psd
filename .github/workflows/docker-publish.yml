@@ -9,11 +9,15 @@ name: Publish multi-arch images
 # constrained hardware, prone to OOM/disk-pressure failures mid-build.
 #
 # Fix: cross-compile. Build both architectures here, on GitHub's fast x86
-# runners (via QEMU + buildx, not on the target hardware at all), push to
-# GHCR, and have arm64 targets (the Pi) `docker compose pull` instead of
-# `docker compose build`. Same "build on a stronger machine, ship the
-# artifact, target machine just runs it" pattern as this project's
-# GPU-PC cross-compile setup for ml-engine.
+# runners via buildx, and have arm64 targets (the Pi) `docker compose pull`
+# instead of `docker compose build`. Same "build on a stronger machine,
+# ship the artifact, target machine just runs it" pattern as this
+# project's GPU-PC cross-compile setup for ml-engine -- except here the
+# actual fix is avoiding QEMU emulation for the CPU-heavy steps (each
+# Dockerfile's rust-build/wheel-fetch stages run natively via
+# --platform=$BUILDPLATFORM and cross-compile/cross-fetch for the real
+# target instead of running under an emulated CPU), not routing through
+# different physical hardware.
 
 on:
   push:
@@ -23,6 +27,10 @@ on:
       - "apps/detection-svc/**"
       - ".github/workflows/docker-publish.yml"
   workflow_dispatch:
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

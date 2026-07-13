@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contracts:
+    name: contracts (forge test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: forge build
+        working-directory: contracts
+        run: forge build
+      - name: forge test
+        working-directory: contracts
+        run: forge test -vvv
+
+  blockchain-svc:
+    name: blockchain-svc (npm test)
+    runs-on: ubuntu-latest
+    needs: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      # Tests spawn a local anvil chain and deploy the compiled artifact
+      # (apps/blockchain-svc/test/anvil.ts) -- no real testnet/secrets needed,
+      # but contracts/ must be built first so the artifact exists.
+      - name: forge build (contracts artifact for anvil.ts)
+        working-directory: contracts
+        run: forge build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/blockchain-svc/package-lock.json
+      - name: npm ci
+        working-directory: apps/blockchain-svc
+        run: npm ci
+      - name: npm run build
+        working-directory: apps/blockchain-svc
+        run: npm run build
+      - name: npm test
+        working-directory: apps/blockchain-svc
+        run: npm test
+
+  asset-service:
+    name: asset-service (npm test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/asset-service/package-lock.json
+      - name: npm ci
+        working-directory: apps/asset-service
+        run: npm ci
+      - name: npm run build
+        working-directory: apps/asset-service
+        run: npm run build
+      - name: npm test
+        working-directory: apps/asset-service
+        # Fully mocked/in-memory (vi.mock on HTTP clients, :memory: sqlite) --
+        # no .env or external services needed.
+        run: npm test
+
+  rust-core:
+    name: protection-svc/rust-core (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/protection-svc/rust-core
+      - name: cargo build --release
+        working-directory: apps/protection-svc/rust-core
+        run: cargo build --release
+      - name: cargo test
+        working-directory: apps/protection-svc/rust-core
+        run: cargo test
+
+  protection-svc-lint:
+    name: protection-svc (ruff lint only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install ruff
+        run: pip install ruff
+      # No pytest job here: ml-engine's cloak/style-confusion code has zero
+      # automated tests today (only argparse CLI scripts) -- that's the
+      # AI-engine track's territory, not something this CI silently patches.
+      # Lint is the honest ceiling until that lands.
+      - name: ruff check
+        working-directory: apps/protection-svc
+        run: ruff check orchestrate.py server.py remote_gpu.py ml-engine/src
+
+  detection-svc:
+    name: detection-svc (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install dependencies
+        working-directory: apps/detection-svc
+        run: pip install -r requirements.txt
+      - name: pytest
+        working-directory: apps/detection-svc
+        # HTTP-mocked (asset-service + Vision API) -- no real network calls,
+        # no API key needed in CI.
+        run: pytest
+
+  docker-build:
+    name: docker compose build (validate Dockerfiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose build
+        run: docker compose -f docker-compose.yml build

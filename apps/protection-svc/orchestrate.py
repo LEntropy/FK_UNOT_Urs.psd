@@ -76,7 +76,7 @@ if USE_REMOTE_GPU:
 else:
     from style_cloak import cloak
 
-from Crypto.Hash import keccak
+from Crypto.Hash import keccak  # noqa: E402
 
 
 def compute_metadata_hash(metadata: dict) -> str:

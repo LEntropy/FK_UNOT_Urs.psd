@@ -1,0 +1,134 @@
+# One-command local stack for the whole DONTAI backend, mirroring the Pi
+# deployment topology but self-contained: a local anvil chain instead of
+# real Polygon Amoy (free, fast, same pattern apps/blockchain-svc/test/anvil.ts
+# already uses for tests). Override AMOY_RPC_URL/RELAYER_PRIVATE_KEY/
+# REGISTRY_ADDRESS directly on the blockchain-svc service below for
+# demo-parity against the real testnet instead.
+#
+# protection-svc runs cloak on CPU (USE_REMOTE_GPU is off -- no GPU PC is
+# reachable from a generic dev host running this compose file). Slower than
+# the Pi's GPU-delegated setup, still correct.
+
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["anvil", "--host", "0.0.0.0"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  contracts-deploy:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["sh", "/contracts/docker-deploy.sh"]
+    environment:
+      RPC_URL: http://anvil:8545
+    volumes:
+      - ./contracts:/contracts
+      - shared:/shared
+    depends_on:
+      anvil:
+        condition: service_healthy
+
+  blockchain-svc:
+    build:
+      context: apps/blockchain-svc
+    ports:
+      - "3001:3001"
+    environment:
+      AMOY_RPC_URL: http://anvil:8545
+      # Foundry/anvil's well-known default account #0 -- see
+      # contracts/docker-deploy.sh, matches the deployer authorized as relayer.
+      RELAYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      REGISTRY_ADDRESS_FILE: /shared/registry-address.txt
+      PORT: "3001"
+    volumes:
+      - shared:/shared:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      contracts-deploy:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  protection-svc:
+    build:
+      context: apps/protection-svc
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      USE_REMOTE_GPU: "0"
+    volumes:
+      - protection_out:/app/out
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  asset-service:
+    build:
+      context: apps/asset-service
+    ports:
+      - "3002:3002"
+    environment:
+      DATABASE_URL: /app/data/asset-service.db
+      PROTECTION_SVC_URL: http://protection-svc:8000
+      BLOCKCHAIN_SVC_URL: http://blockchain-svc:3001
+      PORT: "3002"
+      CHAIN_NAME: anvil-local
+      REGISTRY_ADDRESS_FILE: /shared/registry-address.txt
+    volumes:
+      - asset_data:/app/data
+      - shared:/shared:ro
+    depends_on:
+      blockchain-svc:
+        condition: service_healthy
+      protection-svc:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3002/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  detection-svc:
+    build:
+      context: .
+      dockerfile: apps/detection-svc/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      ASSET_SERVICE_URL: http://asset-service:3002
+      PORT: "8003"
+      PHASH_MATCH_THRESHOLD: "20"
+      DEFAULT_WATERMARK_HEX: "deadbeefcafef00d"
+      # server.py's OUT_DIR default is /app/out, which would collide with
+      # the read-only protection_out mount below -- keep this service's own
+      # evidence-capture output on a separate path/volume.
+      DETECTION_OUT_DIR: /app/out_evidence
+      # Optional -- unset means /scan falls back to pHash + watermark only
+      # (see apps/detection-svc/README.md "What this does not do").
+      GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+    volumes:
+      - protection_out:/app/out:ro
+      - detection_data:/app/data
+      - detection_out:/app/out_evidence
+    depends_on:
+      asset-service:
+        condition: service_healthy
+
+volumes:
+  shared:
+  protection_out:
+  asset_data:
+  detection_data:
+  detection_out:

@@ -61,6 +61,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/dontai-${{ matrix.service }}:latest
+          # GHCR requires an all-lowercase repository path; github.repository_owner
+          # is "LEntropy" (mixed case) and fails docker/build-push-action with
+          # "repository name must be lowercase" if used directly. Hardcoded
+          # lowercase to match the image: tags already in docker-compose.yml.
+          tags: ghcr.io/lentropy/dontai-${{ matrix.service }}:latest
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}

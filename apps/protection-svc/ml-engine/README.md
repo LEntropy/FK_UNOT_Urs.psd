@@ -372,7 +372,8 @@ kept here so the history is legible rather than silently overwritten):
 | 1 | starry_night only | 1 | +0.0315 | — | reported PASS, didn't replicate |
 | 2 | + great_wave | 6 | +0.0137 | [-0.0026, +0.0300] | includes zero |
 | 3 | + mona_lisa, the_scream (prompt bug found + fixed mid-stage) | 12 | +0.0138 | [-0.0001, +0.0278] | still includes zero |
-| 4 | + composition_vii, water_lilies | **18** | **+0.0112** | **[+0.0020, +0.0204]** | **excludes zero** |
+| 4 | + composition_vii, water_lilies | 18 | +0.0112 | [+0.0020, +0.0204] | excludes zero |
+| 5 | + girl_pearl_earring, birth_of_venus | **24** | **+0.0108** | **[+0.0025, +0.0190]** | **excludes zero, narrower** |
 
 **Bug found at stage 3, fixed before that row's numbers**: one hardcoded
 generation prompt suffix ("oil painting, landscape") for every image
@@ -384,47 +385,45 @@ eye and by anomalously low CLIP scores. Fixed with a per-image
 `prompt_suffix` in `prepare_dataset.py`'s `IMAGE_CONFIGS`; re-ran
 generation+scoring only, no retraining needed.
 
-**Stage 4 result** — 6 real paintings spanning six different
+**Stage 5 result** — 8 real paintings spanning eight different
 subjects/styles (post-impressionist and ukiyo-e landscapes, renaissance
 portrait, expressionist figure, abstract geometric, impressionist
-landscape), each cross-cloaked toward a stylistically distant partner, ×3
-training seeds (n=18):
+landscape, baroque portrait, renaissance mythological scene), each
+cross-cloaked toward a stylistically distant partner, ×3 training seeds
+(n=24):
 
 | image | seed 1 | seed 2 | seed 3 | all 3 seeds |
 |---|---|---|---|---|
-| starry_night | +0.0108 | +0.0495 | +0.0133 | 3/3 positive |
-| great_wave | +0.0314 | +0.0411 | +0.0415 | 3/3 positive |
-| mona_lisa | +0.0053 | -0.0105 | -0.0020 | 1/3 positive |
-| the_scream | +0.0303 | -0.0063 | -0.0145 | 1/3 positive |
-| composition_vii | +0.0007 | +0.0099 | +0.0155 | 3/3 positive |
-| water_lilies | -0.0008 | +0.0002 | -0.0140 | 1/3 positive (~zero) |
+| starry_night | +0.0074 | +0.0601 | +0.0068 | 3/3 positive |
+| great_wave | +0.0531 | +0.0306 | +0.0333 | 3/3 positive |
+| mona_lisa | +0.0111 | -0.0084 | -0.0064 | 1/3 positive |
+| the_scream | +0.0379 | -0.0331 | +0.0035 | 2/3 positive |
+| composition_vii | -0.0006 | +0.0074 | +0.0106 | 2/3 positive |
+| water_lilies | -0.0009 | +0.0034 | -0.0120 | 1/3 positive (~zero) |
+| girl_pearl_earring | -0.0000 | +0.0090 | +0.0040 | 2/3 positive (~zero) |
+| birth_of_venus | +0.0028 | +0.0194 | +0.0194 | 3/3 positive |
 
-**mean delta: +0.0112, stdev 0.0199, 95% CI (t-approx): [+0.0020, +0.0204]**
-— for the first time across four rounds, the interval excludes zero. 12
-of 18 runs were positive. `great_wave` shows the strongest, most
-consistent effect; `starry_night` and `composition_vii` are consistent
-but smaller; `mona_lisa`, `the_scream`, and `water_lilies` are small and
-inconsistent in sign, dragging the aggregate mean down from the earlier
-(unreplicated) single-image estimate.
+**mean delta: +0.0108, stdev 0.0206, 95% CI (t-approx): [+0.0025, +0.0190]**
+— the interval excludes zero again, and is now *narrower* than stage 4's
+(width 0.0165 vs 0.0184) despite the mean barely moving — more data
+tightening the estimate around a small-but-real effect rather than
+overturning it. 15 of 24 runs positive. `great_wave`, `starry_night`, and
+`birth_of_venus` are consistent; `mona_lisa`, `water_lilies`, and
+`girl_pearl_earring` remain small/inconsistent, keeping the aggregate
+modest.
 
-**Honest reading of this, after three rounds of correction**: there is
-now a statistically real, if modest, effect — the cloak measurably
-reduces CLIP similarity to the true style across a real, diverse
-6-painting LoRA training sample, averaging about a 1.1% similarity-score
-reduction. This is meaningfully weaker than the original single-run
-claim (+0.0315) and **should not be oversold**: the effect is inconsistent
-across images (half showed a clear effect, half didn't), the 95% CI's
-lower bound (+0.0020) is barely above zero, and n=18 with a simple t-test
-approximation on raw deltas is still a modest study, not a rigorous
-clinical-trial-grade analysis. Composition/subject learning survived
-cloaking in every single run regardless of condition (expected for
-single-image overfit training) — this is evidence of a real but small
-*style-fidelity* tax, not evidence the cloak prevents or reliably defeats
-LoRA training. Cite **+0.0112 (95% CI 0.0020-0.0204, n=18)** as this
-project's current LoRA-degradation number if citing one at all, and note
-that it came from a progression that started at +0.0315 and dropped by
-more than half as the sample grew — a pattern worth remembering before
-trusting any *future* single-run result from this same experiment either.
+**Honest reading of this, after four rounds of correction**: the
+statistically real effect found at stage 4 is holding up as the sample
+grows, with the confidence interval tightening rather than drifting back
+toward zero — the strongest evidence so far that this is a genuine, if
+small, effect rather than a fluke. It remains far weaker than the
+original single-run claim (+0.0315) and still varies a lot by
+image/style pair — this is not "the cloak reliably defeats LoRA
+training," it's "the cloak measurably taxes style fidelity by roughly
+1%, more for some styles than others." Cite **+0.0108 (95% CI
+0.0025-0.0190, n=24)** as the current number if citing one; check this
+section for a newer stage before repeating any earlier number, including
+this one.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

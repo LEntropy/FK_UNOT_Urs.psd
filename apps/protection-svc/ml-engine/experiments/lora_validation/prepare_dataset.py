@@ -104,6 +104,34 @@ IMAGE_CONFIGS = [
         "trigger": "waterliliestest",
         "prompt_suffix": "impressionist painting, water lily pond, landscape",
     },
+    {
+        "name": "girl_pearl_earring",
+        "image": ML_ENGINE_DIR / "out" / "real" / "girl_pearl_earring.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "birth_of_venus.jpg",
+        "trigger": "pearlearringtest",
+        "prompt_suffix": "baroque painting, portrait of a girl, dark background",
+    },
+    {
+        "name": "birth_of_venus",
+        "image": ML_ENGINE_DIR / "out" / "real" / "birth_of_venus.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "girl_pearl_earring.jpg",
+        "trigger": "venustest",
+        "prompt_suffix": "renaissance painting, woman on a shell, mythological scene",
+    },
+    {
+        "name": "night_watch",
+        "image": ML_ENGINE_DIR / "out" / "real" / "night_watch.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "the_kiss.jpg",
+        "trigger": "nightwatchtest",
+        "prompt_suffix": "baroque painting, group portrait, dark dramatic lighting",
+    },
+    {
+        "name": "the_kiss",
+        "image": ML_ENGINE_DIR / "out" / "real" / "the_kiss.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "night_watch.jpg",
+        "trigger": "thekisstest",
+        "prompt_suffix": "art nouveau painting, gold leaf, couple embracing",
+    },
 ]
 
 

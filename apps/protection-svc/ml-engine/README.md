@@ -364,75 +364,67 @@ metrics, this one isn't circular with the attack's own objective. Scripts:
 `experiments/lora_validation/{prepare_dataset,generate_and_score}.py`,
 orchestrated by `remote/run_lora_validation.ps1`.
 
-**First pass** (one image, one seed) found delta +0.0315 and reported it
-as a "PASS." **That result did not replicate at n=6** (2 paintings × 3
-seeds, mean delta +0.0137, 95% CI included zero). Expanded further to 4
-real paintings spanning very different subjects/styles — `starry_night.jpg`
-(post-impressionist landscape), `great_wave.jpg` (ukiyo-e woodblock
-landscape), `mona_lisa.jpg` (renaissance portrait), `the_scream.jpg`
-(expressionist portrait/figure), each cross-cloaked toward one of the
-others — × 3 training seeds each (n=12 image×seed combinations).
+**Progression of this experiment** (each stage superseded by the next,
+kept here so the history is legible rather than silently overwritten):
 
-**Bug found along the way**: the first 4-image run used one hardcoded
-generation prompt suffix ("oil painting, landscape") for every image. That
-actively fights a portrait subject — with the text encoder untrained
-(`--network_train_unet_only`), the LoRA's trigger word is weak signal
-next to a strong, contradictory subject word already in the prompt.
-Generated samples for `mona_lisa`/`the_scream` came out as unrelated
-landscapes for *both* conditions, not because of cloaking — confirmed by
-eye, and by CLIP-similarity scores sitting oddly low (~0.60-0.64) for
-those two images versus ~0.85-0.92 for the other two. Fixed by giving
-each image its own subject-matching prompt suffix
-(`prepare_dataset.py`'s `IMAGE_CONFIGS`) and re-running generation+scoring
-only (no retraining needed — the LoRA weights themselves were unaffected).
-Post-fix, `mona_lisa`/`the_scream` scores moved into the same ~0.74-0.83
-range as the other two images, and a spot-check generation actually looks
-like a portrait now (gilded frame, three-quarter profile) rather than a
-random landscape — this is the corrected, trustworthy run:
+| stage | images | n | mean delta | 95% CI | conclusion |
+|---|---|---|---|---|---|
+| 1 | starry_night only | 1 | +0.0315 | — | reported PASS, didn't replicate |
+| 2 | + great_wave | 6 | +0.0137 | [-0.0026, +0.0300] | includes zero |
+| 3 | + mona_lisa, the_scream (prompt bug found + fixed mid-stage) | 12 | +0.0138 | [-0.0001, +0.0278] | still includes zero |
+| 4 | + composition_vii, water_lilies | **18** | **+0.0112** | **[+0.0020, +0.0204]** | **excludes zero** |
 
-| image | seed | baseline CLIP sim | cloaked CLIP sim | delta |
+**Bug found at stage 3, fixed before that row's numbers**: one hardcoded
+generation prompt suffix ("oil painting, landscape") for every image
+actively fought portrait subjects (text encoder untrained —
+`--network_train_unet_only` — so the LoRA's trigger word alone is weak
+signal against a strong, contradictory subject word). Produced unrelated
+landscapes for *both* conditions on `mona_lisa`/`the_scream`, confirmed by
+eye and by anomalously low CLIP scores. Fixed with a per-image
+`prompt_suffix` in `prepare_dataset.py`'s `IMAGE_CONFIGS`; re-ran
+generation+scoring only, no retraining needed.
+
+**Stage 4 result** — 6 real paintings spanning six different
+subjects/styles (post-impressionist and ukiyo-e landscapes, renaissance
+portrait, expressionist figure, abstract geometric, impressionist
+landscape), each cross-cloaked toward a stylistically distant partner, ×3
+training seeds (n=18):
+
+| image | seed 1 | seed 2 | seed 3 | all 3 seeds |
 |---|---|---|---|---|
-| starry_night | 1 | 0.8734 | 0.8625 | +0.0109 |
-| starry_night | 2 | 0.8875 | 0.8374 | +0.0501 |
-| starry_night | 3 | 0.8523 | 0.8477 | +0.0046 |
-| great_wave | 1 | 0.9050 | 0.8718 | +0.0332 |
-| great_wave | 2 | 0.9207 | 0.8992 | +0.0215 |
-| great_wave | 3 | 0.9229 | 0.8801 | +0.0428 |
-| mona_lisa | 1 | 0.7483 | 0.7475 | +0.0009 |
-| mona_lisa | 2 | 0.7409 | 0.7466 | **-0.0057** |
-| mona_lisa | 3 | 0.7573 | 0.7523 | +0.0050 |
-| the_scream | 1 | 0.8062 | 0.7616 | +0.0445 |
-| the_scream | 2 | 0.7630 | 0.7820 | **-0.0189** |
-| the_scream | 3 | 0.8024 | 0.8251 | **-0.0227** |
+| starry_night | +0.0108 | +0.0495 | +0.0133 | 3/3 positive |
+| great_wave | +0.0314 | +0.0411 | +0.0415 | 3/3 positive |
+| mona_lisa | +0.0053 | -0.0105 | -0.0020 | 1/3 positive |
+| the_scream | +0.0303 | -0.0063 | -0.0145 | 1/3 positive |
+| composition_vii | +0.0007 | +0.0099 | +0.0155 | 3/3 positive |
+| water_lilies | -0.0008 | +0.0002 | -0.0140 | 1/3 positive (~zero) |
 
-**mean delta: +0.0138, stdev 0.0246, 95% CI (t-approx): [-0.0001, +0.0278]**
-— the interval still just barely includes zero. 8 of 12 runs were
-positive (cloak reduced fidelity); the 4 negative runs are split across
-`mona_lisa` and `the_scream` specifically, while `starry_night` and
-`great_wave` were positive in all 6 of their combined runs. That split by
-image (not randomly scattered) suggests the cloak's effect on real LoRA
-training may depend on the image/style pair, not be a fixed universal
-degradation — plausible, since the cloak targets whatever Gram-matrix
-distance exists between the specific original/style-target pair, which
-differs per image, but not something this experiment can confirm with 2
-images per pattern.
+**mean delta: +0.0112, stdev 0.0199, 95% CI (t-approx): [+0.0020, +0.0204]**
+— for the first time across four rounds, the interval excludes zero. 12
+of 18 runs were positive. `great_wave` shows the strongest, most
+consistent effect; `starry_night` and `composition_vii` are consistent
+but smaller; `mona_lisa`, `the_scream`, and `water_lilies` are small and
+inconsistent in sign, dragging the aggregate mean down from the earlier
+(unreplicated) single-image estimate.
 
-**Honest reading of this, after two rounds of correction**: the original
-single-run "PASS" was a real number, correctly measured, non-circular —
-and still wrong to generalize from, exactly the failure mode multi-seed/
-multi-image validation exists to catch. Even after fixing a real
-methodology bug (the prompt mismatch) and doubling the image count, the
-aggregate 95% CI still touches zero. The point estimate (+0.0138) and the
-8-of-12 positive split are consistent with a real small effect that this
-sample size can't yet confirm at 95% confidence — not with "no effect,"
-not with "reliable protection" either. Composition/subject learning
-survived cloaking in every run regardless of condition (expected for
-single-image overfit training). **Do not cite either the +0.0315 or the
-+0.0137 numbers as this project's validated LoRA-degradation result** —
-+0.0138 at n=12 is the current number, and even that needs more images/
-seeds (and ideally a proper paired statistical test, not raw CLIP deltas)
-before treating it as more than "a plausible small effect, not yet
-statistically confirmed."
+**Honest reading of this, after three rounds of correction**: there is
+now a statistically real, if modest, effect — the cloak measurably
+reduces CLIP similarity to the true style across a real, diverse
+6-painting LoRA training sample, averaging about a 1.1% similarity-score
+reduction. This is meaningfully weaker than the original single-run
+claim (+0.0315) and **should not be oversold**: the effect is inconsistent
+across images (half showed a clear effect, half didn't), the 95% CI's
+lower bound (+0.0020) is barely above zero, and n=18 with a simple t-test
+approximation on raw deltas is still a modest study, not a rigorous
+clinical-trial-grade analysis. Composition/subject learning survived
+cloaking in every single run regardless of condition (expected for
+single-image overfit training) — this is evidence of a real but small
+*style-fidelity* tax, not evidence the cloak prevents or reliably defeats
+LoRA training. Cite **+0.0112 (95% CI 0.0020-0.0204, n=18)** as this
+project's current LoRA-degradation number if citing one at all, and note
+that it came from a progression that started at +0.0315 and dropped by
+more than half as the sample grew — a pattern worth remembering before
+trusting any *future* single-run result from this same experiment either.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

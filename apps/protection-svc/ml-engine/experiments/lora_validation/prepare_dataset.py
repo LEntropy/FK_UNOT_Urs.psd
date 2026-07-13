@@ -90,6 +90,20 @@ IMAGE_CONFIGS = [
         "trigger": "screamtest",
         "prompt_suffix": "expressionist painting, portrait, screaming figure",
     },
+    {
+        "name": "composition_vii",
+        "image": ML_ENGINE_DIR / "out" / "real" / "composition_vii.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "water_lilies.jpg",
+        "trigger": "compositionviitest",
+        "prompt_suffix": "abstract painting, geometric shapes, bold colors",
+    },
+    {
+        "name": "water_lilies",
+        "image": ML_ENGINE_DIR / "out" / "real" / "water_lilies.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "composition_vii.jpg",
+        "trigger": "waterliliestest",
+        "prompt_suffix": "impressionist painting, water lily pond, landscape",
+    },
 ]
 
 

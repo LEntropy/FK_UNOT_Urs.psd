@@ -28,9 +28,12 @@ service-specific detail. This file is the map, not the manual.
 
 - **backend** (`asset-service`, `blockchain-svc`) and **AI protection
   engine** (`protection-svc/ml-engine`) and **KMS** are active,
-  in-progress work by other teammates.
+  in-progress work by other teammates — see the `backend`, `ai-engine`,
+  and `kms` branches, respectively. Push your day-to-day commits there,
+  not to `main` (see [`CONTRIBUTING.md`](CONTRIBUTING.md#branch-workflow)).
 - **CI/docker-compose** and **`detection-svc`** (Phase 3) were added in
-  this pass — see git log for the commit that introduced them.
+  this pass and are already merged into `main` — see git log for the
+  commits that introduced them.
 - If you're touching `ml-engine`'s cloak algorithm specifically: there are
   currently two parallel implementations being compared for merge (see
   team chat) — check before assuming this repo's version is canonical.

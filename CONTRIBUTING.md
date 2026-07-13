@@ -2,13 +2,23 @@
 
 ## Branch workflow
 
-- `main` is the shared, always-working branch. Don't push directly to it —
-  work happens on a branch, lands via PR.
-- Branch naming: `<area>/<short-description>`, e.g. `backend/fix-409-retry`,
-  `ai-engine/style-loss-v2`, `detection/vision-api-quota`, `kms/grpc-adapter`.
-  `<area>` matches the sub-project you're touching (see root
-  [`README.md`](README.md#repo-layout)) so it's obvious at a glance whose
-  lane a branch is in.
+- `main` is the shared, always-working branch — it currently has the full
+  working stack (contracts, blockchain-svc, asset-service, protection-svc,
+  detection-svc, CI, docker-compose). Don't push directly to it once your
+  own work starts changing things — land it via PR.
+- **Long-lived area branches** exist for each in-progress workstream,
+  branched off `main`: `backend`, `ai-engine`, `kms`. These are where that
+  area's owner does day-to-day work without touching `main` — commit
+  directly to your own area branch as much as you want, open a PR into
+  `main` when it's ready to share. No area branch exists yet for
+  `detection`/`systems`/`contracts` since that work already landed in
+  `main`; create one the same way (`git branch <area> main`) if you start
+  a stretch of work there that shouldn't hit `main` commit-by-commit.
+- **Short-lived feature branches**: for a single focused change, branch
+  off either `main` or your area branch, named `<area>/<short-description>`
+  (e.g. `backend/fix-409-retry`, `ai-engine/style-loss-v2`,
+  `kms/grpc-adapter`). `<area>` matches the sub-project you're touching
+  (see root [`README.md`](README.md#repo-layout)).
 - Rebase or merge `main` into your branch before opening a PR if it's gone
   stale — don't let conflicts pile up for review time.
 

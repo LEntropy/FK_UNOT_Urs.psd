@@ -43,7 +43,9 @@ $EXP_DIR     = "$ML_ENGINE\experiments\lora_validation"
 $OUT_DIR     = "$EXP_DIR\out"
 $LOGS_DIR    = "$OUT_DIR\logs"
 
-$IMAGE_NAMES = @("starry_night", "great_wave")
+# Image set itself lives in prepare_dataset.py's IMAGE_CONFIGS (currently
+# 4: starry_night, great_wave, mona_lisa, the_scream) -- this script reads
+# the resulting manifest.json rather than hardcoding names here too.
 $SEEDS       = @(1, 2, 3)
 $RUN_NAME    = "v1"
 

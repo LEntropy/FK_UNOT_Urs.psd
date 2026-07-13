@@ -45,21 +45,50 @@ keep_tokens = 1
   num_repeats = {num_repeats}
 """
 
-# Cross-cloaking: each image's cloak pushes toward the *other* image's
+# Cross-cloaking: each image's cloak pushes toward a *different* image's
 # style, matching the README's existing real-artwork cloak example
-# (starry_night cloaked toward great_wave).
+# (starry_night cloaked toward great_wave). Paired up as two stylistically
+# distant pairs (post-impressionist <-> ukiyo-e, renaissance portrait <->
+# expressionist) rather than one-fixed-target-for-all, so the sample isn't
+# secretly testing only one cloak direction four times over.
+# prompt_suffix matters: it must describe each painting's actual subject,
+# not a one-size-fits-all guess. A first run used "oil painting, landscape"
+# for every image, which actively fought portrait/figure subjects (Mona
+# Lisa, The Scream) since the LoRA's trigger word alone (text encoder
+# untrained -- network_train_unet_only) is weak signal compared to a
+# strong subject word already in the prompt. Generation produced unrelated
+# landscapes for both baseline AND cloaked conditions on those two images
+# -- not a cloak effect, a broken prompt, and it made both conditions fail
+# similarly (near-zero, uninformative delta). Fixed by matching the prompt
+# to the actual subject per image.
 IMAGE_CONFIGS = [
     {
         "name": "starry_night",
         "image": ML_ENGINE_DIR / "out" / "real" / "starry_night.jpg",
         "cloak_target": ML_ENGINE_DIR / "out" / "real" / "great_wave.jpg",
         "trigger": "starrynighttest",
+        "prompt_suffix": "oil painting, landscape, night sky",
     },
     {
         "name": "great_wave",
         "image": ML_ENGINE_DIR / "out" / "real" / "great_wave.jpg",
         "cloak_target": ML_ENGINE_DIR / "out" / "real" / "starry_night.jpg",
         "trigger": "greatwavetest",
+        "prompt_suffix": "woodblock print, ocean wave, landscape",
+    },
+    {
+        "name": "mona_lisa",
+        "image": ML_ENGINE_DIR / "out" / "real" / "mona_lisa.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "the_scream.jpg",
+        "trigger": "monalisatest",
+        "prompt_suffix": "oil painting, portrait of a woman",
+    },
+    {
+        "name": "the_scream",
+        "image": ML_ENGINE_DIR / "out" / "real" / "the_scream.jpg",
+        "cloak_target": ML_ENGINE_DIR / "out" / "real" / "mona_lisa.jpg",
+        "trigger": "screamtest",
+        "prompt_suffix": "expressionist painting, portrait, screaming figure",
     },
 ]
 
@@ -126,6 +155,7 @@ def main() -> None:
             {
                 "name": name,
                 "trigger": cfg["trigger"],
+                "prompt_suffix": cfg["prompt_suffix"],
                 "true_image": str(cfg["image"]),
                 "baseline_dataset_config": str(baseline_toml),
                 "cloaked_dataset_config": str(cloaked_toml),

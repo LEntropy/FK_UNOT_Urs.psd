@@ -365,44 +365,74 @@ metrics, this one isn't circular with the attack's own objective. Scripts:
 orchestrated by `remote/run_lora_validation.ps1`.
 
 **First pass** (one image, one seed) found delta +0.0315 and reported it
-as a "PASS." **That result did not replicate.** Re-run across 2 real
-paintings (`starry_night.jpg`, `great_wave.jpg`, each cross-cloaked toward
-the other) × 3 training seeds each (n=6 image×seed combinations):
+as a "PASS." **That result did not replicate at n=6** (2 paintings × 3
+seeds, mean delta +0.0137, 95% CI included zero). Expanded further to 4
+real paintings spanning very different subjects/styles — `starry_night.jpg`
+(post-impressionist landscape), `great_wave.jpg` (ukiyo-e woodblock
+landscape), `mona_lisa.jpg` (renaissance portrait), `the_scream.jpg`
+(expressionist portrait/figure), each cross-cloaked toward one of the
+others — × 3 training seeds each (n=12 image×seed combinations).
+
+**Bug found along the way**: the first 4-image run used one hardcoded
+generation prompt suffix ("oil painting, landscape") for every image. That
+actively fights a portrait subject — with the text encoder untrained
+(`--network_train_unet_only`), the LoRA's trigger word is weak signal
+next to a strong, contradictory subject word already in the prompt.
+Generated samples for `mona_lisa`/`the_scream` came out as unrelated
+landscapes for *both* conditions, not because of cloaking — confirmed by
+eye, and by CLIP-similarity scores sitting oddly low (~0.60-0.64) for
+those two images versus ~0.85-0.92 for the other two. Fixed by giving
+each image its own subject-matching prompt suffix
+(`prepare_dataset.py`'s `IMAGE_CONFIGS`) and re-running generation+scoring
+only (no retraining needed — the LoRA weights themselves were unaffected).
+Post-fix, `mona_lisa`/`the_scream` scores moved into the same ~0.74-0.83
+range as the other two images, and a spot-check generation actually looks
+like a portrait now (gilded frame, three-quarter profile) rather than a
+random landscape — this is the corrected, trustworthy run:
 
 | image | seed | baseline CLIP sim | cloaked CLIP sim | delta |
 |---|---|---|---|---|
-| starry_night | 1 | 0.8794 | 0.8602 | +0.0192 |
-| starry_night | 2 | 0.8803 | 0.8540 | +0.0264 |
-| starry_night | 3 | 0.8907 | 0.8653 | +0.0254 |
-| great_wave | 1 | 0.8610 | 0.8377 | +0.0233 |
-| great_wave | 2 | 0.8507 | 0.8593 | **-0.0086** |
-| great_wave | 3 | 0.8477 | 0.8510 | **-0.0032** |
+| starry_night | 1 | 0.8734 | 0.8625 | +0.0109 |
+| starry_night | 2 | 0.8875 | 0.8374 | +0.0501 |
+| starry_night | 3 | 0.8523 | 0.8477 | +0.0046 |
+| great_wave | 1 | 0.9050 | 0.8718 | +0.0332 |
+| great_wave | 2 | 0.9207 | 0.8992 | +0.0215 |
+| great_wave | 3 | 0.9229 | 0.8801 | +0.0428 |
+| mona_lisa | 1 | 0.7483 | 0.7475 | +0.0009 |
+| mona_lisa | 2 | 0.7409 | 0.7466 | **-0.0057** |
+| mona_lisa | 3 | 0.7573 | 0.7523 | +0.0050 |
+| the_scream | 1 | 0.8062 | 0.7616 | +0.0445 |
+| the_scream | 2 | 0.7630 | 0.7820 | **-0.0189** |
+| the_scream | 3 | 0.8024 | 0.8251 | **-0.0227** |
 
-**mean delta: +0.0137, stdev 0.0155, 95% CI (t-approx): [-0.0026, +0.0300]**
-— the confidence interval includes zero. Two of six runs (both on
-`great_wave`) show the cloaked LoRA reproducing the true style *more*
-faithfully than the baseline, the opposite of the intended effect.
-`starry_night` alone looked consistent (all 3 seeds positive) and would
-have supported the original claim; `great_wave` alone would not have.
-Averaged together, this dataset cannot distinguish the cloak's effect on
-real LoRA training from noise.
+**mean delta: +0.0138, stdev 0.0246, 95% CI (t-approx): [-0.0001, +0.0278]**
+— the interval still just barely includes zero. 8 of 12 runs were
+positive (cloak reduced fidelity); the 4 negative runs are split across
+`mona_lisa` and `the_scream` specifically, while `starry_night` and
+`great_wave` were positive in all 6 of their combined runs. That split by
+image (not randomly scattered) suggests the cloak's effect on real LoRA
+training may depend on the image/style pair, not be a fixed universal
+degradation — plausible, since the cloak targets whatever Gram-matrix
+distance exists between the specific original/style-target pair, which
+differs per image, but not something this experiment can confirm with 2
+images per pattern.
 
-**Honest reading of this**: the original single-run "PASS" was a real
-number, correctly measured, non-circular — and still wrong to generalize
-from, exactly the failure mode multi-seed/multi-image validation exists
-to catch. With n=6 spanning two paintings, the mean effect is small,
-noisy, and not statistically distinguishable from zero at 95% confidence.
-This does **not** mean the cloak has no effect — `starry_night`'s three
-seeds were consistently positive, and a larger n could still resolve a
-real but small effect, or could confirm it really is closer to zero. It
-does mean **the earlier single-run claim should not be repeated or relied
-on** without more data. Composition/subject learning survived cloaking in
-every run regardless of condition (expected for single-image overfit
-training) — nothing here suggests the cloak prevents LoRA training,
-only that its effect on style *fidelity*, if real, is small enough to
-need a properly powered study (more images, more seeds, possibly a paired
-statistical test rather than raw CLIP deltas) to pin down, not something
-this project can currently claim with confidence in either direction.
+**Honest reading of this, after two rounds of correction**: the original
+single-run "PASS" was a real number, correctly measured, non-circular —
+and still wrong to generalize from, exactly the failure mode multi-seed/
+multi-image validation exists to catch. Even after fixing a real
+methodology bug (the prompt mismatch) and doubling the image count, the
+aggregate 95% CI still touches zero. The point estimate (+0.0138) and the
+8-of-12 positive split are consistent with a real small effect that this
+sample size can't yet confirm at 95% confidence — not with "no effect,"
+not with "reliable protection" either. Composition/subject learning
+survived cloaking in every run regardless of condition (expected for
+single-image overfit training). **Do not cite either the +0.0315 or the
++0.0137 numbers as this project's validated LoRA-degradation result** —
++0.0138 at n=12 is the current number, and even that needs more images/
+seeds (and ideally a proper paired statistical test, not raw CLIP deltas)
+before treating it as more than "a plausible small effect, not yet
+statistically confirmed."
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

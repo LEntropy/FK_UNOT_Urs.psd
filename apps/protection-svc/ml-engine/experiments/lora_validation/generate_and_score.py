@@ -94,7 +94,7 @@ def main() -> None:
     parser.add_argument("--lora-root", required=True, help="dir containing lora_{name}_{seed}_{condition}/ subfolders")
     parser.add_argument("--seeds", required=True, help="comma-separated training seeds, e.g. '1,2,3'")
     parser.add_argument("--run-name", default="v1", help="output_name suffix used when training (e.g. baseline_v1.safetensors -> 'v1')")
-    parser.add_argument("--prompt-suffix", default="oil painting, landscape")
+    parser.add_argument("--prompt-suffix", default=None, help="overrides every manifest entry's own prompt_suffix if set -- normally leave unset so each image gets its own subject-appropriate prompt")
     parser.add_argument("--num-samples", type=int, default=6)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--gen-seed", type=int, default=42, help="base seed for image generation (independent of training seed)")
@@ -114,7 +114,12 @@ def main() -> None:
     for entry in manifest:
         name, trigger, true_image_path = entry["name"], entry["trigger"], entry["true_image"]
         true_image = Image.open(true_image_path).convert("RGB")
-        prompt = f"{trigger}, {args.prompt_suffix}"
+        # Each image needs its own subject-matching prompt suffix (a
+        # portrait subject fed a landscape prompt generates neither
+        # condition's actual style -- see prepare_dataset.py's
+        # IMAGE_CONFIGS comment for how this broke a prior run).
+        suffix = args.prompt_suffix if args.prompt_suffix is not None else entry["prompt_suffix"]
+        prompt = f"{trigger}, {suffix}"
 
         for seed in seeds:
             print(f"=== [{name} / seed {seed}] baseline ===")

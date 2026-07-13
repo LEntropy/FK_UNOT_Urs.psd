@@ -1,0 +1,13 @@
+# Normalize line endings to LF in the repo regardless of the checkout
+# platform -- this is a team repo (Windows/Mac/Linux mixed), and without
+# this, every file touched from a different OS than the last committer
+# shows a full-file diff from line-ending churn alone.
+* text=auto eol=lf
+
+# Binary/vendored -- never touch these as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.psd binary
+*.db binary
+*.sqlite binary

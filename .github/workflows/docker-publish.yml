@@ -1,0 +1,66 @@
+name: Publish multi-arch images
+
+# protection-svc and detection-svc are the two slow Docker builds in this
+# repo: each compiles rust-core from source AND installs a large Python
+# dependency tree (torch, in protection-svc's case). Building those
+# natively on a Raspberry Pi (arm64, weak CPU) reproduces the exact pain
+# this project already hit once when installing torch directly on the Pi
+# (see git history / PROJECT_DESIGN.md's deployment notes) -- slow, and on
+# constrained hardware, prone to OOM/disk-pressure failures mid-build.
+#
+# Fix: cross-compile. Build both architectures here, on GitHub's fast x86
+# runners (via QEMU + buildx, not on the target hardware at all), push to
+# GHCR, and have arm64 targets (the Pi) `docker compose pull` instead of
+# `docker compose build`. Same "build on a stronger machine, ship the
+# artifact, target machine just runs it" pattern as this project's
+# GPU-PC cross-compile setup for ml-engine.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/protection-svc/**"
+      - "apps/detection-svc/**"
+      - ".github/workflows/docker-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: protection-svc
+            context: apps/protection-svc
+            dockerfile: apps/protection-svc/Dockerfile
+          - service: detection-svc
+            context: .
+            dockerfile: apps/detection-svc/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/dontai-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

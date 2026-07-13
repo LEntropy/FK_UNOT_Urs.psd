@@ -59,6 +59,12 @@ services:
       retries: 20
 
   protection-svc:
+    # Slow build (compiles rust-core + installs torch) -- cross-compiled
+    # for both amd64/arm64 in .github/workflows/docker-publish.yml and
+    # pushed here instead. `docker compose pull` fetches the pre-built
+    # image (fast, especially on arm64/Pi); `docker compose build` still
+    # works for local iteration on this service's own code.
+    image: ghcr.io/lentropy/dontai-protection-svc:latest
     build:
       context: apps/protection-svc
     ports:
@@ -101,6 +107,9 @@ services:
       retries: 20
 
   detection-svc:
+    # Same cross-compile story as protection-svc above (rust-core build +
+    # Playwright/Chromium install is the other slow one).
+    image: ghcr.io/lentropy/dontai-detection-svc:latest
     build:
       context: .
       dockerfile: apps/detection-svc/Dockerfile

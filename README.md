@@ -48,6 +48,27 @@ Boots: a local `anvil` chain (free, no real testnet needed), deploys
 See each Dockerfile for what's baked in; `docker-compose.yml`'s header
 comment explains the anvil-vs-real-Amoy tradeoff.
 
+### On slow/weak hardware (e.g. the Raspberry Pi deployment)
+
+`protection-svc` and `detection-svc` are slow to build from source (each
+compiles `rust-core`; `protection-svc` also installs torch, `detection-svc`
+installs Playwright/Chromium) -- native arm64 compilation on a Pi
+reproduces the exact pain this project already hit once installing torch
+directly on Pi hardware. `.github/workflows/docker-publish.yml`
+cross-compiles both (amd64 + arm64, via buildx/QEMU on GitHub's runners)
+and pushes to GHCR on every push to `main` that touches either service. On
+the Pi (or any machine where a from-source build would be slow), skip
+`--build` and just pull:
+
+```bash
+docker compose pull
+docker compose up
+```
+
+`docker compose build`/`up --build` still works everywhere for local
+iteration on those services' own code -- the `image:` tag in
+`docker-compose.yml` is only a fast-path default, not a hard requirement.
+
 To point at the real Polygon Amoy testnet instead (e.g. for demo-parity
 with the Pi deployment), override `AMOY_RPC_URL`/`RELAYER_PRIVATE_KEY`/
 `REGISTRY_ADDRESS` on the `blockchain-svc` service in `docker-compose.yml`

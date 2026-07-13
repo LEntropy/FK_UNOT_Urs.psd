@@ -336,6 +336,70 @@ on-chain registration use case (the protected image is still identifiably
 near-duplicates/derivatives found elsewhere on the web, distinct from
 completely unrelated images.
 
+## LoRA validation experiment (real training, not a proxy)
+
+Every number elsewhere in this README — style drift, PSNR, robustness
+percentages — comes from **VGG19 Gram-matrix cosine similarity**, the same
+feature space `cloak()` optimizes its perturbation against (`model.py`'s
+`StyleFeatureExtractor`). That's a legitimate way to check "did the
+optimization do what it was told to," but it says nothing about whether
+the perturbation transfers to what a real LoRA fine-tune actually learns
+from — a diffusion U-Net's latent/cross-attention representations are
+architecturally unrelated to a VGG19 classifier's features. Despite LoRA
+degradation being a stated goal (`PROJECT_DESIGN.md` §3-3), **no version of
+this project had ever actually trained a LoRA and checked**, cloaked or
+not, until this experiment.
+
+**Method**: two identical SD1.5 LoRA training runs (`network_dim=32`,
+`network_alpha=16`, `AdamW8bit`, `lr=5e-5`, 10 epochs / 200 steps, seed 42,
+resolution 512 — kohya_ss's `sd-scripts/train_network.py`), single-image
+style-overfit on 20 repeats of one real painting
+(`out/real/starry_night.jpg`), the only variable being whether that image
+was cloaked first (`L3_ANTI_TRAIN`, style-target `out/real/great_wave.jpg`,
+cloaked *at the actual training resolution*, 512px, not the 256px this
+project's epsilon/EOT numbers were otherwise tuned at). Each trained LoRA
+then generated 6 samples (fixed prompt/seed range), scored by **CLIP
+image-image cosine similarity** against the true uncloaked painting — CLIP
+is architecturally independent of the VGG19 space the cloak optimizes
+against, so unlike this README's other metrics, this one isn't circular
+with the attack's own objective. Scripts:
+`experiments/lora_validation/{prepare_dataset,generate_and_score}.py`,
+orchestrated by `remote/run_lora_validation.ps1`.
+
+**Result** (one run, n=6 samples per condition — a single data point, not a
+calibrated study):
+
+| condition | avg CLIP similarity to true painting | min | max |
+|---|---|---|---|
+| baseline (uncloaked) LoRA | 0.8884 | 0.8465 | 0.9442 |
+| cloaked LoRA | 0.8569 | 0.8283 | 0.8799 |
+
+Delta: **+0.0315** (cloak reduced style fidelity), just above the
+(deliberately conservative, not independently calibrated) 0.03 threshold
+this experiment set for "measurable."
+
+Eyeballing the actual generated images confirms the number isn't noise:
+the baseline LoRA reproduces Starry Night's composition and brushwork
+almost exactly (expected — single-image overfit training does this
+regardless of cloaking). The cloaked LoRA's output is still unmistakably
+"Starry Night" — same cypress-tree silhouette, same swirling sky, same
+village — but visibly loses fine brushstroke texture, coming out smoother
+and more blob-like than the crisp impasto strokes the baseline reproduces.
+
+**Honest reading of this**: this is the first real (non-circular) evidence
+that the cloak has *some* effect on actual LoRA training — not nothing,
+matching this project's "suppress, don't block" framing (`PROJECT_DESIGN.md`
+§12) better than either "does nothing" or "fully blocks" would. But it's a
+thin margin (+0.0315 against a threshold of 0.03, both somewhat arbitrary)
+from a single run, single seed, single image, single style-target, at one
+preset. It does **not** show the cloak prevents LoRA training or even
+reliably degrades it by a large margin — composition/subject learning
+clearly survived. Don't treat 0.03 as a validated product threshold; it's
+this experiment's own stated-up-front bar, not derived from a broader
+calibration study. A real confidence interval would need multiple images,
+multiple seeds, and ideally multiple style-targets before this number
+means more than "one real training run, one real (small) effect."
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
 - No concept-misalignment (Nightshade-style) layer — style confusion only.

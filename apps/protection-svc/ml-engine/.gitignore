@@ -5,3 +5,4 @@ out/*.jpg
 out/real/
 !out/.gitkeep
 remote/remote.env
+experiments/*/out/

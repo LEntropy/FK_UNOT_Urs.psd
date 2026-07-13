@@ -34,10 +34,14 @@ are product/human workflow and are **not** automated here.
   via `DEFAULT_WATERMARK_HEX`. Fixing this for real attribution needs a
   schema change in asset-service — out of scope here since that service is
   actively owned elsewhere.
-- **Reverse-image search is optional.** Without
-  `GOOGLE_APPLICATION_CREDENTIALS` configured, `/scan` still runs pHash +
-  watermark checks against any URL supplied via `/reports`, but skips the
-  proactive web-wide search (no candidate URLs to check).
+- **Reverse-image search is optional.** Without `GOOGLE_VISION_API_KEY`
+  configured, `/scan` still runs pHash + watermark checks against any URL
+  supplied via `/reports`, but skips the proactive web-wide search (no
+  candidate URLs to check). Uses the plain Vision REST API with an API
+  key rather than the `google-cloud-vision` SDK's service-account-key
+  flow — many GCP orgs now block service-account key creation by default
+  (`iam.disableServiceAccountKeyCreation`), and a plain API key sidesteps
+  that entirely.
 - **No DB access to asset-service.** Everything needed comes from
   `GET {ASSET_SERVICE_URL}/artworks/:id` — zero coupling to asset-service's
   schema or storage.

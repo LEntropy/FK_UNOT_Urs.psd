@@ -125,17 +125,14 @@ services:
       # evidence-capture output on a separate path/volume.
       DETECTION_OUT_DIR: /app/out_evidence
       # Optional -- unset means /scan falls back to pHash + watermark only
-      # (see apps/detection-svc/README.md "What this does not do"). Set
-      # GOOGLE_APPLICATION_CREDENTIALS on the host (in repo-root .env) to a
-      # path to your Vision API key file -- it gets bind-mounted below at a
-      # fixed in-container path, since just passing the host path through
-      # as an env var wouldn't resolve to anything inside the container.
-      GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS:+/run/secrets/gcp-key.json}"
+      # (see apps/detection-svc/README.md "What this does not do"). A plain
+      # Vision API key string, not a service-account key file -- no volume
+      # mount needed, set it directly in repo-root .env.
+      GOOGLE_VISION_API_KEY: "${GOOGLE_VISION_API_KEY:-}"
     volumes:
       - protection_out:/app/out:ro
       - detection_data:/app/data
       - detection_out:/app/out_evidence
-      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/run/secrets/gcp-key.json:ro
     depends_on:
       asset-service:
         condition: service_healthy

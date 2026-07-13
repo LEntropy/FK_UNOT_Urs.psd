@@ -38,7 +38,7 @@ service-specific detail. This file is the map, not the manual.
 ## Running everything locally
 
 ```bash
-cp .env.example .env   # optional: only needed to set GOOGLE_APPLICATION_CREDENTIALS
+cp .env.example .env   # optional: only needed to set GOOGLE_VISION_API_KEY
 docker compose up --build
 ```
 

@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+out/*.png
+out/*.jpg
+out/real/
+!out/.gitkeep
+remote/remote.env

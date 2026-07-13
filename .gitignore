@@ -1,0 +1,34 @@
+# Node (asset-service, blockchain-svc)
+node_modules/
+dist/
+
+# Env / secrets (every sub-project)
+.env
+.env.*
+!.env.example
+
+# asset-service
+apps/asset-service/data/
+
+# protection-svc
+apps/protection-svc/out/
+apps/protection-svc/**/__pycache__/
+apps/protection-svc/ml-engine/.venv/
+apps/protection-svc/ml-engine/out/
+apps/protection-svc/rust-core/target/
+
+# detection-svc
+apps/detection-svc/out/
+apps/detection-svc/data/
+apps/detection-svc/**/__pycache__/
+apps/detection-svc/.venv/
+
+# contracts (Foundry build artifacts)
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+
+# editor / local tooling state
+.vscode/
+*.swp
+.claude/

@@ -1,0 +1,9 @@
+torch>=2.2
+torchvision>=0.17
+Pillow>=10.0
+numpy>=1.26
+ImageHash>=4.3
+scipy>=1.11
+pycryptodome>=3.20  # Keccak-256 for orchestrate.py's metadataHash (must match blockchain-svc's ethers.js keccak256, NOT NIST SHA3)
+fastapi>=0.110
+uvicorn[standard]>=0.29

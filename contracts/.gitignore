@@ -1,0 +1,13 @@
+# Foundry
+cache/
+out/
+broadcast/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/
+*.swp

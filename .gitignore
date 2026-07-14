@@ -10,6 +10,12 @@ dist/
 # asset-service
 apps/asset-service/data/
 
+# api-gateway
+apps/api-gateway/data/
+
+# web
+apps/web/dist/
+
 # protection-svc
 apps/protection-svc/out/
 apps/protection-svc/**/__pycache__/

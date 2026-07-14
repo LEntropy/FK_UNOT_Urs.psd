@@ -1,0 +1,44 @@
+{
+  "name": "api-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DONTAI auth + routing gateway (PROJECT_DESIGN.md §2, §3-1): email/password signup+login, JWT issuance, custodial wallet provisioning (KMS-backed envelope encryption via @dontai/kms-adapter), and a thin authenticated proxy in front of asset-service.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dontai/kms-adapter": "file:../../infra/kms-adapter",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.33.0",
+    "ethers": "^6.13.4",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.9.0",
+    "@types/supertest": "^7.2.0",
+    "drizzle-kit": "^0.24.2",
+    "supertest": "^7.2.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

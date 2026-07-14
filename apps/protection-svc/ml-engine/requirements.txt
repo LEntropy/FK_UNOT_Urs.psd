@@ -7,3 +7,8 @@ scipy>=1.11
 pycryptodome>=3.20  # Keccak-256 for orchestrate.py's metadataHash (must match blockchain-svc's ethers.js keccak256, NOT NIST SHA3)
 fastapi>=0.110
 uvicorn[standard]>=0.29
+
+# server.py's test suite (apps/protection-svc/test/) -- mocks orchestrate.protect(),
+# no torch/GPU actually exercised by the tests themselves.
+httpx>=0.27
+pytest>=8.0

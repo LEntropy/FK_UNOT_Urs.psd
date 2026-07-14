@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
@@ -26,6 +26,10 @@ export function artworksRouter(db: Db): Router {
 
     const id = `ast_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const now = new Date();
+    // Per-artwork, generated once here (not by protection-svc) so it's
+    // stable and known before the protect job even starts -- detection-svc
+    // needs to read the same value back later via GET /artworks/:id.
+    const watermarkPayloadHex = randomBytes(8).toString("hex");
 
     db.insert(artworks)
       .values({
@@ -36,6 +40,7 @@ export function artworksRouter(db: Db): Router {
         ownerWalletAddress: parsed.data.ownerWalletAddress,
         protectionProfile: parsed.data.protectionProfile,
         allowAiTraining: parsed.data.allowAiTraining,
+        watermarkPayloadHex,
         status: "UPLOADED",
         createdAt: now,
         updatedAt: now,

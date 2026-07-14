@@ -32,6 +32,7 @@ function seedArtwork(db: ReturnType<typeof createTestDb>, overrides: Partial<typ
     ownerWalletAddress: OWNER,
     protectionProfile: "L1_PREVIEW",
     allowAiTraining: false,
+    watermarkPayloadHex: "deadbeefcafef00d",
     status: "UPLOADED",
     createdAt: now,
     updatedAt: now,

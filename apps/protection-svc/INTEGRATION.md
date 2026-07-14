@@ -236,11 +236,11 @@ different mechanism from `evaluate.py`'s Gram-matrix cosine similarity
 across JPEG/resize of the same image, single-digit distance from our own
 cloak's output, ~140/256 for an unrelated image).
 
-**Still open**: this computes the hash on whatever image path is passed to
-it — the pipeline diagram above still expects the caller (the future
-`/protect` job handler) to make sure it's called on the *final published
-variant* (post rust-core watermark), not ml-engine's raw cloak output. That
-wiring doesn't exist yet since rust-core doesn't exist yet.
+**Resolved**: `orchestrate.py`'s `protect()` calls this on `watermarked_path`
+(rust-core's output), not on ml-engine's raw cloak output — the ordering the
+pipeline diagram above always called for. Confirmed by reading `protect()`
+directly (step 4/4 runs after rust-core's embed/variants steps) and by
+`test/test_server.py`'s coverage of the job that wraps it.
 
 ## GPU dependency in production
 
@@ -252,3 +252,23 @@ managed GPU inference endpoint, or (c) CPU-only processing for lower tiers
 results are functionally identical to GPU (verified in `ml-engine/README.md`),
 just slower, which is tolerable for a background job but not for something
 serving a live user-facing wait.
+
+## Tests
+
+`test/test_server.py` (uses `ml-engine`'s venv — `httpx`/`pytest` added
+there rather than giving `server.py` its own venv, since it already imports
+`orchestrate.py` which needs `ml-engine`'s torch-heavy deps to even import):
+
+```bash
+apps/protection-svc/ml-engine/.venv/Scripts/python.exe -m pytest apps/protection-svc/test/ -q
+```
+
+Covers `server.py`'s HTTP job contract (`202`/`404`/`400` cases, the
+queued→completed and queued→failed transitions, the `styleTargetUri`
+default/override) against a mocked `orchestrate.protect()` — no torch/GPU
+actually runs. `orchestrate.protect()` itself has no automated test (its
+real dependencies — a GPU-capable `cloak()`, the compiled `rust-core`
+binary — are exactly the parts `ml-engine/README.md` and
+`rust-core/README.md`'s own manual, GPU-dependent experiments already
+cover; duplicating that here would just mock away everything worth
+testing).

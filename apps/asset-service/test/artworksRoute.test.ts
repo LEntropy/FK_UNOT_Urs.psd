@@ -18,6 +18,7 @@ function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof art
       ownerWalletAddress: "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2",
       protectionProfile: "L1_PREVIEW",
       allowAiTraining: false,
+      watermarkPayloadHex: "deadbeefcafef00d",
       status: "UPLOADED",
       createdAt: now,
       updatedAt: now,

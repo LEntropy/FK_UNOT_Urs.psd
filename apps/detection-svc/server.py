@@ -52,6 +52,12 @@ class ReportRequest(BaseModel):
 def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -> None:
     try:
         registered_hash = artwork.get("perceptualHash")
+        # asset-service generates and stores this per-artwork now (was
+        # previously dropped entirely, forcing every case to check against
+        # one project-wide constant regardless of which artwork the
+        # candidate URL was actually a copy of). Still fall back for
+        # artworks created before that fix / rows with it unset.
+        watermark_hex = artwork.get("watermarkPayloadHex") or DEFAULT_WATERMARK_HEX
         any_evidence = False
 
         for url in candidate_urls:
@@ -68,7 +74,7 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
             watermark_result = None
             if captured.image_path:
                 try:
-                    wm = detect_watermark(captured.image_path, DEFAULT_WATERMARK_HEX)
+                    wm = detect_watermark(captured.image_path, watermark_hex)
                     watermark_result = {
                         "recoveredHex": wm.recovered_hex,
                         "avgConfidence": wm.avg_confidence,

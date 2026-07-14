@@ -86,7 +86,7 @@ jobs:
         run: cargo test
 
   protection-svc-lint:
-    name: protection-svc (ruff lint only)
+    name: protection-svc (ruff lint + server.py pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,13 +95,22 @@ jobs:
           python-version: "3.11"
       - name: install ruff
         run: pip install ruff
-      # No pytest job here: ml-engine's cloak/style-confusion code has zero
-      # automated tests today (only argparse CLI scripts) -- that's the
-      # AI-engine track's territory, not something this CI silently patches.
-      # Lint is the honest ceiling until that lands.
       - name: ruff check
         working-directory: apps/protection-svc
         run: ruff check orchestrate.py server.py remote_gpu.py ml-engine/src
+      # ml-engine's cloak/style-confusion code itself still has zero
+      # automated tests (only argparse CLI scripts, GPU-dependent) -- that
+      # remains the AI-engine track's territory. But server.py imports
+      # orchestrate.py which imports style_cloak, so even the mocked-protect()
+      # HTTP-contract tests in test/test_server.py need ml-engine's deps
+      # importable -- hence installing the full (CPU-wheel) requirements.txt
+      # here rather than a slimmer server-only one.
+      - name: install ml-engine deps (for server.py's import chain)
+        working-directory: apps/protection-svc/ml-engine
+        run: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: pytest (server.py, orchestrate.protect() mocked -- no GPU)
+        working-directory: apps/protection-svc
+        run: python -m pytest test/ -q
 
   detection-svc:
     name: detection-svc (pytest)

@@ -26,14 +26,14 @@ are product/human workflow and are **not** automated here.
   KMS (the signing authority per §6-1) is a separate, in-progress
   workstream — this service flags the gap rather than inventing a
   placeholder crypto scheme that would need reconciling later.
-- **Watermark attribution is project-wide, not per-artwork yet.**
-  `asset-service` doesn't currently persist `watermarkPayloadHex` per
-  artwork (protection-svc's job result includes it, but
-  `orchestration.ts` drops it before saving). Detection falls back to the
-  project's current de-facto constant (`deadbeefcafef00d`), overridable
-  via `DEFAULT_WATERMARK_HEX`. Fixing this for real attribution needs a
-  schema change in asset-service — out of scope here since that service is
-  actively owned elsewhere.
+- **Watermark attribution: now per-artwork.** `asset-service` generates a
+  random `watermarkPayloadHex` per artwork at creation
+  (`routes/artworks.ts`), passes it through to protection-svc's `/protect`
+  request, and returns it from `GET /artworks/:id`. `server.py` reads
+  `artwork.get("watermarkPayloadHex")` and only falls back to the
+  project-wide `DEFAULT_WATERMARK_HEX` constant for artworks created before
+  this fix (or rows with it unset for any other reason) —
+  `test/test_watermark_fallback.py` covers both paths.
 - **Reverse-image search is optional.** Without `GOOGLE_VISION_API_KEY`
   configured, `/scan` still runs pHash + watermark checks against any URL
   supplied via `/reports`, but skips the proactive web-wide search (no

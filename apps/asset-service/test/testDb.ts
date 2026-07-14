@@ -17,6 +17,7 @@ export function createTestDb() {
       owner_wallet_address TEXT NOT NULL,
       protection_profile TEXT NOT NULL,
       allow_ai_training INTEGER NOT NULL DEFAULT 0,
+      watermark_payload_hex TEXT NOT NULL DEFAULT 'deadbeefcafef00d',
       status TEXT NOT NULL DEFAULT 'UPLOADED',
       error_message TEXT,
       protect_job_id TEXT,

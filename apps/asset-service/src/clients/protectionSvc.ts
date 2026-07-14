@@ -31,6 +31,7 @@ export interface ProtectJob {
   eotUsed?: boolean;
   size?: number;
   sizeValidated?: boolean;
+  watermarkPayloadHex?: string;
   variants?: VariantResult[];
   processingTimeMs?: number;
   error?: string;

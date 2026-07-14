@@ -32,6 +32,7 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
       title: artwork.title,
       creatorId: artwork.creatorId,
       allowAiTraining: artwork.allowAiTraining,
+      watermarkPayloadHex: artwork.watermarkPayloadHex,
     });
 
     db.update(artworks).set({ protectJobId: jobId, updatedAt: new Date() }).where(eq(artworks.id, artworkId)).run();

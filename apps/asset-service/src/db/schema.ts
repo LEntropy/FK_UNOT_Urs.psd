@@ -17,6 +17,13 @@ export const artworks = sqliteTable("artworks", {
   ownerWalletAddress: text("owner_wallet_address").notNull(),
   protectionProfile: text("protection_profile").notNull(),
   allowAiTraining: integer("allow_ai_training", { mode: "boolean" }).notNull().default(false),
+  // Generated at creation (routes/artworks.ts), passed through to
+  // protection-svc's /protect request, and read back by detection-svc
+  // (asset_client.get_artwork) for real per-artwork watermark detection --
+  // previously dropped here entirely, forcing detection-svc to fall back to
+  // a single project-wide constant (see detection-svc/README.md's "What
+  // this does not do", now resolved).
+  watermarkPayloadHex: text("watermark_payload_hex").notNull(),
 
   // Orchestration state machine: UPLOADED -> PROTECTING -> REGISTERING -> PUBLISHED
   //                                                     \-> FAILED (from any step)

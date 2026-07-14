@@ -564,15 +564,45 @@ remains a reasonable heuristic — but it explains only part of why some
 images resist the effect, not most of it. What explains the rest is still
 open.
 
-**Remaining next steps, in order**: (1) repeat at a second preset
-(`L2_PORTFOLIO`) to see if effect size scales with epsilon the way the
-VGG-space metrics do; (2) test on SDXL/Illustrious-XL (confirmed genuine
-SDXL architecture; the other candidate checkpoint on this GPU PC,
-`hosekiLustrousmixAnima_animaV10.safetensors`, turned out to be a
-DiT/transformer architecture incompatible with kohya_ss's UNet-specific
-training scripts, ruled out rather than silently skipped) — real-world
-style-LoRA theft increasingly happens on SDXL-family checkpoints, not
-SD1.5.
+### Preset scaling: does a weaker preset give a proportionally weaker real effect?
+
+Tested `L2_PORTFOLIO` against the same 4 representative images already
+measured at `L3_ANTI_TRAIN` in the main experiment
+(`experiments/lora_validation/{prepare,score}_l2_preset.py`), reusing
+each image's existing baseline LoRA (baseline doesn't depend on preset):
+
+| image | L2_PORTFOLIO delta | L3_ANTI_TRAIN delta |
+|---|---|---|
+| great_wave | +0.0322 | +0.0289 |
+| starry_night | +0.0176 | +0.0198 |
+| night_watch | **-0.0081** | +0.0248 |
+| mona_lisa | -0.0214 | -0.0024 |
+
+**overall mean: L2_PORTFOLIO +0.0051 vs. L3_ANTI_TRAIN +0.0177** — in
+aggregate, the weaker preset does give a smaller real effect, the
+direction VGG-space metrics would predict. But at the individual-image
+level this is noisy, not a clean scaling relationship:
+`great_wave` was *stronger* at L2 than L3; `night_watch` flipped sign
+entirely (cloaking at L2 made the LoRA's output *more* faithful to the
+true style, the opposite of the intended effect). n=4 images here (vs.
+n=10 for the main L3 result) means this preset comparison is itself
+under-powered — treat "weaker preset → smaller aggregate effect, but
+unstable per-image, including sign flips" as the honest summary, not
+"epsilon linearly controls the effect."
+
+### SDXL confirmation
+
+Tested on Illustrious-XL (confirmed genuine SDXL architecture via
+safetensors key inspection — has `conditioner.embedders.*` keys).
+`hosekiLustrousmixAnima_animaV10.safetensors`, the other checkpoint on
+this GPU PC, turned out to be a DiT/transformer architecture
+(`model.diffusion_model.blocks.N.adaln_modulation_*` keys, not a UNet) —
+incompatible with kohya_ss's `sd-scripts` (built for UNet-based SD1.x/
+SDXL specifically), ruled out rather than silently skipped; a real test
+of that checkpoint would need a different training framework entirely.
+Real-world style-LoRA theft increasingly happens on SDXL-family
+checkpoints, not SD1.5, so this matters more for the project's actual
+threat model than the SD1.5 numbers alone.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

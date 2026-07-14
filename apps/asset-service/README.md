@@ -20,6 +20,9 @@ the background — same reasoning as `protection-svc`'s own job design: a
 protect job alone can take from ~1 minute to hours
 (`ml-engine/README.md`), so nothing here can block inside a request/response
 cycle. `GET /artworks/:id` is how a caller observes progress.
+`GET /artworks?creatorId=` lists artworks (optionally scoped to one
+creator) — added for `apps/api-gateway`'s gallery proxy, which is the only
+caller that needs it today.
 
 ## Quick start
 

@@ -1,0 +1,50 @@
+import { describe, expect, it, vi } from "vitest";
+import request from "supertest";
+import { artworks } from "../src/db/schema.js";
+import { createTestDb } from "./testDb.js";
+
+vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
+
+const { createApp } = await import("../src/app.js");
+
+function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof artworks.$inferInsert> = {}) {
+  const now = new Date();
+  db.insert(artworks)
+    .values({
+      id: overrides.id ?? "ast_1",
+      title: "Test",
+      sourceImageUri: "/tmp/a.png",
+      creatorId: "creator_a",
+      ownerWalletAddress: "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2",
+      protectionProfile: "L1_PREVIEW",
+      allowAiTraining: false,
+      status: "UPLOADED",
+      createdAt: now,
+      updatedAt: now,
+      ...overrides,
+    })
+    .run();
+}
+
+describe("GET /artworks", () => {
+  it("returns only the requested creator's artworks when creatorId is given", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_a1", creatorId: "creator_a" });
+    seed(db, { id: "ast_a2", creatorId: "creator_a" });
+    seed(db, { id: "ast_b1", creatorId: "creator_b" });
+
+    const res = await request(createApp(db)).get("/artworks?creatorId=creator_a");
+    expect(res.status).toBe(200);
+    expect(res.body.map((a: { id: string }) => a.id).sort()).toEqual(["ast_a1", "ast_a2"]);
+  });
+
+  it("returns everything when creatorId is omitted", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_a1", creatorId: "creator_a" });
+    seed(db, { id: "ast_b1", creatorId: "creator_b" });
+
+    const res = await request(createApp(db)).get("/artworks");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+  });
+});

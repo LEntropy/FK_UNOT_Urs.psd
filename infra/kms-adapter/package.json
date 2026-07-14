@@ -1,0 +1,22 @@
+{
+  "name": "@dontai/kms-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TS client for the existing C KMS server (raw TLS + length-prefixed binary protocol, RSA envelope-key decrypt oracle). See PROJECT_DESIGN.md §6 and src/protocol.c in the KMS server repo for the wire format this mirrors.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

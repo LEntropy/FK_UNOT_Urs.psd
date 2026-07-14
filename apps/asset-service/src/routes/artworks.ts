@@ -50,6 +50,16 @@ export function artworksRouter(db: Db): Router {
     res.status(202).json({ id, status: "UPLOADED" });
   });
 
+  router.get("/", (req, res) => {
+    const creatorId = typeof req.query.creatorId === "string" ? req.query.creatorId : undefined;
+
+    const rows = creatorId
+      ? db.select().from(artworks).where(eq(artworks.creatorId, creatorId)).all()
+      : db.select().from(artworks).all();
+
+    res.json(rows);
+  });
+
   router.get("/:id", (req, res) => {
     const artwork = db.select().from(artworks).where(eq(artworks.id, req.params.id)).get();
     if (!artwork) {

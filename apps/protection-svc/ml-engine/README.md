@@ -604,6 +604,48 @@ Real-world style-LoRA theft increasingly happens on SDXL-family
 checkpoints, not SD1.5, so this matters more for the project's actual
 threat model than the SD1.5 numbers alone.
 
+Small subset (2 images — `great_wave`, `starry_night` — × 3 seeds, both
+conditions trained from scratch at 1024px since no existing SDXL
+baseline to reuse) kept deliberately small: SDXL at 1024px on this 8GB
+GPU runs roughly 3-30x slower per diffusion step than SD1.5 at 512px
+depending on VRAM pressure (as low as ~3s/step, as high as ~27s/step when
+near-saturated) — the first attempt at the SD1.5 sample count/step count
+would have taken an estimated 16 hours; even the reduced version (2
+samples, 20 steps per condition) took the full remaining GPU budget for
+this session.
+
+| image | seed 1 | seed 2 | seed 3 |
+|---|---|---|---|
+| great_wave | +0.0011 | -0.0027 | +0.0216 |
+| starry_night | +0.0122 | +0.0043 | +0.0157 |
+
+**mean delta: +0.0087, stdev 0.0093, 95% CI (t-approx): [-0.0011, +0.0185]**
+— includes zero (n=6, the same ambiguous territory the SD1.5 experiment
+was in at its own n=6, before more images/seeds resolved it one way).
+Directionally consistent with SD1.5's finding (positive, similar rough
+magnitude: +0.0087 vs. SD1.5's +0.0130) but **not independently
+confirmed** — this is "the effect looks similar on SDXL," not "the effect
+is proven on SDXL." Given the per-step cost on this hardware, resolving
+that the same way the SD1.5 result was resolved (more images/seeds) would
+need either a longer session or a stronger GPU than the one available
+here.
+
+## Summary across all four follow-up questions
+
+| question | answer | confidence |
+|---|---|---|
+| Does the VGG19 proxy metric predict real LoRA impact? | No (r=+0.206) | High (n=10) |
+| Does cloak-target dissimilarity predict real impact? | Weakly yes (r=-0.516, controlled) | Moderate (n=5 controlled points) |
+| Does the effect scale down at a weaker preset? | Yes in aggregate, unstable per-image | Low (n=4 images) |
+| Does the effect reproduce on SDXL? | Directionally yes, not confirmed | Low (n=6) |
+
+None of these four follow-ups changes the main finding (SD1.5, L3_ANTI_TRAIN,
++0.0130, 95% CI [+0.0066, +0.0193], n=30) — they each explore *why* and
+*how far* it generalizes, with honestly varying levels of confidence. The
+weaker-confidence answers (preset scaling, SDXL) are exactly the ones a
+follow-up session with more GPU time should prioritize resolving properly,
+not treat as settled.
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
 - No concept-misalignment (Nightshade-style) layer — style confusion only.

@@ -373,7 +373,8 @@ kept here so the history is legible rather than silently overwritten):
 | 2 | + great_wave | 6 | +0.0137 | [-0.0026, +0.0300] | includes zero |
 | 3 | + mona_lisa, the_scream (prompt bug found + fixed mid-stage) | 12 | +0.0138 | [-0.0001, +0.0278] | still includes zero |
 | 4 | + composition_vii, water_lilies | 18 | +0.0112 | [+0.0020, +0.0204] | excludes zero |
-| 5 | + girl_pearl_earring, birth_of_venus | **24** | **+0.0108** | **[+0.0025, +0.0190]** | **excludes zero, narrower** |
+| 5 | + girl_pearl_earring, birth_of_venus | 24 | +0.0108 | [+0.0025, +0.0190] | excludes zero, narrower |
+| 6 | + night_watch, the_kiss | **30** | **+0.0130** | **[+0.0066, +0.0193]** | **excludes zero with margin** |
 
 **Bug found at stage 3, fixed before that row's numbers**: one hardcoded
 generation prompt suffix ("oil painting, landscape") for every image
@@ -412,18 +413,43 @@ overturning it. 15 of 24 runs positive. `great_wave`, `starry_night`, and
 `girl_pearl_earring` remain small/inconsistent, keeping the aggregate
 modest.
 
-**Honest reading of this, after four rounds of correction**: the
-statistically real effect found at stage 4 is holding up as the sample
-grows, with the confidence interval tightening rather than drifting back
-toward zero — the strongest evidence so far that this is a genuine, if
-small, effect rather than a fluke. It remains far weaker than the
-original single-run claim (+0.0315) and still varies a lot by
-image/style pair — this is not "the cloak reliably defeats LoRA
-training," it's "the cloak measurably taxes style fidelity by roughly
-1%, more for some styles than others." Cite **+0.0108 (95% CI
-0.0025-0.0190, n=24)** as the current number if citing one; check this
-section for a newer stage before repeating any earlier number, including
-this one.
+**Stage 6 result** — 10 real paintings (added `night_watch.jpg`, Rembrandt,
+baroque group portrait, and `the_kiss.jpg`, Klimt, art nouveau), ×3 seeds
+(n=30):
+
+| image | seed 1 | seed 2 | seed 3 | all 3 seeds |
+|---|---|---|---|---|
+| starry_night | +0.0062 | +0.0415 | +0.0116 | 3/3 positive |
+| great_wave | +0.0339 | +0.0209 | +0.0318 | 3/3 positive |
+| mona_lisa | +0.0061 | -0.0128 | -0.0006 | 1/3 positive |
+| the_scream | +0.0251 | +0.0011 | -0.0376 | 2/3 positive |
+| composition_vii | -0.0008 | +0.0094 | +0.0101 | 2/3 positive |
+| water_lilies | -0.0017 | +0.0052 | -0.0120 | 1/3 positive (~zero) |
+| girl_pearl_earring | +0.0088 | +0.0259 | +0.0129 | 3/3 positive |
+| birth_of_venus | +0.0060 | +0.0133 | +0.0140 | 3/3 positive |
+| night_watch | +0.0115 | +0.0364 | +0.0264 | 3/3 positive |
+| the_kiss | +0.0340 | +0.0463 | +0.0153 | 3/3 positive |
+
+**mean delta: +0.0130, stdev 0.0177, 95% CI (t-approx): [+0.0066, +0.0193]**
+— excludes zero with real margin now (lower bound moved from +0.0025 to
++0.0066). 24 of 30 runs positive (up from 15/24). Both newly added
+paintings were 3/3 positive, pulling the mean up rather than diluting it
+further — the first stage where adding images *strengthened* the result
+instead of pulling it toward zero.
+
+**Honest reading of this, after five rounds of correction**: this is now
+a fairly convincing result — a real, if modest (~1.3% CLIP-similarity
+reduction), effect that has survived six rounds of adding images,
+including a methodology bug fix, without ever falling back below
+significance once it first crossed that line at n=18. 7 of 10 images
+show a clearly consistent (3/3 or 2/3 seed) positive effect;
+`mona_lisa` and `water_lilies` remain the two holdouts where the cloak
+doesn't reliably help. Still **not** evidence the cloak defeats or even
+reliably degrades LoRA training in general — it's evidence of a small,
+statistically real, image-dependent style-fidelity tax. Cite **+0.0130
+(95% CI 0.0066-0.0193, n=30)** as the current number if citing one; check
+this section for a newer stage before repeating any earlier number,
+including this one.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

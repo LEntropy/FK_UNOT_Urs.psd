@@ -528,14 +528,51 @@ confirmation would cloak the same handful of images toward several
 choice as its own variable instead of reading it off pairs that were
 originally chosen for style diversity, not for this analysis.
 
-**Remaining next steps, in order**: (1) confirm the target-dissimilarity
-finding with a dedicated experiment (same image, multiple targets at
-controlled similarity levels) rather than reading it off incidental
-pairs; (2) repeat at a second preset (`L2_PORTFOLIO`) to see if effect
-size scales with epsilon the way the VGG-space metrics do; (3) test on
-SDXL/Illustrious given both are already on this GPU PC's kohya_ss
-install, since real-world style-LoRA theft increasingly happens on
-SDXL-family checkpoints, not SD1.5.
+### Controlled confirmation: same base image, 4 targets at known similarity
+
+The caveat above was real, so it got tested directly instead of left as a
+note: `starry_night.jpg` (already well-characterized) cloaked toward 4
+new targets spanning a controlled similarity range
+(`experiments/lora_validation/{prepare,score}_target_dissimilarity.py`),
+reusing the existing baseline LoRA (baseline doesn't depend on target
+choice at all) so only the 4 new cloaked conditions needed training:
+
+| target | pre-cloak similarity | mean delta (n=3 seeds) |
+|---|---|---|
+| the_scream | 0.6350 | +0.0410 |
+| girl_pearl_earring | 0.6855 | +0.0437 |
+| great_wave (reused from main experiment) | 0.7445 | +0.0198 |
+| composition_vii | 0.7594 | +0.0329 |
+| water_lilies | 0.8198 | +0.0337 |
+
+**Pearson r (similarity vs. mean delta), single base image, n=5 controlled
+points: -0.516** — still negative (more dissimilar target → bigger real
+effect, same direction as before), but *substantially weaker* than the
+r=-0.929 read off 5 incidental cross-cloaked pairs across 10 different
+images. The relationship isn't even monotonic here (`great_wave` at
+mid-similarity has the *lowest* delta of the five, breaking the trend).
+
+**Honest reading**: the original r=-0.929 was inflated by a real confound
+— it mixed "which target was chosen" together with "which base image was
+used," and the main experiment already established some images
+(`mona_lisa`, `water_lilies`) resist the effect regardless of target.
+Isolating target choice as the only variable cuts the correlation
+roughly in half. Target dissimilarity is still a real, actionable signal
+(all 5 controlled points show a positive effect, and the weaker/stronger
+ends still roughly track dissimilarity) — `select_style_target.py`
+remains a reasonable heuristic — but it explains only part of why some
+images resist the effect, not most of it. What explains the rest is still
+open.
+
+**Remaining next steps, in order**: (1) repeat at a second preset
+(`L2_PORTFOLIO`) to see if effect size scales with epsilon the way the
+VGG-space metrics do; (2) test on SDXL/Illustrious-XL (confirmed genuine
+SDXL architecture; the other candidate checkpoint on this GPU PC,
+`hosekiLustrousmixAnima_animaV10.safetensors`, turned out to be a
+DiT/transformer architecture incompatible with kohya_ss's UNet-specific
+training scripts, ruled out rather than silently skipped) — real-world
+style-LoRA theft increasingly happens on SDXL-family checkpoints, not
+SD1.5.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

@@ -47,7 +47,7 @@ function Train-Cloaked {
         "launch", "--num_cpu_threads_per_process", "1", $TRAIN_SCRIPT,
         "--pretrained_model_name_or_path", $CHECKPOINT,
         "--dataset_config", $DatasetConfig,
-        "--output_dir", "$OUT_DIR\lora_${RunTag}_cloaked",
+        "--output_dir", "$OUT_DIR\lora_${RunTag}_${Seed}_cloaked",
         "--output_name", "cloaked_$RUN_NAME",
         "--logging_dir", $LOGS_DIR,
         "--save_model_as", "safetensors",
@@ -61,11 +61,11 @@ function Train-Cloaked {
         "--cache_latents", "--network_train_unet_only",
         "--seed", "$Seed", "--max_data_loader_n_workers", "2"
     )
-    New-Item -ItemType Directory -Force -Path "$OUT_DIR\lora_${RunTag}_cloaked" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$OUT_DIR\lora_${RunTag}_${Seed}_cloaked" | Out-Null
 
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $ACCEL @argList *>&1 | Tee-Object -FilePath "$LOGS_DIR\train_${RunTag}_cloaked.log"
+    & $ACCEL @argList *>&1 | Tee-Object -FilePath "$LOGS_DIR\train_${RunTag}_${Seed}_cloaked.log"
     $ErrorActionPreference = $prevEAP
 
     if ($LASTEXITCODE -ne 0) { throw "training '$RunTag' failed (exit $LASTEXITCODE) -- see $LOGS_DIR\train_${RunTag}_cloaked.log" }

@@ -132,6 +132,49 @@ def parse_variants_output(output: str) -> list[dict]:
     return variants
 
 
+def _maybe_auto_select_style_target(input_path: str, style_target_path: str, size: int) -> str:
+    """Overrides the caller-given style_target_path with the candidate from
+    STYLE_TARGET_CANDIDATES_DIR that ai-engine's LoRA validation experiment
+    found gives the biggest real degradation effect (ml-engine/src/
+    select_style_target.py's module doc has the full finding: pre-cloak
+    Gram-matrix dissimilarity between original and target correlates with
+    real CLIP-measured effect, r=-0.516 in a controlled follow-up).
+
+    Off by default (env var unset) rather than silently changing every
+    upload's behavior -- this needs a real curated candidate pool to be
+    worth turning on, and this repo doesn't ship one (ai-engine's pool is
+    10 famous paintings assembled for that experiment, not a production
+    asset). Also a no-op under USE_REMOTE_GPU: selection needs a local
+    torch/VGG19 forward pass per candidate, which is exactly what remote-GPU
+    mode exists to avoid needing on this machine -- extending remote_gpu.py
+    to run selection remotely too is future work, not silently done wrong
+    here.
+    """
+    candidates_dir = os.environ.get("STYLE_TARGET_CANDIDATES_DIR")
+    if not candidates_dir:
+        return style_target_path
+    if USE_REMOTE_GPU:
+        print(
+            "[orchestrate] STYLE_TARGET_CANDIDATES_DIR is set but USE_REMOTE_GPU=1 -- "
+            "auto-selection needs a local torch pass, skipping and using the given style_target_path",
+            flush=True,
+        )
+        return style_target_path
+
+    candidates = [
+        str(p) for p in Path(candidates_dir).iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg") and p.is_file()
+    ]
+    if not candidates:
+        print(f"[orchestrate] STYLE_TARGET_CANDIDATES_DIR={candidates_dir!r} has no images, using given style_target_path", flush=True)
+        return style_target_path
+
+    from select_style_target import select_most_dissimilar_target
+
+    selected_path, similarity = select_most_dissimilar_target(input_path, candidates, size=size)
+    print(f"[orchestrate] auto-selected style target {selected_path} (pre-cloak similarity={similarity:.4f})", flush=True)
+    return selected_path
+
+
 def protect(
     input_path: str,
     out_dir: str,
@@ -147,6 +190,8 @@ def protect(
     start = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    style_target_path = _maybe_auto_select_style_target(input_path, style_target_path, size)
 
     # Matches apps/protection-svc/INTEGRATION.md's preset->params table:
     # L1_PREVIEW skips EOT (cheap tier, not worth the ~4x compute cost);

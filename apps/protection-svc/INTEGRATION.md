@@ -225,6 +225,29 @@ attempted yet), asset-service should not represent small thumbnails as
 "protected" the same way it represents the main preview, for *either*
 mechanism.
 
+## Style-target selection: opt-in auto-selection now wired in
+
+Every upload's cloak target used to be a single fixed image
+(`ml-engine/out/style_target.png`) regardless of the creator's own style.
+The `ai-engine` branch's LoRA validation experiment found this is sometimes
+close to worst-case: pre-cloak Gram-matrix similarity between the original
+and its target correlates with the cloak's real (CLIP-measured, actually
+trained LoRA) degradation effect — a more dissimilar target gives a bigger
+real effect (controlled follow-up: Pearson r=-0.516, n=5). See that
+branch's `ml-engine/README.md` for the full experiment; `ml-engine/src/
+select_style_target.py` (now on `main` too) is the deliverable.
+
+`orchestrate.py`'s `protect()` now calls `_maybe_auto_select_style_target()`
+before cloaking, but it's **off by default** — set
+`STYLE_TARGET_CANDIDATES_DIR` to a directory of candidate images to opt in;
+unset (the default, including on the current Pi deployment) leaves
+behavior exactly as before. Also a no-op under `USE_REMOTE_GPU=1`:
+selection needs a local torch/VGG19 pass per candidate, which is exactly
+what remote-GPU mode exists to avoid — extending `remote_gpu.py` to run
+selection remotely too is unstarted. No curated candidate pool ships with
+this repo (`ai-engine`'s pool is 10 famous paintings assembled for that
+experiment, not a production asset) — turning this on for real needs one.
+
 ## perceptualHash: implemented
 
 `ml-engine/src/perceptual_hash.py` — standard DCT pHash (`imagehash` library,

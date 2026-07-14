@@ -32,7 +32,7 @@ def generate_samples(checkpoint, lora_weights, prompt, out_dir, num_samples, see
     images = []
     for i in range(num_samples):
         generator = torch.Generator(device="cuda").manual_seed(seed + i)
-        result = pipe(prompt, num_inference_steps=30, width=resolution, height=resolution, generator=generator)
+        result = pipe(prompt, num_inference_steps=20, width=resolution, height=resolution, generator=generator)
         image_path = out_dir / f"sample_{i:02d}.png"
         result.images[0].save(image_path)
         images.append(image_path)
@@ -54,7 +54,7 @@ def main() -> None:
     parser.add_argument("--lora-root", required=True)
     parser.add_argument("--seeds", default="1,2,3")
     parser.add_argument("--run-name", default="v1")
-    parser.add_argument("--num-samples", type=int, default=6)
+    parser.add_argument("--num-samples", type=int, default=2, help="SDXL at 1024px on this 8GB GPU runs ~27s/step (vs SD1.5's ~0.1s/step) -- kept low to stay tractable")
     parser.add_argument("--resolution", type=int, default=1024)
     parser.add_argument("--gen-seed", type=int, default=42)
     parser.add_argument("--out-dir", default=str(Path(__file__).parent / "out" / "sdxl" / "generated"))

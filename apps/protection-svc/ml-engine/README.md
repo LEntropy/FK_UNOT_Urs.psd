@@ -446,10 +446,52 @@ show a clearly consistent (3/3 or 2/3 seed) positive effect;
 `mona_lisa` and `water_lilies` remain the two holdouts where the cloak
 doesn't reliably help. Still **not** evidence the cloak defeats or even
 reliably degrades LoRA training in general — it's evidence of a small,
-statistically real, image-dependent style-fidelity tax. Cite **+0.0130
-(95% CI 0.0066-0.0193, n=30)** as the current number if citing one; check
-this section for a newer stage before repeating any earlier number,
-including this one.
+statistically real, image-dependent style-fidelity tax.
+
+### Final report (stopped here — n=30)
+
+**This project's current, citable LoRA-degradation number is
++0.0130 (95% CI 0.0066–0.0193, n=30, 10 paintings × 3 training seeds).**
+Stopped expanding the sample here because the interval had already gained
+real margin above zero (up from barely-touching-zero at n=18) and the
+newest two images reinforced rather than diluted the effect — diminishing
+uncertainty for the compute cost of another round of 4+ images.
+
+**What this experiment established, and what it didn't:**
+- Established: `style_cloak.py`'s cloak has a *real, measurable, non-circular*
+  effect on actual SD1.5 LoRA training — the first time in this project's
+  history that claim has been checked against a real training run instead
+  of the VGG19 proxy metric the cloak was optimized against.
+- Established: the effect is small (~1% CLIP-similarity reduction) and
+  **image/style-dependent** — 7 of 10 tested paintings show it
+  consistently, 2 (`mona_lisa`, `water_lilies`) mostly don't, 1
+  (`the_scream`) is mixed. No pattern by era, medium, or complexity was
+  obvious from these 10 — a real follow-up would need to test that
+  hypothesis directly rather than guess from a 10-painting sample.
+- Established: composition/subject learning is **not** prevented by
+  cloaking in any of the 180 generated samples across all conditions —
+  every LoRA, cloaked or not, learned to reproduce its training image's
+  overall content. This is a style-fidelity tax, not a training blocker.
+- Not established: *why* some images resist the effect more than others,
+  whether a different preset/epsilon or EOT setting would widen the
+  effect, whether this generalizes past SD1.5/rank-32/single-image-overfit
+  to more realistic multi-image LoRA training, or whether the effect
+  holds at other resolutions/checkpoints (SDXL, Illustrious, etc. — all
+  present on the GPU PC and untested here).
+- The whole progression (n=1 → 30) is preserved in the stage table above
+  specifically so a future contributor doesn't have to guess how
+  confident to be — each stage's own number was real when measured; only
+  the aggregate, growing with more data, is a reliable estimate.
+
+**If someone picks this back up**: the highest-value next steps in order
+are (1) test whether `mona_lisa`/`water_lilies`-style resistance
+correlates with anything measurable (Gram-matrix distance between
+original and cloak-target, image entropy, color palette), not just chalk
+it up to per-image noise; (2) repeat at a second preset (`L2_PORTFOLIO`)
+to see if effect size scales with epsilon the way the VGG-space metrics
+do; (3) test on SDXL/Illustrious given both are already on this GPU PC's
+kohya_ss install, since real-world style-LoRA theft increasingly happens
+on SDXL-family checkpoints, not SD1.5.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

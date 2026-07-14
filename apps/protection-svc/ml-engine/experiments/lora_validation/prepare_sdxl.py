@@ -14,13 +14,24 @@ sd-scripts (train_network.py/sdxl_train_network.py are UNet-specific) and
 out of scope here; a real test of that checkpoint would need a different
 training framework entirely.
 
-Small subset (2 images, not all 10) to keep SDXL's heavier per-step cost
-tractable: great_wave and starry_night, same cross-cloak pairing as the
-main SD1.5 experiment, cloaked at 1024px (SDXL's native training
-resolution, vs SD1.5's 512px) -- this project's presets were also
-separately re-validated at 1024x1024 (see README's "Re-validated at
-1024x1024" section), so this isn't running outside any previously-checked
-envelope the way the LoRA experiment's 512px choice was for SD1.5.
+Subset of 4 images (not all 10) to keep SDXL's heavier per-step cost
+tractable: two cross-cloaked pairs from the main SD1.5 experiment
+(great_wave<->starry_night, mona_lisa<->the_scream), cloaked at 1024px
+(SDXL's native training resolution, vs SD1.5's 512px) -- this project's
+presets were also separately re-validated at 1024x1024 (see README's
+"Re-validated at 1024x1024" section), so this isn't running outside any
+previously-checked envelope the way the LoRA experiment's 512px choice
+was for SD1.5.
+
+Expanded from the original 2-image/n=6 pass (great_wave+starry_night
+only) to 4 images/n=12 after that pass landed a mean delta of +0.0087
+with a 95% CI that included zero -- same underpowered situation the
+SD1.5 experiment was in at its own n=6, before more images resolved it.
+mona_lisa/the_scream were chosen because they're the other half of an
+already-cross-cloaked pair (no new cloak target needed) and because on
+SD1.5 they were the *weakest*-effect images (1/3 and 2/3 seeds positive)
+-- adding them here tests whether that same weakness shows up on SDXL too,
+not just whether the strong pair (great_wave/starry_night) replicates.
 """
 
 import sys
@@ -32,7 +43,7 @@ sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 from style_cloak import cloak  # noqa: E402
 from prepare_dataset import IMAGE_CONFIGS  # noqa: E402
 
-SUBSET = ["great_wave", "starry_night"]
+SUBSET = ["great_wave", "starry_night", "mona_lisa", "the_scream"]
 RESOLUTION = 1024
 NUM_REPEATS = 20
 PRESET = "L3_ANTI_TRAIN"

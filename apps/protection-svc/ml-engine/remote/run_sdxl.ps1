@@ -44,6 +44,16 @@ $manifest = Get-Content "$OUT_DIR\sdxl_manifest.json" | ConvertFrom-Json
 function Train-Condition {
     param([string]$Name, [string]$Condition, [string]$DatasetConfig, [int]$Seed)
     $outputName = "${Condition}_$RUN_NAME"
+
+    # Reuse LoRAs already trained in an earlier pass (great_wave/starry_night
+    # at n=6) instead of retraining from scratch -- same compute-reuse
+    # principle as run_target_dissimilarity.ps1/run_l2_preset.ps1.
+    $expectedFile = "$OUT_DIR\lora_sdxl_${Name}_${Seed}_${Condition}\${outputName}.safetensors"
+    if (Test-Path $expectedFile) {
+        Write-Host "=== skipping sdxl $Name / $Condition (seed $Seed): already trained at $expectedFile ==="
+        return
+    }
+
     Write-Host "=== training: sdxl $Name / $Condition (seed $Seed) ==="
     $argList = @(
         "launch", "--num_cpu_threads_per_process", "1", $TRAIN_SCRIPT,

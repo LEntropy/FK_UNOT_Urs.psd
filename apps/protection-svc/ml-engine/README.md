@@ -483,15 +483,59 @@ uncertainty for the compute cost of another round of 4+ images.
   confident to be — each stage's own number was real when measured; only
   the aggregate, growing with more data, is a reliable estimate.
 
-**If someone picks this back up**: the highest-value next steps in order
-are (1) test whether `mona_lisa`/`water_lilies`-style resistance
-correlates with anything measurable (Gram-matrix distance between
-original and cloak-target, image entropy, color palette), not just chalk
-it up to per-image noise; (2) repeat at a second preset (`L2_PORTFOLIO`)
-to see if effect size scales with epsilon the way the VGG-space metrics
-do; (3) test on SDXL/Illustrious given both are already on this GPU PC's
-kohya_ss install, since real-world style-LoRA theft increasingly happens
-on SDXL-family checkpoints, not SD1.5.
+### Follow-up: why do some images resist the effect? (answered)
+
+Next-step item 1 above was answered immediately with data already in
+hand — no new GPU training needed, just two correlation checks
+(`experiments/lora_validation/correlate_drift.py`) against the per-image
+CLIP deltas already measured at n=30:
+
+1. **Does the cloak's own optimization metric (VGG19 Gram-matrix "drift"
+   toward the style-target, the same number every other metric in this
+   README reports) predict the real effect?** Pearson r = **+0.206** —
+   weak/no correlation, across all 10 images. The metric this project has
+   always used to judge "did cloaking work" does not predict real-world
+   LoRA impact even in *relative* terms (which image protects better than
+   another) — not just in absolute magnitude, which was already the
+   project's core finding. This is a stronger and more uncomfortable
+   result than "the metrics measure different things."
+2. **Does the pre-cloak Gram-matrix similarity between the original and
+   its chosen cloak-target predict the effect** — i.e., does cloaking
+   toward a more different style produce a bigger real effect? Pearson
+   r = **-0.929** across the same 10 images (5 cross-cloaked pairs) — a
+   strong negative correlation. The two lowest-effect images
+   (`mona_lisa`/`the_scream`, cross-cloaked toward each other) had the
+   *highest* pre-cloak similarity (0.7862); the two highest-effect images
+   (`night_watch`/`the_kiss`) had the *lowest* (0.7245).
+
+**This is directly actionable**, unlike finding 1: `apps/protection-svc/
+orchestrate.py` today cloaks every upload toward one fixed
+`style_target.png` regardless of the creator's own style — per this
+finding, that's sometimes close to worst-case (if a creator's art happens
+to already resemble that fixed target in VGG19 space). Added
+`ml-engine/src/select_style_target.py` — given an original image and a
+pool of candidate targets, picks whichever has the lowest Gram-matrix
+similarity to the original (the one this finding predicts gives the
+biggest real effect). Not wired into `orchestrate.py`'s default yet —
+that integration decision, and building a real candidate pool (this
+experiment's is 10 famous paintings, a product needs its own curated
+set), belongs to whoever owns that call site.
+
+**Caveat**: n=10 images means only 5 independent similarity values
+(cross-cloaked pairs share one similarity number each) — a real
+confirmation would cloak the same handful of images toward several
+*different* targets at different similarity levels, isolating target
+choice as its own variable instead of reading it off pairs that were
+originally chosen for style diversity, not for this analysis.
+
+**Remaining next steps, in order**: (1) confirm the target-dissimilarity
+finding with a dedicated experiment (same image, multiple targets at
+controlled similarity levels) rather than reading it off incidental
+pairs; (2) repeat at a second preset (`L2_PORTFOLIO`) to see if effect
+size scales with epsilon the way the VGG-space metrics do; (3) test on
+SDXL/Illustrious given both are already on this GPU PC's kohya_ss
+install, since real-world style-LoRA theft increasingly happens on
+SDXL-family checkpoints, not SD1.5.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

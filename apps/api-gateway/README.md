@@ -5,6 +5,10 @@ services, which currently have **zero authentication of their own**
 (confirmed across asset-service/blockchain-svc/protection-svc/detection-svc
 -- this is the first auth introduced anywhere in the stack).
 
+Full HTTP contract: [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0, validated
+with `openapi-spec-validator`) -- hand-written from the actual routes, not
+generated, so if it ever drifts the code wins.
+
 ## Scope
 
 - `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh` -- email +

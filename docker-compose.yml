@@ -137,9 +137,68 @@ services:
       asset-service:
         condition: service_healthy
 
+  api-gateway:
+    # Build context is the repo root, not apps/api-gateway alone -- this
+    # service depends on ../../infra/kms-adapter via a `file:` reference
+    # (no workspace tooling in this repo), which needs to actually exist at
+    # that relative path *inside the image* too (see the Dockerfile).
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: /apps/api-gateway/data/api-gateway.db
+      PORT: "4000"
+      ASSET_SERVICE_URL: http://asset-service:3002
+      # Dev-only secrets, fine to hardcode here -- never use these for a
+      # real deployment (see apps/api-gateway/README.md).
+      JWT_ACCESS_SECRET: dev-compose-access-secret-not-for-production
+      JWT_REFRESH_SECRET: dev-compose-refresh-secret-not-for-production
+      # No KMS_HOST here on purpose -- wrapKey() (custodial wallet
+      # provisioning at signup) is client-side only, no live KMS server
+      # needed; nothing in this compose stack calls unwrapKey(). See the
+      # "No kms service" note below.
+    volumes:
+      - api_gateway_data:/apps/api-gateway/data
+    depends_on:
+      asset-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: apps/web
+      args:
+        # Baked in at build time (client-side JS in the browser, not
+        # container-to-container traffic) -- localhost:4000 matches
+        # api-gateway's port mapping above, since the browser runs on the
+        # host, not inside this compose network.
+        VITE_API_GATEWAY_URL: http://localhost:4000
+    ports:
+      - "5173:5173"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
+# No `kms` service here. The real KMS server's C source lives outside this
+# repo entirely (a separate project the user already had) -- only a
+# pre-built binary exists, deployed directly to the Pi (deploy/pi/
+# start_kms.sh), not something this Dockerfile-based local stack can build
+# from source. Not needed for local dev anyway: api-gateway's wrapKey() is
+# client-side-only (no server call), and blockchain-svc's relayer key here
+# uses the plaintext anvil-default RELAYER_PRIVATE_KEY above, not the
+# KMS-wrapped path (see apps/blockchain-svc/INTEGRATION.md's "Relayer key"
+# section for that path, which the Pi deployment uses instead).
+
 volumes:
   shared:
   protection_out:
   asset_data:
   detection_data:
   detection_out:
+  api_gateway_data:

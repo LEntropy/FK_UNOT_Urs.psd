@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Scoped-down slice of PROJECT_DESIGN.md §4's data model -- just the tables
@@ -36,10 +36,22 @@ export const artworks = sqliteTable("artworks", {
   encryptionIv: text("encryption_iv").notNull(),
   encryptionAuthTag: text("encryption_auth_tag").notNull(),
 
+  // PROJECT_DESIGN.md §3-2/§4: public feeds and the "following" feed both
+  // filter on this; "followers"-only isn't enforced by any read path yet
+  // (no per-viewer auth check in this service -- see community routes'
+  // module doc), so it's accepted and stored but only "public"/"private"
+  // currently change response behavior.
+  visibility: text("visibility").notNull().default("public"),
+
   // Orchestration state machine: UPLOADED -> PROTECTING -> REGISTERING -> PUBLISHED
   //                                                     \-> FAILED (from any step)
   status: text("status").notNull().default("UPLOADED"),
   errorMessage: text("error_message"),
+  // Set once, in setStatus() (orchestration.ts), the moment status first
+  // becomes PUBLISHED -- feed ordering (routes/community.ts) sorts by this,
+  // not updatedAt, so a later unrelated edit doesn't bump an old artwork
+  // back to the top of "latest".
+  publishedAt: integer("published_at", { mode: "timestamp" }),
 
   // Filled in as protection-svc's job progresses.
   protectJobId: text("protect_job_id"),
@@ -74,4 +86,77 @@ export const ownershipRecords = sqliteTable("ownership_records", {
   txHash: text("tx_hash").notNull(),
   blockNumber: integer("block_number").notNull(),
   registeredAt: integer("registered_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * PROJECT_DESIGN.md §3-2/§4 community tables. Same trust boundary as
+ * `artworks` above: this service takes userId/creatorId/reporterId as
+ * given, no auth of its own -- api-gateway is the only place identity gets
+ * verified (src/routes/community.ts in api-gateway injects it from the JWT
+ * before proxying here, same pattern as artworks.ts).
+ */
+
+export const follows = sqliteTable(
+  "follows",
+  {
+    followerId: text("follower_id").notNull(),
+    creatorId: text("creator_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: uniqueIndex("follows_pk").on(table.followerId, table.creatorId),
+  }),
+);
+
+export const likes = sqliteTable(
+  "likes",
+  {
+    userId: text("user_id").notNull(),
+    artworkId: text("artwork_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: uniqueIndex("likes_pk").on(table.userId, table.artworkId),
+  }),
+);
+
+export const collections = sqliteTable("collections", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name").notNull(),
+  isPublic: integer("is_public", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+export const bookmarks = sqliteTable(
+  "bookmarks",
+  {
+    userId: text("user_id").notNull(),
+    artworkId: text("artwork_id").notNull(),
+    // Null = the user's default/uncategorized bookmarks, not an error --
+    // collections are opt-in organization, not required to bookmark.
+    collectionId: text("collection_id"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: uniqueIndex("bookmarks_pk").on(table.userId, table.artworkId),
+  }),
+);
+
+export const comments = sqliteTable("comments", {
+  id: text("id").primaryKey(),
+  artworkId: text("artwork_id").notNull(),
+  userId: text("user_id").notNull(),
+  body: text("body").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+export const reports = sqliteTable("reports", {
+  id: text("id").primaryKey(),
+  reporterId: text("reporter_id").notNull(),
+  artworkId: text("artwork_id").notNull(),
+  reason: text("reason").notNull(),
+  // PENDING -> RESOLVED | DISMISSED, set via the moderation queue endpoint.
+  status: text("status").notNull().default("PENDING"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });

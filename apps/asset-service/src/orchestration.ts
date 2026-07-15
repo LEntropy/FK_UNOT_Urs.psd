@@ -153,8 +153,17 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
 }
 
 async function setStatus(db: Db, artworkId: string, status: string, errorMessage?: string): Promise<void> {
+  const now = new Date();
   db.update(artworks)
-    .set({ status, errorMessage: errorMessage ?? null, updatedAt: new Date() })
+    .set({
+      status,
+      errorMessage: errorMessage ?? null,
+      updatedAt: now,
+      // Set once -- a later status churn (there isn't one today, but
+      // nothing stops a future re-protect flow) shouldn't bump this back
+      // to the top of the "latest" feed.
+      ...(status === "PUBLISHED" ? { publishedAt: now } : {}),
+    })
     .where(eq(artworks.id, artworkId))
     .run();
 }

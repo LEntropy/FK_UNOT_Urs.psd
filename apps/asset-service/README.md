@@ -107,6 +107,41 @@ once the protect job finishes -- see `orchestration.ts`. This is the first
 real use of `infra/kms-adapter` for actual image data, not just the
 custodial-wallet/relayer-key uses elsewhere in this project.
 
+## Community features (§3-2)
+
+`src/routes/community.ts`: feed, follows, likes, bookmarks/collections,
+comments, and reports -> moderation queue. Same trust boundary as
+`routes/artworks.ts` -- this service takes `userId`/`creatorId`/`reporterId`
+as given in the request body, no auth of its own. `apps/api-gateway`'s own
+`src/routes/community.ts` is the only place identity actually gets verified
+(it injects the real id from the JWT before proxying here) and is also
+where the moderation endpoints are role-gated to `MODERATOR`/`ADMIN` --
+this service's `/moderation/*` routes have no role check themselves, so
+calling them directly (unproxied) bypasses that.
+
+- `POST/DELETE /artworks/:id/likes`, `GET .../likes/count` -- liking twice
+  is idempotent (unique index + `onConflictDoNothing`), not an error.
+- `POST/DELETE /artworks/:id/bookmarks` (optional `collectionId`),
+  `GET /users/:userId/bookmarks`; `POST /collections`, `GET /collections`.
+- `POST/DELETE /users/:creatorId/follow`, `GET .../followers/count`
+  -- rejects following yourself.
+- `POST /artworks/:id/comments`, `GET /artworks/:id/comments` (newest
+  first, with a `rowid` tiebreak since same-millisecond timestamps are real
+  under load, not just a test artifact).
+- `POST /artworks/:id/reports` -> `PENDING`; `GET /moderation/reports`;
+  `PATCH /moderation/reports/:id` (`RESOLVED`/`DISMISSED`) -- one-way, a
+  second attempt on an already-resolved report is a `409`, not silently
+  overwritten.
+- `GET /feed?type=latest|popular|following` -- `latest`/`popular` only
+  return `visibility=public` + `status=PUBLISHED` artworks, ordered by
+  `publishedAt` (a dedicated column, set once in `orchestration.ts`'s
+  `setStatus()` the moment status first becomes `PUBLISHED` -- not
+  `updatedAt`, so an unrelated later edit can't bump an old artwork back to
+  the top of "latest"). `popular` orders by live `COUNT(likes)`, computed
+  per request rather than a denormalized counter -- fine at this scale, a
+  real counter would need to also handle unlikes. `following` requires
+  `userId` and 400s without it.
+
 ## What this does not do
 
 - No object storage — `sourceImageUri` is a local file path, same PoC-scope
@@ -116,8 +151,11 @@ custodial-wallet/relayer-key uses elsewhere in this project.
 - No auth, no per-tenant isolation (this service itself -- `apps/api-gateway`
   sits in front of it now, but asset-service's own endpoints still trust
   whatever creatorId a caller sends).
-- No community features (§3-2's feed/follows/likes/moderation) — this is
-  just the upload orchestration spine.
+- `visibility=followers` is accepted and stored but not enforced by any read
+  path -- there's no per-viewer auth check in this service to know who's
+  asking, so "followers-only" behaves like "public" today. A real
+  enforcement would need api-gateway to pass the viewer's own id through to
+  reads, not just writes, which it doesn't do yet.
 - Job state (both here and in protection-svc) is not resumable across a
   process restart mid-job — a killed server loses in-flight orchestration
   state, `artworks.status` just stays wherever it was.

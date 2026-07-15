@@ -69,6 +69,81 @@ jobs:
         # no .env or external services needed.
         run: npm test
 
+  kms-adapter:
+    name: infra/kms-adapter (npm test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/kms-adapter/package-lock.json
+      - name: npm ci
+        working-directory: infra/kms-adapter
+        run: npm ci
+      - name: npm run build
+        working-directory: infra/kms-adapter
+        run: npm run build
+      - name: npm test
+        working-directory: infra/kms-adapter
+        # roundtrip.test.ts's live-server test hits the real KMS server on
+        # the Pi over the internet -- not something a CI runner should
+        # depend on (flaky, exposes that host to every CI run). Skipped
+        # here; verified manually against the live server when this package
+        # changes (see infra/kms-adapter's own test file).
+        run: SKIP_KMS_INTEGRATION=1 npm test
+
+  api-gateway:
+    name: api-gateway (npm test)
+    runs-on: ubuntu-latest
+    needs: kms-adapter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            infra/kms-adapter/package-lock.json
+            apps/api-gateway/package-lock.json
+      # api-gateway depends on @dontai/kms-adapter via a `file:` reference
+      # (no workspace tooling in this repo, per README) -- it must be built
+      # in this same job before `npm ci` in apps/api-gateway can resolve it.
+      - name: build infra/kms-adapter
+        working-directory: infra/kms-adapter
+        run: npm ci && npm run build
+      - name: npm ci
+        working-directory: apps/api-gateway
+        run: npm ci
+      - name: npm run build
+        working-directory: apps/api-gateway
+        run: npm run build
+      - name: npm test
+        working-directory: apps/api-gateway
+        # wrapKey() in auth.test.ts is a local RSA encrypt against the
+        # checked-in kms-keys/ fixture -- no live KMS server call, safe for CI.
+        run: npm test
+
+  web:
+    name: web (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+      - name: npm run build
+        working-directory: apps/web
+        # No test suite yet (see apps/web/README.md's scope) -- build alone
+        # catches TS errors and Vite bundling failures.
+        run: npm run build
+
   rust-core:
     name: protection-svc/rust-core (cargo test)
     runs-on: ubuntu-latest

@@ -93,11 +93,29 @@ taking ~90s+ and a real on-chain transaction) is a manual verification step,
 not part of this suite, for the same reason ml-engine's GPU-dependent tests
 aren't either.
 
+## Envelope encryption at rest
+
+`src/crypto/imageEncryption.ts`: every upload is AES-256-GCM encrypted with
+a fresh per-artwork DEK immediately on `POST /artworks`, and the plaintext
+is deleted right after -- not just an extra encrypted copy sitting next to
+an unencrypted one. The DEK itself is RSA-wrapped (client-side, no network
+call -- `@dontai/kms-adapter`'s `wrapKey()`) against the org's KMS public
+key and stored alongside the ciphertext path. Decrypting back (needed once,
+briefly, right before `protection-svc` processes the image) calls the live
+KMS server's `unwrapKey()` and writes to a temp file that's deleted again
+once the protect job finishes -- see `orchestration.ts`. This is the first
+real use of `infra/kms-adapter` for actual image data, not just the
+custodial-wallet/relayer-key uses elsewhere in this project.
+
 ## What this does not do
 
 - No object storage — `sourceImageUri` is a local file path, same PoC-scope
   limit as `protection-svc`'s `imageUri` (`apps/protection-svc/INTEGRATION.md`).
-- No auth, no per-tenant isolation.
+  The image itself is encrypted at rest now (see above), but *where* it's
+  stored is still a local filesystem path, not S3-or-equivalent.
+- No auth, no per-tenant isolation (this service itself -- `apps/api-gateway`
+  sits in front of it now, but asset-service's own endpoints still trust
+  whatever creatorId a caller sends).
 - No community features (§3-2's feed/follows/likes/moderation) — this is
   just the upload orchestration spine.
 - Job state (both here and in protection-svc) is not resumable across a

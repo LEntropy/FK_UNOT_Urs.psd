@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "../db/schema.js";
 import { runUploadPipeline } from "../orchestration.js";
+import { encryptImageAtRest } from "../crypto/imageEncryption.js";
 
 const createArtworkSchema = z.object({
   title: z.string().min(1),
@@ -31,6 +32,19 @@ export function artworksRouter(db: Db): Router {
     // needs to read the same value back later via GET /artworks/:id.
     const watermarkPayloadHex = randomBytes(8).toString("hex");
 
+    // Envelope-encrypts and deletes the plaintext upload -- client-side
+    // only (wrapKey), no live KMS server needed for this step (see
+    // src/crypto/imageEncryption.ts). Done before the row exists so a
+    // request that can't even read its own upload never creates one.
+    let encrypted;
+    try {
+      encrypted = encryptImageAtRest(parsed.data.sourceImageUri, id);
+    } catch (err) {
+      return res.status(400).json({
+        error: `could not read sourceImageUri ${JSON.stringify(parsed.data.sourceImageUri)}: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
     db.insert(artworks)
       .values({
         id,
@@ -41,6 +55,10 @@ export function artworksRouter(db: Db): Router {
         protectionProfile: parsed.data.protectionProfile,
         allowAiTraining: parsed.data.allowAiTraining,
         watermarkPayloadHex,
+        encryptedImagePath: encrypted.encryptedImagePath,
+        encryptedDekBase64: encrypted.encryptedDekBase64,
+        encryptionIv: encrypted.encryptionIv,
+        encryptionAuthTag: encrypted.encryptionAuthTag,
         status: "UPLOADED",
         createdAt: now,
         updatedAt: now,

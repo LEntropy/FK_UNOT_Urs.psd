@@ -8,6 +8,17 @@ vi.mock("../src/clients/protectionSvc.js", () => ({
   pollProtectJob: vi.fn(),
 }));
 
+// decryptToTempFile needs a live KMS server (unwrapKey) -- mocked here since
+// this file tests orchestration logic, not the encryption round-trip itself
+// (that's src/crypto/imageEncryption.ts's own concern, covered by
+// test/artworksRoute.test.ts's real wrapKey() + apps/asset-service's
+// eventual decrypt-path test against the live server, same pattern as
+// infra/kms-adapter's own roundtrip.test.ts).
+vi.mock("../src/crypto/imageEncryption.js", () => ({
+  decryptToTempFile: vi.fn().mockResolvedValue("/tmp/fake-decrypted.png"),
+  cleanupTempFile: vi.fn(),
+}));
+
 // Keep the real AlreadyRegisteredError class (auto-mocking it would replace
 // its constructor and lose the `contentHash` field the real class sets).
 vi.mock("../src/clients/blockchainSvc.js", async (importOriginal) => {
@@ -18,6 +29,7 @@ vi.mock("../src/clients/blockchainSvc.js", async (importOriginal) => {
 // Imported after the mocks are registered, per vitest's hoisting rules.
 const { createProtectJob, pollProtectJob } = await import("../src/clients/protectionSvc.js");
 const { registerAsset, verifyAsset, AlreadyRegisteredError } = await import("../src/clients/blockchainSvc.js");
+const { cleanupTempFile } = await import("../src/crypto/imageEncryption.js");
 const { runUploadPipeline } = await import("../src/orchestration.js");
 
 const OWNER = "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2";
@@ -33,6 +45,10 @@ function seedArtwork(db: ReturnType<typeof createTestDb>, overrides: Partial<typ
     protectionProfile: "L1_PREVIEW",
     allowAiTraining: false,
     watermarkPayloadHex: "deadbeefcafef00d",
+    encryptedImagePath: "./data/encrypted/ast_test1.enc",
+    encryptedDekBase64: "ZmFrZQ==",
+    encryptionIv: "ZmFrZQ==",
+    encryptionAuthTag: "ZmFrZQ==",
     status: "UPLOADED",
     createdAt: now,
     updatedAt: now,
@@ -86,6 +102,13 @@ describe("runUploadPipeline", () => {
       metadataHash: "0xbbbb",
       doNotTrain: true, // allowAiTraining: false -> doNotTrain: true
     });
+
+    // protection-svc gets the *decrypted temp* path, never the encrypted
+    // blob's path directly -- and the temp file is cleaned up afterward.
+    expect(createProtectJob).toHaveBeenCalledWith(
+      expect.objectContaining({ imageUri: "/tmp/fake-decrypted.png" }),
+    );
+    expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/fake-decrypted.png");
   });
 
   it("marks the artwork FAILED when the protect job fails", async () => {

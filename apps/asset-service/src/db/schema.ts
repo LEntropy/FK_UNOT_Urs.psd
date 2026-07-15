@@ -25,6 +25,17 @@ export const artworks = sqliteTable("artworks", {
   // this does not do", now resolved).
   watermarkPayloadHex: text("watermark_payload_hex").notNull(),
 
+  // Envelope encryption at rest (src/crypto/imageEncryption.ts,
+  // PROJECT_DESIGN.md §6): the plaintext upload is encrypted with a
+  // per-artwork AES-256-GCM DEK and deleted immediately; only the
+  // ciphertext path and the KMS-wrapped DEK are kept. orchestration.ts
+  // decrypts to a temp file right before protection-svc needs a real one,
+  // and deletes that temp file once the protect job completes.
+  encryptedImagePath: text("encrypted_image_path").notNull(),
+  encryptedDekBase64: text("encrypted_dek_base64").notNull(),
+  encryptionIv: text("encryption_iv").notNull(),
+  encryptionAuthTag: text("encryption_auth_tag").notNull(),
+
   // Orchestration state machine: UPLOADED -> PROTECTING -> REGISTERING -> PUBLISHED
   //                                                     \-> FAILED (from any step)
   status: text("status").notNull().default("UPLOADED"),

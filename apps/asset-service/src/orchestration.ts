@@ -3,6 +3,7 @@ import type { Db } from "./db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "./db/schema.js";
 import { createProtectJob, pollProtectJob } from "./clients/protectionSvc.js";
 import { registerAsset, verifyAsset, AlreadyRegisteredError } from "./clients/blockchainSvc.js";
+import { decryptToTempFile, cleanupTempFile } from "./crypto/imageEncryption.js";
 import { env } from "./env.js";
 
 /**
@@ -23,11 +24,27 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
   const artwork = db.select().from(artworks).where(eq(artworks.id, artworkId)).get();
   if (!artwork) throw new Error(`runUploadPipeline: no artwork ${artworkId}`);
 
+  let decryptedTempPath: string | undefined;
+
   try {
     await setStatus(db, artworkId, "PROTECTING");
 
+    // Decrypted only for the duration of this job -- protection-svc needs
+    // a real local file path (INTEGRATION.md's imageUri contract), not
+    // bytes in memory. Needs the live KMS server (unwrapKey), unlike the
+    // encrypt-at-upload-time path in routes/artworks.ts.
+    decryptedTempPath = await decryptToTempFile(
+      {
+        encryptedImagePath: artwork.encryptedImagePath,
+        encryptedDekBase64: artwork.encryptedDekBase64,
+        encryptionIv: artwork.encryptionIv,
+        encryptionAuthTag: artwork.encryptionAuthTag,
+      },
+      artworkId,
+    );
+
     const { jobId } = await createProtectJob({
-      imageUri: artwork.sourceImageUri,
+      imageUri: decryptedTempPath,
       protectionProfile: artwork.protectionProfile,
       title: artwork.title,
       creatorId: artwork.creatorId,
@@ -128,6 +145,10 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
     }
   } catch (err) {
     await setStatus(db, artworkId, "FAILED", err instanceof Error ? err.message : String(err));
+  } finally {
+    // Decrypted plaintext only ever exists for the duration of this job --
+    // clean it up regardless of success/failure, not just on the happy path.
+    if (decryptedTempPath) cleanupTempFile(decryptedTempPath);
   }
 }
 

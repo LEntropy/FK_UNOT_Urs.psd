@@ -81,19 +81,34 @@ services:
       retries: 20
 
   asset-service:
+    # Build context is the repo root now, not apps/asset-service alone --
+    # see the api-gateway service's comment above for why (file: dependency
+    # on ../../infra/kms-adapter, envelope encryption at rest).
     build:
-      context: apps/asset-service
+      context: .
+      dockerfile: apps/asset-service/Dockerfile
     ports:
       - "3002:3002"
     environment:
-      DATABASE_URL: /app/data/asset-service.db
+      DATABASE_URL: /apps/asset-service/data/asset-service.db
       PROTECTION_SVC_URL: http://protection-svc:8000
       BLOCKCHAIN_SVC_URL: http://blockchain-svc:3001
       PORT: "3002"
       CHAIN_NAME: anvil-local
       REGISTRY_ADDRESS_FILE: /shared/registry-address.txt
+      # Encrypting an upload (wrapKey) needs no live KMS server, but
+      # *decrypting* it for protection-svc to actually process (the
+      # PROTECTING step of every upload) does -- and this compose file
+      # doesn't ship a kms service (see the "No kms service" note below).
+      # Override KMS_HOST/KMS_PORT to point at a real reachable KMS server
+      # (e.g. the Pi deployment) if you want the full pipeline to complete
+      # locally; otherwise every upload will encrypt-at-rest successfully
+      # and then fail loudly at PROTECTING with a clear KMS-unreachable
+      # error, which is correct behavior, not a bug to silently work around.
+      KMS_HOST: "${KMS_HOST:-127.0.0.1}"
+      KMS_PORT: "${KMS_PORT:-8443}"
     volumes:
-      - asset_data:/app/data
+      - asset_data:/apps/asset-service/data
       - shared:/shared:ro
     depends_on:
       blockchain-svc:
@@ -189,11 +204,16 @@ services:
 # repo entirely (a separate project the user already had) -- only a
 # pre-built binary exists, deployed directly to the Pi (deploy/pi/
 # start_kms.sh), not something this Dockerfile-based local stack can build
-# from source. Not needed for local dev anyway: api-gateway's wrapKey() is
-# client-side-only (no server call), and blockchain-svc's relayer key here
-# uses the plaintext anvil-default RELAYER_PRIVATE_KEY above, not the
-# KMS-wrapped path (see apps/blockchain-svc/INTEGRATION.md's "Relayer key"
-# section for that path, which the Pi deployment uses instead).
+# from source. api-gateway's wrapKey() and asset-service's own upload-time
+# encryption are both client-side-only (no server call needed), and
+# blockchain-svc's relayer key here uses the plaintext anvil-default
+# RELAYER_PRIVATE_KEY above, not the KMS-wrapped path (see apps/blockchain-svc/
+# INTEGRATION.md's "Relayer key" section for that path, which the Pi
+# deployment uses instead). The one thing that DOES need a live KMS server
+# in this stack is asset-service's PROTECTING step (decrypting an upload
+# back out for protection-svc) -- see its KMS_HOST/KMS_PORT override note
+# above if you want that to actually complete locally instead of just
+# demonstrating the encrypt-at-rest step.
 
 volumes:
   shared:

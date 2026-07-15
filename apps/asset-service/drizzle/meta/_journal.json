@@ -15,6 +15,13 @@
       "when": 1784052698956,
       "tag": "0001_purple_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784111759159,
+      "tag": "0002_tan_rhino",
+      "breakpoints": true
     }
   ]
 }

@@ -64,7 +64,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/asset-service/package-lock.json
+          cache-dependency-path: |
+            infra/kms-adapter/package-lock.json
+            apps/asset-service/package-lock.json
+      # asset-service depends on @dontai/kms-adapter via a `file:` reference
+      # (envelope encryption at rest, src/crypto/imageEncryption.ts) -- same
+      # reason as api-gateway/blockchain-svc's jobs, must be built here first.
+      - name: build infra/kms-adapter
+        working-directory: infra/kms-adapter
+        run: npm ci && npm run build
       - name: npm ci
         working-directory: apps/asset-service
         run: npm ci
@@ -73,8 +81,10 @@ jobs:
         run: npm run build
       - name: npm test
         working-directory: apps/asset-service
-        # Fully mocked/in-memory (vi.mock on HTTP clients, :memory: sqlite) --
-        # no .env or external services needed.
+        # Fully mocked/in-memory (vi.mock on HTTP clients, :memory: sqlite,
+        # decryptToTempFile mocked) -- no .env or external services needed.
+        # The one real crypto op exercised is wrapKey() (client-side RSA
+        # encrypt against the checked-in kms-keys/ fixture, no network).
         run: npm test
 
   kms-adapter:

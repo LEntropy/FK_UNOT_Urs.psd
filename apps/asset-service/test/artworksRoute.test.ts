@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { artworks } from "../src/db/schema.js";
@@ -19,6 +23,10 @@ function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof art
       protectionProfile: "L1_PREVIEW",
       allowAiTraining: false,
       watermarkPayloadHex: "deadbeefcafef00d",
+      encryptedImagePath: "./data/encrypted/test.enc",
+      encryptedDekBase64: "ZmFrZQ==",
+      encryptionIv: "ZmFrZQ==",
+      encryptionAuthTag: "ZmFrZQ==",
       status: "UPLOADED",
       createdAt: now,
       updatedAt: now,
@@ -47,5 +55,48 @@ describe("GET /artworks", () => {
     const res = await request(createApp(db)).get("/artworks");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
+  });
+});
+
+describe("POST /artworks (envelope encryption at rest)", () => {
+  it("encrypts the upload, deletes the plaintext, and stores no plaintext path anywhere", async () => {
+    const db = createTestDb();
+    const plainDir = mkdtempSync(join(tmpdir(), "dontai-upload-test-"));
+    const plainPath = join(plainDir, "original.png");
+    writeFileSync(plainPath, "not a real png, just needs bytes to encrypt");
+
+    const res = await request(createApp(db)).post("/artworks").send({
+      title: "Encryption test",
+      sourceImageUri: plainPath,
+      creatorId: "creator_enc",
+      ownerWalletAddress: "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2",
+    });
+
+    expect(res.status).toBe(202);
+    expect(existsSync(plainPath)).toBe(false); // the actual "at rest" guarantee
+
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(row.encryptedImagePath).toMatch(/\.enc$/);
+    expect(existsSync(row.encryptedImagePath)).toBe(true);
+    expect(row.encryptedDekBase64.length).toBeGreaterThan(0);
+    // Base64 RSA-PKCS1 ciphertext for a 32-byte AES key should never
+    // literally contain the plaintext filename/content -- a weak sanity
+    // check, but a real one: this isn't just base64 of the original path.
+    expect(row.encryptedDekBase64).not.toContain("original.png");
+
+    unlinkSync(row.encryptedImagePath);
+  });
+
+  it("returns 400 (not a crash) when sourceImageUri doesn't exist", async () => {
+    const db = createTestDb();
+    const res = await request(createApp(db)).post("/artworks").send({
+      title: "Missing file",
+      sourceImageUri: "/definitely/not/a/real/path.png",
+      creatorId: "creator_x",
+      ownerWalletAddress: "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2",
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.select().from(artworks).all()).toHaveLength(0); // no partial row left behind
   });
 });

@@ -152,16 +152,26 @@ before claiming them.
 
 ### What's actually worth building now vs. deferring
 
-**Worth building now** (cheap, high-signal, near-zero false-positive
-risk): **sequential-ID enumeration detection**. A real user's session
-requests artwork IDs in whatever order the UI's actual links present them
-(gallery order, search results, etc.) -- never a dense numeric/alphabetic
-sequence. A scraper enumerating `ast_1, ast_2, ast_3, ...` (or repeatedly
-incrementing/decrementing any ID pattern) across many requests from one
-fingerprint in a short window is a strong, cheap, low-noise signal that
-doesn't need any ML or historical traffic data to implement -- a simple
-per-fingerprint "have consecutive requested IDs been suspiciously
-sequential" check layered on top of the existing rate limiter.
+**Worth building now, and now built** (`apps/delivery-gateway/src/
+enumeration.rs`): distinct-artwork enumeration detection -- **adapted from
+the plan below once implementation started**, this project's artwork IDs
+turned out to already be random 16-hex-char strings
+(`asset-service`'s `ast_${randomUUID()...}`), not a guessable sequence, so
+literal "sequential ID" detection had nothing to detect. The applicable
+signal is the same underlying behavior this section originally reasoned
+about: a real user's session touches a handful of artworks (whatever the
+UI's links present); a scraper touches many *distinct* artworks quickly
+regardless of whether the IDs happen to be sequential or random, because
+it's enumerating a feed/sitemap/guessed list rather than browsing.
+Tracking distinct-artwork-count per IP in a sliding window (configurable
+via `ENUMERATION_MAX_DISTINCT_ARTWORKS`/`ENUMERATION_WINDOW_SECONDS`)
+captures that without depending on an ID scheme this project doesn't
+have. Repeatedly re-requesting the same artwork never trips it.
+
+*(Original plan, kept for context on the reasoning): "A scraper
+enumerating `ast_1, ast_2, ast_3, ...` across many requests from one
+fingerprint in a short window is a strong, cheap, low-noise signal" --
+correct in spirit, wrong about this project's actual ID format.)*
 
 **Worth deferring** (needs real production data first): a full
 scoring/reputation system with escalating friction (slow-down → CAPTCHA-
@@ -170,13 +180,15 @@ distributions and cross-session correlation. Building this without real
 traffic to validate against risks either being useless (thresholds too
 loose) or actively harmful (false-positives blocking real users) -- worth
 scoping in detail only once there's a real deployment generating the
-traffic patterns to tune it against.
+traffic patterns to tune it against. Also worth noting as a real
+limitation of what's built now: it's IP-based only, so a scraper rotating
+IPs defeats it the same way it defeats the existing rate limiter.
 
 ### Where it plugs in
 
-Sequential-ID detection extends `delivery-gateway`'s existing
-`rate_limit.rs` module (same per-fingerprint state, one more check
-alongside the existing count check) rather than a new service.
+Implemented as `delivery-gateway`'s own `src/enumeration.rs` module (same
+per-IP `DashMap` shape as `rate_limit.rs`, checked right after it in
+`render_asset`) rather than a new service.
 
 ## 4. On-chain ownership transfer / ERC-721 upgrade, mainnet transition
 

@@ -44,7 +44,19 @@ shouldn't -- it "has no auth of its own").
      would break normal use, not just hotlinking).
   4. Per-IP sliding-window rate limit (`src/rate_limit.rs`, in-memory --
      see "What this does not do").
-  5. Fetches the artwork's real `assetVersions` from `asset-service`
+  5. Distinct-artwork enumeration detection (`src/enumeration.rs`,
+     `PHASE4_SCOPING.md`'s adaptive-anti-scrape item) -- flags an IP that
+     touches more than `ENUMERATION_MAX_DISTINCT_ARTWORKS` distinct
+     artworks within `ENUMERATION_WINDOW_SECONDS`. **Adapted from the
+     original scoping text, not literal "sequential ID" detection**: this
+     project's artwork IDs are random 16-hex-char strings
+     (`asset-service`'s `ast_${randomUUID()...}`), not a guessable
+     sequence -- the applicable signal is the same underlying behavior
+     (a scraper touches many distinct artworks fast; a browsing session
+     touches a handful) adapted to an ID scheme that was never
+     enumerable to begin with. Repeatedly re-requesting the *same*
+     artwork (a real user reloading a page) never trips this.
+  6. Fetches the artwork's real `assetVersions` from `asset-service`
      (`GET /artworks/:id`) and serves the matching variant's file bytes
      from disk, with `X-Robots-Tag: noindex, noimageindex` and a short
      `Cache-Control`.
@@ -100,10 +112,17 @@ isolation.
 
 ## What this does not do
 
-- **Rate limiting is in-memory, single-process.** Fine for this PoC's one
-  instance; a real multi-instance deployment needs this in a shared store
-  (Redis) instead, same "not built yet" scope note as everywhere else in
-  this project that currently uses in-memory state.
+- **Rate limiting and enumeration detection are both in-memory,
+  single-process.** Fine for this PoC's one instance; a real multi-instance
+  deployment needs both in a shared store (Redis) instead, same "not built
+  yet" scope note as everywhere else in this project that currently uses
+  in-memory state.
+- **Enumeration detection is IP-based only.** A determined scraper rotating
+  IPs defeats it the same way it defeats the rate limiter -- this is the
+  cheap, high-signal check `PHASE4_SCOPING.md` recommended building first,
+  not the full behavioral/reputation system it also describes and
+  explicitly defers (needs real production traffic to tune against, which
+  this project doesn't have).
 - **No decoy/honeypot responses.** §3-5 offers "차단 또는 decoy" for
   detected crawlers; this only implements the block half. Honeypot assets
   are explicitly Phase 4 scope (PROJECT_DESIGN.md's Nightshade-style

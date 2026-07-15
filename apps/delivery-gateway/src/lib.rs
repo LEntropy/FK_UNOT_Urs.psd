@@ -1,4 +1,5 @@
 pub mod crawlers;
+pub mod enumeration;
 pub mod rate_limit;
 pub mod signing;
 
@@ -10,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use enumeration::EnumerationDetector;
 use rate_limit::RateLimiter;
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +21,7 @@ pub struct AppState {
     pub allowed_referer_hosts: Vec<String>,
     pub http: reqwest::Client,
     pub rate_limiter: RateLimiter,
+    pub enumeration_detector: EnumerationDetector,
     pub sign_ttl_seconds: u64,
 }
 
@@ -193,6 +196,18 @@ async fn render_asset(
         .unwrap_or(addr.ip());
     if !state.rate_limiter.check(client_ip) {
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+    }
+    // PHASE4_SCOPING.md's adaptive-anti-scrape recommendation, adapted to
+    // this project's random (non-sequential) artwork IDs -- see
+    // src/enumeration.rs's module doc for why. A normal session touches a
+    // handful of artworks; systematically fetching many distinct ones
+    // quickly looks like enumeration regardless of ID scheme.
+    if !state.enumeration_detector.check(client_ip, &artwork_id) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many distinct artworks requested -- looks like enumeration",
+        )
+            .into_response();
     }
 
     let detail_url = format!("{}/artworks/{}", state.asset_service_url, artwork_id);

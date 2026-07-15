@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use delivery_gateway::enumeration::EnumerationDetector;
 use delivery_gateway::rate_limit::RateLimiter;
 use delivery_gateway::{AppState, build_router};
 
@@ -26,6 +27,18 @@ async fn main() {
                 .unwrap_or(60),
             Duration::from_secs(
                 std::env::var("RATE_LIMIT_WINDOW_SECONDS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(60),
+            ),
+        ),
+        enumeration_detector: EnumerationDetector::new(
+            std::env::var("ENUMERATION_MAX_DISTINCT_ARTWORKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+            Duration::from_secs(
+                std::env::var("ENUMERATION_WINDOW_SECONDS")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(60),

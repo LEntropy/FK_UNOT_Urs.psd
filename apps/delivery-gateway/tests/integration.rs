@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use delivery_gateway::enumeration::EnumerationDetector;
 use delivery_gateway::rate_limit::RateLimiter;
 use delivery_gateway::{AppState, build_router};
 use http_body_util::BodyExt;
@@ -25,6 +26,7 @@ fn state_with_mock_asset_service(mock_server_uri: &str) -> Arc<AppState> {
         mock_server_uri,
         vec![],
         RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
     )
 }
 
@@ -32,6 +34,7 @@ fn build_state(
     asset_service_url: &str,
     allowed_referer_hosts: Vec<String>,
     rate_limiter: RateLimiter,
+    enumeration_detector: EnumerationDetector,
 ) -> Arc<AppState> {
     Arc::new(AppState {
         signing_secret: SECRET.to_string(),
@@ -39,6 +42,7 @@ fn build_state(
         allowed_referer_hosts,
         http: reqwest::Client::new(),
         rate_limiter,
+        enumeration_detector,
         sign_ttl_seconds: 300,
     })
 }
@@ -192,6 +196,7 @@ async fn mismatched_referer_is_blocked_when_an_allowlist_is_configured() {
         &mock_server.uri(),
         vec!["dontai.example".to_string()],
         RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
     );
     let app = build_router(state);
 
@@ -228,6 +233,7 @@ async fn missing_referer_is_allowed_even_with_an_allowlist_configured() {
         &mock_server.uri(),
         vec!["dontai.example".to_string()],
         RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
     );
     let app = build_router(state);
 
@@ -245,6 +251,7 @@ async fn rate_limit_blocks_after_the_configured_threshold() {
         &mock_server.uri(),
         vec![],
         RateLimiter::new(2, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
     );
     let app = build_router(state);
 
@@ -261,6 +268,79 @@ async fn rate_limit_blocks_after_the_configured_threshold() {
     assert_ne!(r1.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_ne!(r2.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn browsing_a_few_distinct_artworks_is_never_flagged_as_enumeration() {
+    let mock_server = MockServer::start().await;
+    let state = build_state(
+        &mock_server.uri(),
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(2, Duration::from_secs(60)),
+    );
+    let app = build_router(state);
+
+    for id in ["ast_1", "ast_2"] {
+        let uri = signed_render_uri(id, "public_preview_1280", 60);
+        let res = send(app.clone(), request(&uri)).await;
+        assert_ne!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+}
+
+#[tokio::test]
+async fn requesting_many_distinct_artworks_quickly_is_flagged_as_enumeration() {
+    let mock_server = MockServer::start().await;
+    let state = build_state(
+        &mock_server.uri(),
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(2, Duration::from_secs(60)),
+    );
+    let app = build_router(state);
+
+    let ids = ["ast_1", "ast_2", "ast_3"];
+    let mut last_status = StatusCode::OK;
+    for id in ids {
+        let uri = signed_render_uri(id, "public_preview_1280", 60);
+        last_status = send(app.clone(), request(&uri)).await.status();
+    }
+    // The 3rd *distinct* artwork this IP has touched within the window
+    // trips the max_distinct=2 threshold, regardless of what asset-service
+    // would have said about that artwork.
+    assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn repeatedly_re_requesting_the_same_artwork_never_trips_enumeration() {
+    let mock_server = MockServer::start().await;
+    let tmp_file = std::env::temp_dir().join("delivery_gateway_test_image3.png");
+    tokio::fs::write(&tmp_file, b"fake-png-bytes-3")
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/artworks/ast_repeat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap() }]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let state = build_state(
+        &mock_server.uri(),
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1, Duration::from_secs(60)),
+    );
+    let app = build_router(state);
+
+    let uri = signed_render_uri("ast_repeat", "public_preview_1280", 60);
+    for _ in 0..5 {
+        let res = send(app.clone(), request(&uri)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    tokio::fs::remove_file(&tmp_file).await.ok();
 }
 
 #[tokio::test]

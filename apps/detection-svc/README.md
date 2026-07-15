@@ -17,8 +17,12 @@ Implements runbook steps 1-3 of §7 only:
 3. **증거 패키지 생성** — JSON bundle (always) + best-effort PDF, per
    PROJECT_DESIGN.md §3-7's exact field list.
 
-Steps 4-6 of the runbook (권리자 알림, 테이크다운/DMCA 자동 작성, 케이스 추적)
-are product/human workflow and are **not** automated here.
+Steps 4-6 of the runbook (권리자 알림, 대응 옵션 안내, 케이스 추적) are
+product/human workflow and are **not** automated here — see
+[`RUNBOOK.md`](RUNBOOK.md) for the actual checklist a person follows,
+including a DMCA/infringement notice template. `PATCH /cases/{caseId}`
+lets that checklist record progress (`NOTIFIED`/`RESOLVED`/`ESCALATED`)
+instead of tracking it outside the system entirely.
 
 ## What this does not do
 
@@ -52,6 +56,9 @@ are product/human workflow and are **not** automated here.
 - `POST /reports {artworkId, suspectUrl}` → `202 {caseId, status: "queued"}`
 - `GET /cases/{caseId}` → case status (`OPEN` → `EVIDENCE_READY` /
   `NO_MATCH_FOUND` / `FAILED`) + evidence record list
+- `PATCH /cases/{caseId} {status, note?}` → records a manual runbook step
+  (`NOTIFIED`/`RESOLVED`/`ESCALATED` only, and only from `EVIDENCE_READY`
+  or another manual state — see `RUNBOOK.md`)
 - `GET /evidence/{caseId}` → full JSON evidence bundle(s)
 - `GET /health`
 

@@ -110,3 +110,43 @@ def test_report_creates_case_with_report_trigger(client, monkeypatch):
 def test_evidence_for_unknown_case_is_404(client):
     resp = client.get("/evidence/case_does_not_exist")
     assert resp.status_code == 404
+
+
+def test_patch_case_moves_evidence_ready_to_notified(client):
+    from db import create_case, set_case_status
+
+    case_id = "case_manual1"
+    create_case(server._db, case_id, "ast_x", "scan")
+    set_case_status(server._db, case_id, "EVIDENCE_READY")
+
+    resp = client.patch(f"/cases/{case_id}", json={"status": "NOTIFIED", "note": "emailed creator 2026-01-01"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "NOTIFIED"
+    assert body["note"] == "emailed creator 2026-01-01"
+
+
+def test_patch_case_rejects_status_not_in_the_manual_set(client):
+    from db import create_case, set_case_status
+
+    case_id = "case_manual2"
+    create_case(server._db, case_id, "ast_x", "scan")
+    set_case_status(server._db, case_id, "EVIDENCE_READY")
+
+    resp = client.patch(f"/cases/{case_id}", json={"status": "PUBLISHED"})
+    assert resp.status_code == 400
+
+
+def test_patch_case_rejects_transition_from_a_non_evidence_ready_automated_state(client):
+    from db import create_case
+
+    case_id = "case_manual3"
+    create_case(server._db, case_id, "ast_x", "scan")  # still OPEN
+
+    resp = client.patch(f"/cases/{case_id}", json={"status": "NOTIFIED"})
+    assert resp.status_code == 409
+
+
+def test_patch_unknown_case_is_404(client):
+    resp = client.patch("/cases/case_does_not_exist", json={"status": "NOTIFIED"})
+    assert resp.status_code == 404

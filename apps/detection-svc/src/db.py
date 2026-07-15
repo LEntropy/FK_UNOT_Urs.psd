@@ -22,9 +22,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
     id TEXT PRIMARY KEY,
     artwork_id TEXT NOT NULL,
-    status TEXT NOT NULL,          -- OPEN | EVIDENCE_READY | NO_MATCH_FOUND | FAILED
+    -- OPEN | EVIDENCE_READY | NO_MATCH_FOUND | FAILED (automated) |
+    -- NOTIFIED | RESOLVED | ESCALATED (manual, via PATCH /cases/{id} --
+    -- runbook steps 4-6, PROJECT_DESIGN.md §7)
+    status TEXT NOT NULL,
     trigger TEXT NOT NULL,         -- scan | report
     error_message TEXT,
+    note TEXT,                     -- free-text set alongside a manual status update
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -47,7 +51,18 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate_add_note_column(conn)
     return conn
+
+
+def _migrate_add_note_column(conn: sqlite3.Connection) -> None:
+    """CREATE TABLE IF NOT EXISTS doesn't add columns to an already-existing
+    table -- needed for any `cases` DB created before the `note` column was
+    added (e.g. the live Pi deployment)."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(cases)")}
+    if "note" not in columns:
+        conn.execute("ALTER TABLE cases ADD COLUMN note TEXT")
+        conn.commit()
 
 
 def create_case(conn: sqlite3.Connection, case_id: str, artwork_id: str, trigger: str) -> None:
@@ -59,10 +74,12 @@ def create_case(conn: sqlite3.Connection, case_id: str, artwork_id: str, trigger
     conn.commit()
 
 
-def set_case_status(conn: sqlite3.Connection, case_id: str, status: str, error_message: str | None = None) -> None:
+def set_case_status(
+    conn: sqlite3.Connection, case_id: str, status: str, error_message: str | None = None, note: str | None = None
+) -> None:
     conn.execute(
-        "UPDATE cases SET status = ?, error_message = ?, updated_at = ? WHERE id = ?",
-        (status, error_message, time.time(), case_id),
+        "UPDATE cases SET status = ?, error_message = ?, note = ?, updated_at = ? WHERE id = ?",
+        (status, error_message, note, time.time(), case_id),
     )
     conn.commit()
 

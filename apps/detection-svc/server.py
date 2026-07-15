@@ -49,6 +49,20 @@ class ReportRequest(BaseModel):
     suspectUrl: str
 
 
+# Runbook steps 4-6 (PROJECT_DESIGN.md §7: 권리자 알림, 대응 옵션 안내, 케이스
+# 상태 추적) are human/product workflow, not automated here -- see
+# RUNBOOK.md for the actual checklist a person follows. This endpoint is
+# the minimum this service can offer to support that: a place to record
+# which manual step a case has reached, so "케이스 상태 추적" means
+# something more than a paper trail kept outside the system entirely.
+MANUAL_STATUSES = {"NOTIFIED", "RESOLVED", "ESCALATED"}
+
+
+class UpdateCaseRequest(BaseModel):
+    status: str
+    note: str | None = None
+
+
 def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -> None:
     try:
         registered_hash = artwork.get("perceptualHash")
@@ -162,6 +176,27 @@ def get_case_status(case_id: str):
     if case is None:
         raise HTTPException(404, f"no case {case_id!r}")
     return case
+
+
+@app.patch("/cases/{case_id}")
+def update_case_status(case_id: str, req: UpdateCaseRequest):
+    """Records a manual runbook step (§7 steps 4-6 -- RUNBOOK.md has the
+    actual checklist a person follows before calling this). Only lets a
+    case move forward from EVIDENCE_READY through NOTIFIED/RESOLVED/
+    ESCALATED -- not a general-purpose status override, and not reachable
+    from OPEN/NO_MATCH_FOUND/FAILED, which are automated-only states.
+    """
+    if req.status not in MANUAL_STATUSES:
+        raise HTTPException(400, f"status must be one of {sorted(MANUAL_STATUSES)}")
+
+    case = get_case(_db, case_id)
+    if case is None:
+        raise HTTPException(404, f"no case {case_id!r}")
+    if case["status"] not in ({"EVIDENCE_READY"} | MANUAL_STATUSES):
+        raise HTTPException(409, f"case {case_id!r} is {case['status']!r}, not eligible for a manual status update")
+
+    set_case_status(_db, case_id, req.status, note=req.note)
+    return get_case(_db, case_id)
 
 
 @app.get("/evidence/{case_id}")

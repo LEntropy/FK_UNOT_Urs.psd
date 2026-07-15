@@ -2,8 +2,9 @@
 
 The traceability layer of `PROJECT_DESIGN.md` section 3-3 ("invisible
 watermark + robust fingerprint + C2PA manifest"). This PoC implements the
-watermark and a working (if imperfect -- see below) C2PA manifest;
-resolution-variant generation is not built yet (see
+watermark and a working C2PA manifest with a validating claim signature
+(self-signed, not CA-trusted -- see below); resolution-variant generation
+is not built yet (see
 `apps/protection-svc/INTEGRATION.md` for the full pipeline this fits into
 and what's still missing).
 
@@ -167,52 +168,48 @@ Authority Key Identifier) or the crate's own cert validation rejects it
 during signing with `CoseInvalidCert` -- see the comments in
 `LocalSigner::generate()` for exactly which ones and why.
 
-### Known issue: claim signature does not validate on read-back
+### Resolved: claim signature now validates correctly on read-back
 
 Signing succeeds, the manifest embeds correctly, and reading it back
 recovers the exact title/custom assertion/content-hash JSON with correct
 data-integrity checks (`assertion.dataHash.match`, `assertion.hashedURI.match`
-all pass). But `Reader`'s `validation_status` also reports:
+all pass), and the claim signature itself now cryptographically validates.
+The one remaining `validation_status` entry is:
 
 ```
 signingCredential.untrusted: signing certificate untrusted   <- expected (self-signed, not from a real CA)
-claimSignature.mismatch: claim signature is not valid        <- NOT expected, a real open issue
 ```
 
-The first is exactly what "self-signed, not CA-issued" should produce and is
-not a concern. The second is a genuine problem investigated as follows
-before concluding it's outside what's practical to fix in this PoC:
+which is exactly what "self-signed, not CA-issued" should produce and is not
+a concern (see `verify()`'s doc comment).
 
-1. **Confirmed the key material is correct in isolation**
-   (`examples/debug_keys.rs`): the certificate's embedded public key matches
-   the key actually used to sign, and a direct `ed25519-dalek` sign/verify
-   round trip (bypassing `c2pa` entirely) succeeds. Rules out a key-mismatch
-   or basic-crypto bug.
-2. **Not format-specific**: identical failure signing into PNG and JPEG.
-3. **Enabling `verify_after_sign`** (a self-check the crate can run
-   immediately after signing, off by default) to get a more specific error
-   surfaced a *different* failure (`CoseX5ChainMissing`) than what
-   `Reader::from_stream` reports on the final embedded file -- even though
-   the final file's certificate chain reads back correctly with the right
-   `common_name` and serial number. Two different internal checks
-   disagreeing about whether the certificate chain is even present points at
-   an inconsistency in this signing path with a custom `Signer` under
-   `rust_native_crypto` in this crate version, not a bug in our key material
-   or signing logic (already ruled out in step 1).
+**This used to also report `claimSignature.mismatch`** -- a cryptographically
+valid signature misreported as invalid. Root-caused to a known upstream bug
+in the `c2pa` crate (confirmed via
+[contentauth/c2pa-rs#2262](https://github.com/contentauth/c2pa-rs/issues/2262),
+still open as of this writing, plus the related
+[#2150](https://github.com/contentauth/c2pa-rs/issues/2150)): the crate's
+certificate-profile check requires an Organization (`O`) subject attribute,
+but instead of surfacing a missing `O` as a certificate-profile error, the
+rejection gets misrouted through the claim-signature validation path and
+reported as `claimSignature.mismatch` -- a real, valid signature made to
+look like a crypto failure. `LocalSigner::generate()`'s self-signed cert
+only set `CommonName`, no `OrganizationName`, which is exactly the trigger
+condition. Fix: add `rcgen::DnType::OrganizationName` to the certificate's
+distinguished name (see `LocalSigner::generate()`). Verified fixed by
+`tests/c2pa_integration.rs`'s
+`claim_signature_validates_correctly_self_signed_cert_flagged_as_untrusted`
+test, which now asserts the mismatch is *absent* and only the expected
+untrusted-cert status remains -- if a future crate change reintroduces the
+mismatch, this test fails loudly.
 
-**Conclusion**: this is most likely a rough edge in `c2pa` 0.89.0's
-`rust_native_crypto` backend combined with bypassing its own
-`create_signer` helpers (which we can't use -- see above). Locked in as a
-known-bad state by `tests/c2pa_integration.rs`'s
-`claim_signature_does_not_validate_known_limitation` test, so a future
-crate upgrade that fixes this will make that test fail loudly (the signal
-to update this section, not to quietly delete the test). **Practical
-implication**: don't rely on this PoC's C2PA signature as real proof of
-authenticity yet -- the manifest and its assertions are correctly
-constructed and readable, but the cryptographic guarantee C2PA is supposed
-to provide isn't actually verifiable end-to-end here. The blockchain
-registration (`blockchain-svc`) remains the mechanism this project can
-actually stand behind for provenance today.
+**Practical implication**: the C2PA signature can now be trusted as real
+proof that the manifest wasn't tampered with after signing -- the remaining
+gap is purely "this specific certificate isn't from a CA in anyone's trust
+list," which is an operational PKI question (get a real cert from a C2PA-
+trusted CA), not a cryptographic one. The blockchain registration
+(`blockchain-svc`) is still the mechanism this project stands behind for
+provenance today, but C2PA is no longer known-broken alongside it.
 
 ## Resolution variants (Delivery Gateway)
 
@@ -261,8 +258,8 @@ prose warning someone has to remember.
 
 - No resampling-synchronization recovery for the watermark -- the 0.25x
   resize failure above is the direct consequence.
-- C2PA claim signature doesn't validate on read-back -- see the dedicated
-  section above.
+- C2PA signing uses a self-signed identity, not a certificate from a real
+  C2PA-trusted CA -- see the dedicated section above.
 - Variant generation doesn't re-embed the watermark or C2PA manifest per
   variant -- it resizes the already-protected source as-is. Given the
   `Unsafe`/`Unknown` findings above, a real fix for small thumbnails would

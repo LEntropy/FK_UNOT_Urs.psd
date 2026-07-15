@@ -48,6 +48,17 @@ impl LocalSigner {
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "DONTAI Protection Service (self-signed, PoC only)");
+        // Required, not decorative: c2pa-rs's cert-profile check rejects
+        // certs with no Organization (O) attribute, but instead of
+        // surfacing that as a certificate-profile error it gets misreported
+        // as claimSignature.mismatch on read-back -- a cryptographically
+        // valid signature reads as "invalid" with no hint the real problem
+        // is the missing O field. Confirmed as a known upstream bug
+        // (github.com/contentauth/c2pa-rs issue #2262) with this exact fix
+        // as the reporter's confirmed workaround.
+        params
+            .distinguished_name
+            .push(rcgen::DnType::OrganizationName, "DONTAI");
 
         // c2pa's cose_validator::check_cert (run during signing, not just
         // verification) requires specific X.509v3 extensions or it fails
@@ -126,19 +137,6 @@ pub fn sign_and_embed(
         ],
     });
 
-    // Tried turning on `verify_after_sign` here to get a precise error at
-    // sign time instead of guessing -- it reported a *different* error
-    // (CoseX5ChainMissing) than what Reader::from_stream reports after a
-    // full embed+read round trip (claimSignature.mismatch), even though the
-    // final embedded file's x5chain reads back fine with correct
-    // certificate details. That inconsistency (two different failures
-    // depending on which internal check path runs) points at a rough edge
-    // in this signing path with a custom `Signer` + `rust_native_crypto` in
-    // this crate version, not a bug in the Ed25519 key material or signing
-    // logic itself (independently confirmed correct -- see
-    // rust-core/README.md's verification section). Left at the default
-    // (verify_after_sign off) so this at least produces the fullest,
-    // furthest-along artifact to inspect and document honestly.
     let mut builder = Builder::from_json(&manifest_json.to_string())?;
     builder.add_assertion_json(custom_assertion_label, custom_assertion)?;
 

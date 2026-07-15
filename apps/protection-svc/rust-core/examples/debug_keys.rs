@@ -1,9 +1,11 @@
-//! Diagnostic tool from investigating the C2PA `claimSignature.mismatch`
-//! issue documented in README.md's "C2PA manifest" section: confirms the
-//! certificate's embedded public key matches the key actually used for
-//! signing, and that raw ed25519-dalek sign/verify works correctly in
-//! isolation -- ruling out a key-mismatch or basic-crypto bug as the cause.
-//! Kept as evidence for that investigation, not part of the normal build.
+//! Diagnostic tool from investigating the (now-resolved) C2PA
+//! `claimSignature.mismatch` issue documented in README.md's "C2PA
+//! manifest" section: confirms the certificate's embedded public key
+//! matches the key actually used for signing, and that raw ed25519-dalek
+//! sign/verify works correctly in isolation -- ruling out a key-mismatch or
+//! basic-crypto bug as the cause (the real cause was a missing Organization
+//! subject attribute, a known upstream `c2pa` crate bug). Kept as evidence
+//! for that investigation, not part of the normal build.
 
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::SigningKey;

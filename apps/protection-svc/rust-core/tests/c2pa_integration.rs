@@ -1,12 +1,10 @@
 //! Locks in the current, honestly-documented state of C2PA embedding (see
 //! rust-core/README.md's C2PA section for the full investigation): manifest
-//! embedding, custom assertions, and content-hash data integrity all work
-//! correctly; the claim signature itself does not cryptographically
-//! validate on read-back with this crate version's `rust_native_crypto`
-//! backend + a custom `Signer` implementation. If a future crate upgrade
-//! fixes this, this test should start failing at the last assertion --
-//! that's the signal to update README.md and this test together, not to
-//! quietly loosen the assertion.
+//! embedding, custom assertions, content-hash data integrity, and the claim
+//! signature itself all validate correctly on read-back. The one remaining
+//! validation status is `signingCredential.untrusted`, which is the
+//! expected, honest result of using a self-signed identity that isn't in
+//! any trust list (see `LocalSigner`/`verify()` docs) -- not a bug.
 
 use rust_core::c2pa_manifest::{sign_and_embed, verify};
 
@@ -39,10 +37,10 @@ fn sign_embeds_a_readable_manifest_with_correct_assertions() {
 }
 
 #[test]
-fn claim_signature_does_not_validate_known_limitation() {
+fn claim_signature_validates_correctly_self_signed_cert_flagged_as_untrusted() {
     // See README.md "C2PA manifest" section for the full writeup. This pins
-    // the current known-bad state so a silent regression (or a silent,
-    // unnoticed *fix*) doesn't go unremarked.
+    // the current good state (real cryptographic signature validation
+    // passes) so a silent regression doesn't go unremarked.
     let input = synthetic_png();
     let signed = sign_and_embed(&input, "png", "t", "com.dontai.ownership", &serde_json::json!({}))
         .expect("sign_and_embed should succeed");
@@ -51,7 +49,11 @@ fn claim_signature_does_not_validate_known_limitation() {
     let issues = result.validation_issues.expect("expected validation issues to be present");
 
     assert!(
-        issues.iter().any(|i| i.contains("claimSignature.mismatch")),
-        "expected the known claimSignature.mismatch issue; got: {issues:?}"
+        !issues.iter().any(|i| i.contains("claimSignature.mismatch")),
+        "claim signature should cryptographically validate; got: {issues:?}"
+    );
+    assert!(
+        issues.iter().any(|i| i.contains("signingCredential.untrusted")),
+        "expected only the expected self-signed-cert-untrusted status; got: {issues:?}"
     );
 }

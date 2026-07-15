@@ -303,6 +303,44 @@ paths:
         "502":
           description: asset-service unreachable
 
+  /artworks/{id}/render-url:
+    get:
+      tags: [artworks]
+      summary: >
+        Issues a signed, short-TTL delivery-gateway URL for this artwork's
+        protected image. The only trusted caller of delivery-gateway's own
+        /internal/sign (apps/delivery-gateway/README.md) -- always signs as
+        logged_in/thumbnail, never anonymous, since every caller here is
+        already authenticated.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: variant
+          in: query
+          schema:
+            type: string
+            enum: [logged_in, thumbnail]
+            default: logged_in
+      responses:
+        "200":
+          description: Signed, absolute URL pointing at delivery-gateway directly
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    example: http://localhost:4500/asset/ast_123/render?variant=public_preview_2048&exp=1234567890&sig=abc123
+        "401":
+          description: Missing/invalid bearer token
+        "502":
+          description: delivery-gateway unreachable
+
 components:
   securitySchemes:
     bearerAuth:

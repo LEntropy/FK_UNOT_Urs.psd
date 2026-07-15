@@ -5,6 +5,12 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default("./data/api-gateway.db"),
   PORT: z.coerce.number().default(4000),
   ASSET_SERVICE_URL: z.string().url().default("http://localhost:3002"),
+  // Delivery Gateway (apps/delivery-gateway): this service is the only
+  // caller of its /internal/sign endpoint -- see that service's README's
+  // trust-boundary note. The browser then hits the returned signed URL on
+  // delivery-gateway directly (image bytes don't need to round-trip
+  // through this gateway).
+  DELIVERY_GATEWAY_URL: z.string().url().default("http://localhost:4500"),
 
   // HS256 shared-secret JWT for now -- the real KMS server only implements
   // envelope-key decrypt (no Sign()), so KMS-backed JWT signing isn't

@@ -2,6 +2,11 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Artwork } from "../api/types";
+import { ArtworkImage } from "../components/ArtworkImage";
+import { LikeButton } from "../components/LikeButton";
+import { FollowButton } from "../components/FollowButton";
+import { CommentSection } from "../components/CommentSection";
+import { ReportButton } from "../components/ReportButton";
 
 const STATUS_LABEL: Record<Artwork["status"], string> = {
   UPLOADED: "업로드됨",
@@ -31,7 +36,15 @@ export function ArtworkDetailPage() {
   return (
     <div className="mx-auto mt-8 max-w-2xl">
       <h1 className="mb-1 text-2xl font-semibold">{data.title}</h1>
-      <p className="mb-6 text-sm text-neutral-400">{data.id}</p>
+      <p className="mb-4 text-sm text-neutral-400">
+        {data.id} · <span className="text-neutral-500">@{data.creatorId}</span>
+      </p>
+
+      <ArtworkImage
+        artworkId={data.id}
+        hasVariants={data.assetVersions.length > 0}
+        className="mb-6 w-full rounded border border-neutral-800 object-contain"
+      />
 
       <div className="mb-6 flex items-center gap-3">
         <StatusBadge status={data.status} />
@@ -39,6 +52,14 @@ export function ArtworkDetailPage() {
           <span className="text-xs text-neutral-500">2초마다 자동 갱신 중...</span>
         )}
       </div>
+
+      {data.status === "PUBLISHED" && (
+        <div className="mb-6 flex items-center gap-3">
+          <LikeButton artworkId={data.id} />
+          <FollowButton creatorId={data.creatorId} />
+          <ReportButton artworkId={data.id} />
+        </div>
+      )}
 
       {data.status === "FAILED" && data.errorMessage && (
         <p className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3 text-sm text-red-300">
@@ -72,6 +93,8 @@ export function ArtworkDetailPage() {
           </a>
         </div>
       )}
+
+      {data.status === "PUBLISHED" && <CommentSection artworkId={data.id} />}
     </div>
   );
 }

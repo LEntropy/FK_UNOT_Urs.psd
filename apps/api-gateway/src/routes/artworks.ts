@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { createArtwork, getArtwork, listArtworks, AssetServiceError } from "../clients/assetService.js";
+import { signRenderUrl } from "../clients/deliveryGateway.js";
 
 const createArtworkSchema = z.object({
   title: z.string().min(1),
@@ -48,6 +49,25 @@ export function artworksRouter(): Router {
       res.json(await getArtwork(req.params.id));
     } catch (err) {
       forwardAssetServiceError(err, res);
+    }
+  });
+
+  const renderVariantQuery = z.object({ variant: z.enum(["logged_in", "thumbnail"]).default("logged_in") });
+
+  // Every caller of this web app is authenticated (ProtectedRoute wraps
+  // the whole gallery/feed/detail UI) -- there's no "anonymous browsing"
+  // path in this app yet, so this always signs as "logged_in"/"thumbnail",
+  // never "anonymous". A future public-browsing feature would need its
+  // own unauthenticated route that signs "anonymous" instead.
+  router.get("/:id/render-url", async (req, res) => {
+    const parsed = renderVariantQuery.safeParse(req.query);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    try {
+      const url = await signRenderUrl(req.params.id, parsed.data.variant);
+      res.json({ url });
+    } catch {
+      res.status(502).json({ error: "delivery-gateway unreachable" });
     }
   });
 

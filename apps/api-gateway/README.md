@@ -43,6 +43,23 @@ generated, so if it ever drifts the code wins.
   constraint on top of email, so a Google account and a LOCAL account can
   share the same email as separate rows -- signing up locally never
   collides with a prior Google/Kakao login using the same address.
+- **Community proxy** (`src/routes/community.ts`) -- likes, follows,
+  bookmarks/collections, comments, reports, and the `/feed`
+  (latest/popular/following) endpoint, all thin authenticated proxies to
+  `asset-service`'s own community routes with identity injected from the
+  JWT (never trusting a `userId` in the request body). Moderation
+  endpoints (`GET /moderation/reports`, `PATCH /moderation/reports/:id`)
+  are gated to `MODERATOR`/`ADMIN` roles -- asset-service itself has no
+  concept of roles, so this gate exists only here.
+- **Delivery Gateway signing proxy** (`GET /artworks/:id/render-url`) --
+  the only trusted caller of `apps/delivery-gateway`'s `/internal/sign`
+  (see that service's README's trust-boundary note). Always signs as
+  `logged_in`/`thumbnail`, never `anonymous`, since every caller of this
+  route is already authenticated (`requireAuth`) -- there's no public/
+  unauthenticated browsing path in this stack yet. Returns an absolute
+  URL (delivery-gateway's own origin + the signed path) since the browser
+  hits delivery-gateway directly for the image bytes, not through this
+  gateway.
 
 ## What this does not do
 

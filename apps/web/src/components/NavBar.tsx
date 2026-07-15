@@ -14,12 +14,20 @@ export function NavBar() {
       <div className="flex items-center gap-4 text-sm">
         {user ? (
           <>
+            <Link to="/" className="hover:underline">
+              피드
+            </Link>
             <Link to="/upload" className="hover:underline">
               업로드
             </Link>
-            <Link to="/" className="hover:underline">
+            <Link to="/my-artworks" className="hover:underline">
               내 작품
             </Link>
+            {(user.role === "MODERATOR" || user.role === "ADMIN") && (
+              <Link to="/moderation" className="hover:underline">
+                모더레이션
+              </Link>
+            )}
             <span className="text-neutral-400">@{user.handle}</span>
             <button
               onClick={() => {

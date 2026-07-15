@@ -13,8 +13,10 @@ vi.mock("../src/clients/assetService.js", () => ({
     }
   },
 }));
+vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }));
 
 const { createArtwork, listArtworks, getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
+const { signRenderUrl } = await import("../src/clients/deliveryGateway.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -75,5 +77,46 @@ describe("artworks proxy", () => {
     const res = await request(app).get("/artworks/ast_nope").set("Authorization", `Bearer ${accessToken}`);
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "no artwork ast_nope" });
+  });
+});
+
+describe("GET /artworks/:id/render-url", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).get("/artworks/ast_1/render-url");
+    expect(res.status).toBe(401);
+    expect(signRenderUrl).not.toHaveBeenCalled();
+  });
+
+  it("defaults to the logged_in viewer for an authenticated caller", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(signRenderUrl).mockResolvedValue("http://localhost:4500/asset/ast_1/render?variant=public_preview_2048&exp=1&sig=a");
+
+    const res = await request(app).get("/artworks/ast_1/render-url").set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(signRenderUrl).toHaveBeenCalledWith("ast_1", "logged_in");
+    expect(res.body.url).toContain("public_preview_2048");
+  });
+
+  it("passes through the thumbnail variant when requested", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(signRenderUrl).mockResolvedValue("http://localhost:4500/asset/ast_1/render?variant=grid_thumbnail_512&exp=1&sig=a");
+
+    const res = await request(app)
+      .get("/artworks/ast_1/render-url?variant=thumbnail")
+      .set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(signRenderUrl).toHaveBeenCalledWith("ast_1", "thumbnail");
+  });
+
+  it("502s when delivery-gateway is unreachable", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(signRenderUrl).mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+    const res = await request(app).get("/artworks/ast_1/render-url").set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(502);
   });
 });

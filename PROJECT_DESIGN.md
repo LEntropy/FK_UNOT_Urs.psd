@@ -626,8 +626,8 @@ Observability OpenTelemetry, Prometheus, Grafana, Loki
 - ~~asset-service의 §3-2 커뮤니티 기능(작품 CRUD, 피드, 팔로우/좋아요, 신고/모더레이션)~~ — 완료. `src/routes/community.ts`: 피드(`latest`/`popular`/`following`), 팔로우, 좋아요(멱등), 북마크/컬렉션, 댓글, 신고→모더레이션 큐(`PENDING→RESOLVED`/`DISMISSED`, 이미 처리된 신고 재처리는 409). api-gateway 쪽에 동일 패턴의 프록시 라우터 추가(`apps/api-gateway/src/routes/community.ts`) — JWT에서 신원 주입(요청 바디의 userId는 무시), 모더레이션 엔드포인트는 `MODERATOR`/`ADMIN` 역할로 게이팅. 로컬에서 실제 HTTP로 전체 체인(회원가입→JWT→좋아요 프록시→asset-service 실제 반영) E2E 검증까지 완료. `visibility=followers`는 저장은 되지만 강제되지 않음(이 서비스가 조회자 신원을 모름 — 알려진 한계, README에 명시).
 - ~~Delivery Gateway(§3-5, Rust)~~ — 완료, `apps/delivery-gateway/`(axum). 정책 기반 signed URL(`POST /internal/sign` → `GET /asset/:id/render?variant=...&exp=...&sig=...`, HMAC-SHA256로 `(artworkId, variant)` 쌍 + 짧은 TTL에 바인딩 — 다른 variant나 artwork로 재사용 불가), 뷰어별 변형본 선택(비로그인→1280px, 로그인→2048px, rust-core의 기존 grid_thumbnail_512도 노출), 매 렌더 요청마다 실제 접근 통제(서명/만료 검증 → AI 크롤러 UA 차단(GPTBot/ClaudeBot/Google-Extended 등) → referer 화이트리스트(hotlink 차단, Referer 없으면 통과) → IP별 rate limit → asset-service에 실제 HTTP로 `assetVersions` 조회 후 파일 서빙, `X-Robots-Tag: noindex, noimageindex` 포함), `robots.txt` 자동 생성(크롤러 차단 목록과 동일 소스 공유 — 협조형 신호일 뿐 실제 방어는 렌더 핸들러가 담당). 유닛 테스트 11개 + `wiremock`으로 실제 asset-service를 흉내낸 통합 테스트 10개, 로컬에서 실제 asset-service 인스턴스 대상 진짜 E2E(서명 발급→실제 HTTP 조회→실제 파일 바이트 서빙→크롤러/변조 차단)까지 검증. decoy/honeypot 응답은 Phase 4 범위로 남김, rate limiter는 인메모리(단일 인스턴스 한정, 실제 배포는 Redis 필요) — `apps/delivery-gateway/README.md`에 명시.
 - ~~Phase 4 스코핑~~ — 완료(구현은 아직), [`PHASE4_SCOPING.md`](PHASE4_SCOPING.md). §8 Phase 4의 네 항목(Concept Misalignment Layer, 허니에셋/URL, 적응형 안티스크랩, 메인넷 전환/ERC-721) 각각의 기술 요구사항·기존 구축물과의 관계·현실적 타당성·우선순위 권고. 상세 요약은 이 문서의 "Phase 4 — 고도화" 절 참고.
-- OpenAPI 스펙(api-gateway) 초안
-- `docker-compose.yml`로 전체 로컬 스택 부팅
-- KMS 어댑터 인터페이스 정의(proto)
+- ~~OpenAPI 스펙(api-gateway) 초안~~ — 완료, `apps/api-gateway/openapi.yaml`
+- ~~`docker-compose.yml`로 전체 로컬 스택 부팅~~ — 완료, api-gateway/web/delivery-gateway까지 전부 포함
+- ~~KMS 어댑터 인터페이스 정의(proto)~~ — 완료, `infra/kms-adapter`(실제 C 서버 프로토콜을 미러링, wrapKey/unwrapKey 실전 검증까지)
 
 > 위 중 어떤 것부터 실제 코드로 만들지 알려주면 이어서 구현해줄게.

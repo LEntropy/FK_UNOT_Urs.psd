@@ -36,7 +36,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/blockchain-svc/package-lock.json
+          cache-dependency-path: |
+            infra/kms-adapter/package-lock.json
+            apps/blockchain-svc/package-lock.json
+      # blockchain-svc depends on @dontai/kms-adapter via a `file:` reference
+      # (KMS-backed relayer key, src/contract.ts) -- same reason as
+      # api-gateway's job, must be built here first.
+      - name: build infra/kms-adapter
+        working-directory: infra/kms-adapter
+        run: npm ci && npm run build
       - name: npm ci
         working-directory: apps/blockchain-svc
         run: npm ci

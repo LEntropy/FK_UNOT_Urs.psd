@@ -73,3 +73,22 @@ surfacing it beats silently overwriting).
 - Don't have protection-svc call this API directly. Keep protection-svc a
   pure image-transform service (Rust/Python) with no blockchain awareness —
   the orchestrator composes the two.
+
+## Relayer key: now optionally KMS-backed
+
+`RELAYER_PRIVATE_KEY` used to be the only way in -- a plaintext key sitting
+in the deployed `.env`. `src/contract.ts` now has a second path:
+`RELAYER_ENCRYPTED_KEY` (base64 RSA-PKCS1 ciphertext, wrapped with
+`infra/kms-adapter`'s `wrapKey()` against the org's public key) +
+`KMS_HOST`/`KMS_PORT`/`KMS_CA_CERT_PATH`/`KMS_ORG`/`KMS_KEY_ID`. If
+`RELAYER_ENCRYPTED_KEY` is set, `contract.ts` calls the live KMS server's
+`unwrapKey()` once at startup and never reads `RELAYER_PRIVATE_KEY` at all
+(`test/kmsRelayerKey.test.ts` asserts this explicitly, not just that the
+encrypted path works). Local dev and `test/anvil.ts` still use the
+plaintext path -- no live KMS dependency in tests.
+
+This is **not** KMS signing the transaction -- the real C KMS server only
+implements envelope-key decrypt (`infra/kms-adapter`'s own docs), no
+`Sign()` RPC. The plaintext key is still reconstructed in this process's
+memory and `ethers.Wallet` signs locally; what changes is that the key no
+longer sits in a deployed `.env` file in the clear.

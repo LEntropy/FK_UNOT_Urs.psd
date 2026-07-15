@@ -566,29 +566,61 @@ open.
 
 ### Preset scaling: does a weaker preset give a proportionally weaker real effect?
 
-Tested `L2_PORTFOLIO` against the same 4 representative images already
-measured at `L3_ANTI_TRAIN` in the main experiment
-(`experiments/lora_validation/{prepare,score}_l2_preset.py`), reusing
-each image's existing baseline LoRA (baseline doesn't depend on preset):
+Originally tested `L2_PORTFOLIO` against 4 of the 10 images already
+measured at `L3_ANTI_TRAIN` in the main experiment; **re-validated against
+all 10** (adding `the_scream`, `composition_vii`, `water_lilies`,
+`girl_pearl_earring`, `birth_of_venus`, `the_kiss`) for direct n=10-vs-n=10
+parity instead of an under-powered n=4 read
+(`experiments/lora_validation/{prepare,score}_l2_preset.py`). Baseline CLIP
+similarity is now recomputed fresh via real generation for every image
+(not trusted from hardcoded numbers copied out of an earlier report) --
+the original 4 images' freshly-recomputed deltas came back identical to
+the first n=4 run, a good consistency check that this expansion didn't
+silently change the earlier methodology.
 
-| image | L2_PORTFOLIO delta | L3_ANTI_TRAIN delta |
-|---|---|---|
-| great_wave | +0.0322 | +0.0289 |
-| starry_night | +0.0176 | +0.0198 |
-| night_watch | **-0.0081** | +0.0248 |
-| mona_lisa | -0.0214 | -0.0024 |
+| image | L2_PORTFOLIO delta | L3_ANTI_TRAIN delta | L2/L3 ratio |
+|---|---|---|---|
+| great_wave | +0.0322 | +0.0289 | 1.12 |
+| starry_night | +0.0176 | +0.0198 | 0.89 |
+| night_watch | **-0.0081** | +0.0248 | -0.33 |
+| mona_lisa | -0.0214 | -0.0024 | 8.79 |
+| the_scream | **+0.0161** | -0.0038 | -4.23 |
+| composition_vii | +0.0054 | +0.0062 | 0.87 |
+| water_lilies | **+0.0050** | -0.0028 | -1.77 |
+| girl_pearl_earring | +0.0051 | +0.0159 | 0.32 |
+| birth_of_venus | +0.0084 | +0.0111 | 0.75 |
+| the_kiss | +0.0327 | +0.0319 | 1.03 |
 
-**overall mean: L2_PORTFOLIO +0.0051 vs. L3_ANTI_TRAIN +0.0177** — in
-aggregate, the weaker preset does give a smaller real effect, the
-direction VGG-space metrics would predict. But at the individual-image
-level this is noisy, not a clean scaling relationship:
-`great_wave` was *stronger* at L2 than L3; `night_watch` flipped sign
-entirely (cloaking at L2 made the LoRA's output *more* faithful to the
-true style, the opposite of the intended effect). n=4 images here (vs.
-n=10 for the main L3 result) means this preset comparison is itself
-under-powered — treat "weaker preset → smaller aggregate effect, but
-unstable per-image, including sign flips" as the honest summary, not
-"epsilon linearly controls the effect."
+**overall mean: L2_PORTFOLIO +0.0093 vs. L3_ANTI_TRAIN +0.0129** (ratio
+0.72) — in aggregate, the weaker preset does give a smaller real effect,
+the direction VGG-space metrics would predict, and n=10 lands closer to
+"modestly weaker" than the n=4 read's +0.0051-vs-+0.0177 (ratio 0.29) did.
+But the individual-image picture is still not a clean scaling
+relationship, and the extra 6 images added *more* disagreement, not less:
+**3 of 10 images flip sign** between presets (`night_watch`, `the_scream`,
+`water_lilies` -- L2 and L3 disagree on which direction the cloak even
+pushes CLIP similarity), and `mona_lisa`'s already-negative L3 delta gets
+~9x more negative at L2, the opposite of "weaker preset → smaller effect
+in the same direction." 7 of 10 images agree in sign between presets, but
+"agrees in sign" still spans a 3x range in relative magnitude (0.32 to
+1.12) among just those seven.
+
+**Honest reading, now at n=10 instead of n=4**: the aggregate mean
+direction (weaker preset → smaller effect) has held up and gotten a
+somewhat more moderate ratio with more data, which is a real, if modest,
+confirmation. But "unstable per-image, including real sign flips" is not
+a small-sample artifact that a bigger n resolved -- it's still true at
+n=10, with the same *rate* of sign flips (3/10 here vs. 1/4 in the
+original read) and the same conclusion this project has reached
+repeatedly elsewhere (the main LoRA-drift experiment, the target-
+dissimilarity experiment): **real, aggregate-level effects in this
+project's actual training-based measurements are consistently smaller,
+noisier, and more image-dependent than the VGG19-space proxy metrics the
+cloak is optimized against would suggest.** Treat "epsilon controls the
+aggregate effect size, weakly, with substantial per-image noise including
+occasional sign flips" as the citable summary -- not "epsilon linearly
+controls the effect," and not "more data will make the per-image noise go
+away."
 
 ### SDXL confirmation
 
@@ -659,20 +691,26 @@ architecture.
 |---|---|---|
 | Does the VGG19 proxy metric predict real LoRA impact? | No (r=+0.206) | High (n=10) |
 | Does cloak-target dissimilarity predict real impact? | Weakly yes (r=-0.516, controlled) | Moderate (n=5 controlled points) |
-| Does the effect scale down at a weaker preset? | Yes in aggregate, unstable per-image | Low (n=4 images) |
+| Does the effect scale down at a weaker preset? | Yes in aggregate (ratio 0.72), unstable per-image (3/10 sign flips) | Moderate (n=10 images) |
 | Does the effect reproduce on SDXL? | Yes, confirmed (+0.0180, CI excludes zero) | Moderate (n=12) |
 
 None of these four follow-ups changes the main finding (SD1.5, L3_ANTI_TRAIN,
 +0.0130, 95% CI [+0.0066, +0.0193], n=30) — they each explore *why* and
 *how far* it generalizes, with honestly varying levels of confidence.
-Preset scaling remains the weakest-confidence answer (n=4 images, unstable
-per-image, including a sign flip) — that's the one a follow-up session
-with more GPU time should prioritize next. SDXL moved from "directionally
-suggestive" to "confirmed" once expanded from n=6 to n=12; it also
-produced its own new open question worth a dedicated look: *why* do
-`mona_lisa`/`the_scream` flip from SD1.5's weakest images to SDXL's
-strongest — is it the checkpoint architecture, the specific style pairing,
-or something else?
+Preset scaling moved from n=4 to n=10 (full parity with the main L3
+result) and its aggregate finding held up (weaker preset → smaller
+effect, ratio moved from 0.29 at n=4 to a more moderate 0.72 at n=10) --
+but the per-image instability didn't shrink with more data, it stayed
+proportionally the same (1/4 sign flips at n=4, 3/10 at n=10). That's a
+real result in itself, not a gap still waiting on more GPU time: **more
+images made the aggregate estimate more trustworthy without making the
+individual-image noise go away**, mirroring this project's other findings
+that real training-based effects are noisier and more image-dependent
+than the VGG19 proxy predicts. SDXL moved from "directionally suggestive"
+to "confirmed" once expanded from n=6 to n=12; it also produced its own
+new open question worth a dedicated look: *why* do `mona_lisa`/`the_scream`
+flip from SD1.5's weakest images to SDXL's strongest — is it the
+checkpoint architecture, the specific style pairing, or something else?
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

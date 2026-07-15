@@ -1,10 +1,24 @@
-"""Scores the L2_PORTFOLIO preset-scaling experiment. Reuses each image's
-existing baseline LoRA (already trained in the main experiment) and its
-already-recorded baseline CLIP score per seed -- only the 4 new
-L2_PORTFOLIO-cloaked LoRAs need fresh generation+scoring.
+"""Scores the L2_PORTFOLIO preset-scaling experiment against all 10 images
+from the main n=30 experiment (expanded from the original n=4 subset --
+see README.md's "Preset scaling" section for why n=4 was flagged as
+under-powered/noisy).
 
-Baseline CLIP-similarity-to-true-image scores per (image, seed), from the
-main experiment's n=30 report (ml-engine/README.md's stage-6 table):
+Reuses each image's existing baseline LoRA (already trained in the main
+experiment) -- but recomputes its baseline CLIP score fresh here via a real
+generation+scoring pass, rather than trusting hardcoded numbers copied from
+an earlier report. This was a deliberate change from the original n=4
+version of this script (which hardcoded BASELINE_CLIP_SIM): the original 4
+images' hardcoded numbers were exact copies of the main experiment's
+already-recorded per-seed scores, but there was no way to get equivalent
+numbers for the 6 newly added images without either digging up unrecorded
+raw data or just regenerating -- regenerating for all 10 is the more
+uniform, verifiable choice, and doubles as a consistency check against the
+original 4's hardcoded numbers (see README.md for how closely they matched).
+
+L3_ANTI_TRAIN per-seed deltas for all 10 images, from the main n=30
+experiment's report (ml-engine/README.md's "Stage 6 result" table) -- for
+direct comparison, not recomputed here (L3 training already happened; this
+script only trains/generates the L2 condition).
 """
 
 import argparse
@@ -16,20 +30,17 @@ import torch
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 
-BASELINE_CLIP_SIM = {
-    "great_wave": {1: 0.9092, 2: 0.9205, 3: 0.9208},
-    "starry_night": {1: 0.8695, 2: 0.8868, 3: 0.8535},
-    "night_watch": {1: 0.8175, 2: 0.8027, 3: 0.8321},
-    "mona_lisa": {1: 0.7487, 2: 0.7424, 3: 0.7550},
-}
-
-# L3_ANTI_TRAIN mean deltas for the same 4 images, from the main n=30
-# experiment (for direct comparison, not recomputed here).
 L3_MEAN_DELTA = {
-    "great_wave": (0.0339 + 0.0209 + 0.0318) / 3,
     "starry_night": (0.0062 + 0.0415 + 0.0116) / 3,
-    "night_watch": (0.0115 + 0.0364 + 0.0264) / 3,
+    "great_wave": (0.0339 + 0.0209 + 0.0318) / 3,
     "mona_lisa": (0.0061 - 0.0128 - 0.0006) / 3,
+    "the_scream": (0.0251 + 0.0011 - 0.0376) / 3,
+    "composition_vii": (-0.0008 + 0.0094 + 0.0101) / 3,
+    "water_lilies": (-0.0017 + 0.0052 - 0.0120) / 3,
+    "girl_pearl_earring": (0.0088 + 0.0259 + 0.0129) / 3,
+    "birth_of_venus": (0.0060 + 0.0133 + 0.0140) / 3,
+    "night_watch": (0.0115 + 0.0364 + 0.0264) / 3,
+    "the_kiss": (0.0340 + 0.0463 + 0.0153) / 3,
 }
 
 
@@ -91,26 +102,42 @@ def main() -> None:
         prompt = f"{entry['trigger']}, {entry['prompt_suffix']}"
 
         for seed in seeds:
+            print(f"=== [{name} baseline / seed {seed}] ===")
+            baseline_lora_path = lora_root / f"lora_{name}_{seed}_baseline" / "baseline_v1.safetensors"
+            baseline_images = generate_samples(
+                args.checkpoint, str(baseline_lora_path), prompt,
+                out_dir / name / str(seed) / "baseline", args.num_samples, args.gen_seed, args.resolution, pipe_cache,
+            )
+            baseline_scores = [
+                clip_similarity(model, processor, true_image, Image.open(p).convert("RGB")) for p in baseline_images
+            ]
+            avg_baseline = statistics.mean(baseline_scores)
+
             print(f"=== [{name} L2 / seed {seed}] ===")
             lora_path = lora_root / f"lora_l2_{name}_{seed}_cloaked" / "cloaked_v1.safetensors"
             images = generate_samples(
                 args.checkpoint, str(lora_path), prompt,
-                out_dir / name / str(seed), args.num_samples, args.gen_seed, args.resolution, pipe_cache,
+                out_dir / name / str(seed) / "l2_cloaked", args.num_samples, args.gen_seed, args.resolution, pipe_cache,
             )
             scores = [clip_similarity(model, processor, true_image, Image.open(p).convert("RGB")) for p in images]
             avg_cloaked = statistics.mean(scores)
-            baseline = BASELINE_CLIP_SIM[name][seed]
+            baseline = avg_baseline
             delta = baseline - avg_cloaked
-            results.append({"name": name, "seed": seed, "l2_cloaked_sim": avg_cloaked, "l2_delta": delta})
+            results.append(
+                {"name": name, "seed": seed, "baseline_sim": avg_baseline, "l2_cloaked_sim": avg_cloaked, "l2_delta": delta}
+            )
 
     del pipe_cache["pipe"]
     torch.cuda.empty_cache()
 
     print()
     print("=== per-run results (L2_PORTFOLIO) ===")
-    print(f"{'image':<16} {'seed':>5} {'L2 cloaked CLIP':>16} {'L2 delta':>10} {'L3 delta (ref)':>15}")
+    print(f"{'image':<16} {'seed':>5} {'baseline CLIP':>14} {'L2 cloaked CLIP':>16} {'L2 delta':>10} {'L3 delta (ref)':>15}")
     for r in results:
-        print(f"{r['name']:<16} {r['seed']:>5} {r['l2_cloaked_sim']:>16.4f} {r['l2_delta']:>+10.4f} {L3_MEAN_DELTA[r['name']]:>+15.4f}")
+        print(
+            f"{r['name']:<16} {r['seed']:>5} {r['baseline_sim']:>14.4f} {r['l2_cloaked_sim']:>16.4f} "
+            f"{r['l2_delta']:>+10.4f} {L3_MEAN_DELTA[r['name']]:>+15.4f}"
+        )
 
     by_name: dict[str, list[float]] = {}
     for r in results:

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAuthStore } from "../store/auth";
+import { OAuthButtons } from "../components/OAuthButtons";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -58,6 +59,7 @@ export function LoginPage() {
           {submitting ? "로그인 중..." : "로그인"}
         </button>
       </form>
+      <OAuthButtons />
       <p className="mt-4 text-sm text-neutral-400">
         계정이 없으신가요?{" "}
         <Link to="/signup" className="underline">

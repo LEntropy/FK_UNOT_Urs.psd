@@ -6,6 +6,7 @@ import { SignupPage } from "./pages/SignupPage";
 import { UploadPage } from "./pages/UploadPage";
 import { GalleryPage } from "./pages/GalleryPage";
 import { ArtworkDetailPage } from "./pages/ArtworkDetailPage";
+import { OAuthCallbackPage } from "./pages/OAuthCallbackPage";
 
 export function App() {
   return (
@@ -15,6 +16,7 @@ export function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
+          <Route path="/oauth-callback" element={<OAuthCallbackPage />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<GalleryPage />} />
             <Route path="/upload" element={<UploadPage />} />

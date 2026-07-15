@@ -25,6 +25,24 @@ generated, so if it ever drifts the code wins.
   stored. Nothing in this pass unwraps it yet (no server-side tx signing
   implemented) -- stored now so that capability doesn't need a later schema
   migration.
+- **Social login** (`GET /auth/google`, `/auth/kakao` + their `/callback`
+  routes, `src/auth/oauth.ts` + `src/routes/oauth.ts`) -- standard
+  authorization-code flow via plain `fetch` against each provider's REST
+  endpoints (no OAuth client library). CSRF-protected via an in-memory
+  `state` token (10-minute TTL). On success, redirects the browser to
+  `${WEB_URL}/oauth-callback#accessToken=...&refreshToken=...` (tokens in
+  the URL *fragment*, not the query string, so they never land in server
+  access logs or a `Referer` header). A provider with no
+  `<PROVIDER>_CLIENT_ID`/`SECRET` configured responds `501` instead of
+  erroring, so partial setup (e.g. Google only) is fine. **Requires real
+  app registration you do yourself** -- see `.env.example` for the Google
+  Cloud Console / Kakao Developers links; this repo has no way to obtain
+  those credentials on your behalf.
+- `users.authProvider` + `users.providerUserId` (unique together) identify
+  the social account; `(email, authProvider)` is the real uniqueness
+  constraint on top of email, so a Google account and a LOCAL account can
+  share the same email as separate rows -- signing up locally never
+  collides with a prior Google/Kakao login using the same address.
 
 ## What this does not do
 
@@ -32,16 +50,6 @@ generated, so if it ever drifts the code wins.
   (`src/protocol.c`) only implements envelope-key decrypt -- there is no
   `Sign()` RPC to move to. `src/auth/jwt.ts` is the single swap-out point if
   that's added later.
-- **No social login** (Google/Kakao) -- email/password only, per explicit
-  scope decision for this pass.
-- **No Docker image yet.** This service depends on `../../infra/kms-adapter`
-  via a `file:` reference, which a Docker build rooted at `apps/api-gateway`
-  can't resolve (outside the build context). Needs either a repo-root build
-  context or a published/vendored copy of kms-adapter before this can be
-  containerized -- deliberately left out rather than shipping a broken
-  Dockerfile. Current deployment target (the Pi) runs it as a native
-  process instead (`deploy/pi/start_api_gateway.sh`), matching how the other
-  four services are already deployed there.
 
 ## Quick start
 
@@ -63,3 +71,7 @@ asset-service needed). `test/auth.test.ts` exercises the real
 `wrapKey()` (client-side RSA encrypt against the checked-in
 `kms-keys/teamA1_key_v1_pub.pem` fixture) but never calls the live KMS
 server -- only `infra/kms-adapter`'s own roundtrip test does that.
+`test/oauth.test.ts` mocks only `exchangeCodeForProfile` (the actual network
+call to Google/Kakao) and exercises everything else for real -- state
+generation/validation, user lookup-or-create, the LOCAL/social email
+collision case, and the redirect-with-tokens-in-hash response.

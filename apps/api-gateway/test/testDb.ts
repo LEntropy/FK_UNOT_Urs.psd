@@ -7,8 +7,10 @@ export function createTestDb() {
   sqlite.exec(`
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
+      email TEXT NOT NULL,
+      password_hash TEXT,
+      auth_provider TEXT NOT NULL DEFAULT 'LOCAL',
+      provider_user_id TEXT,
       handle TEXT NOT NULL UNIQUE,
       display_name TEXT,
       avatar_uri TEXT,
@@ -18,6 +20,8 @@ export function createTestDb() {
       created_at INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'ACTIVE'
     );
+    CREATE UNIQUE INDEX users_email_provider_unique ON users (email, auth_provider);
+    CREATE UNIQUE INDEX users_provider_account_unique ON users (auth_provider, provider_user_id);
   `);
   return drizzle(sqlite, { schema });
 }

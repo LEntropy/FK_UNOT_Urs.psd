@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAuthStore } from "../store/auth";
+import { OAuthButtons } from "../components/OAuthButtons";
 
 export function SignupPage() {
   const navigate = useNavigate();
@@ -68,6 +69,7 @@ export function SignupPage() {
           {submitting ? "가입 중..." : "가입하기"}
         </button>
       </form>
+      <OAuthButtons />
       <p className="mt-4 text-sm text-neutral-400">
         이미 계정이 있으신가요?{" "}
         <Link to="/login" className="underline">

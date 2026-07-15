@@ -24,6 +24,23 @@ const envSchema = z.object({
   KMS_PUBLIC_KEY_PATH: z.string().default("./kms-keys/teamA1_key_v1_pub.pem"),
   KMS_ORG: z.string().default("teamA/teamA1"),
   KMS_KEY_ID: z.string().default("key_v1"),
+
+  // Social login (src/auth/oauth.ts). Unset by default -- routes/oauth.ts
+  // returns 501 for a provider whose credentials aren't configured rather
+  // than a confusing failure. Get real values from Google Cloud Console
+  // (APIs & Services > Credentials > OAuth client ID) / Kakao Developers
+  // (내 애플리케이션 > 앱 키 + 카카오 로그인 활성화) -- only the project
+  // owner can create these, not something this code can supply.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  KAKAO_CLIENT_ID: z.string().optional(),
+  KAKAO_CLIENT_SECRET: z.string().optional(),
+  // Must match each provider's registered redirect URI exactly
+  // (PUBLIC_URL + /auth/google/callback or /auth/kakao/callback).
+  PUBLIC_URL: z.string().url().default("http://localhost:4000"),
+  // Where to send the browser after a successful OAuth login, with the
+  // token pair attached -- apps/web's OAuthCallbackPage reads it from there.
+  WEB_URL: z.string().url().default("http://localhost:5173"),
 });
 
 export const env = envSchema.parse(process.env);

@@ -139,6 +139,68 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
 
+  /auth/{provider}:
+    get:
+      tags: [auth]
+      summary: Start the OAuth authorization-code flow for a social provider
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, kakao]
+      responses:
+        "302":
+          description: Redirect to the provider's own authorize page, with a CSRF state param
+        "501":
+          description: Provider has no <PROVIDER>_CLIENT_ID/SECRET configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /auth/{provider}/callback:
+    get:
+      tags: [auth]
+      summary: >
+        OAuth callback. Exchanges the code for a profile, finds or creates the
+        user (matched on authProvider+providerUserId), and redirects to
+        `${WEB_URL}/oauth-callback#accessToken=...&refreshToken=...` (tokens
+        in the URL fragment so they never reach server access logs).
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, kakao]
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to WEB_URL/oauth-callback with tokens in the URL hash
+        "400":
+          description: Missing/invalid/expired state (CSRF check failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "502":
+          description: Token exchange with the provider failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
   /me:
     get:
       tags: [profile]

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { users } from "../db/schema.js";
@@ -38,7 +38,10 @@ export function authRouter(db: Db): Router {
     }
     const { email, password, handle, displayName } = parsed.data;
 
-    if (db.select().from(users).where(eq(users.email, email)).get()) {
+    // Scoped to LOCAL specifically -- (email, authProvider) is the real
+    // unique constraint (schema.ts), so a Google/Kakao account with this
+    // same email doesn't block a separate email/password signup.
+    if (db.select().from(users).where(and(eq(users.email, email), eq(users.authProvider, "LOCAL"))).get()) {
       return res.status(409).json({ error: "email already registered" });
     }
     if (db.select().from(users).where(eq(users.handle, handle)).get()) {
@@ -51,6 +54,7 @@ export function authRouter(db: Db): Router {
       id,
       email,
       passwordHash: hashPassword(password),
+      authProvider: "LOCAL" as const,
       handle,
       displayName: displayName ?? handle,
       role: "CREATOR" as const,
@@ -75,8 +79,12 @@ export function authRouter(db: Db): Router {
     }
     const { email, password } = parsed.data;
 
-    const user = db.select().from(users).where(eq(users.email, email)).get();
-    if (!user || !verifyPassword(password, user.passwordHash)) {
+    const user = db.select().from(users).where(and(eq(users.email, email), eq(users.authProvider, "LOCAL"))).get();
+    // user.passwordHash is only ever null for social-login accounts, which
+    // the authProvider="LOCAL" filter above already excludes -- but check
+    // explicitly rather than asserting, since a null here would otherwise
+    // crash verifyPassword instead of failing as a normal 401.
+    if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
       return res.status(401).json({ error: "invalid email or password" });
     }
 

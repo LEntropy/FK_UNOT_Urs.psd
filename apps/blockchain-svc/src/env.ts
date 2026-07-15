@@ -17,6 +17,12 @@ const envSchema = z
     KMS_KEY_ID: z.string().optional(),
     REGISTRY_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "must be a 20-byte hex address"),
     PORT: z.coerce.number().default(3001),
+    // src/relayerBalance.ts. Default is a testnet-appropriate guess (Amoy
+    // MATIC is free from a faucet, registrations are cheap) -- a real
+    // mainnet deployment should set this based on actual observed gas
+    // cost per registration, not this default.
+    RELAYER_LOW_BALANCE_THRESHOLD_ETHER: z.string().default("0.05"),
+    RELAYER_BALANCE_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
   })
   .refine((v) => v.RELAYER_PRIVATE_KEY || v.RELAYER_ENCRYPTED_KEY, {
     message: "one of RELAYER_PRIVATE_KEY or RELAYER_ENCRYPTED_KEY is required",

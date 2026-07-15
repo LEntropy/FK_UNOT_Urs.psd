@@ -92,3 +92,20 @@ implements envelope-key decrypt (`infra/kms-adapter`'s own docs), no
 `Sign()` RPC. The plaintext key is still reconstructed in this process's
 memory and `ethers.Wallet` signs locally; what changes is that the key no
 longer sits in a deployed `.env` file in the clear.
+
+## Relayer balance monitoring
+
+A real, recurring operational problem this project hit in practice: the
+relayer wallet running out of testnet funds, discovered only when an
+on-chain registration silently failed. `src/relayerBalance.ts` makes this
+queryable (`GET /relayer/balance` -- real address, real on-chain balance,
+whether it's under `RELAYER_LOW_BALANCE_THRESHOLD_ETHER`) and pollable
+(`startBalancePoller`, started from `index.ts`, `console.warn`s on a low
+balance every `RELAYER_BALANCE_POLL_INTERVAL_SECONDS`). No email/Slack/
+PagerDuty integration exists anywhere in this project -- a log line is the
+honest extent of "alerting" here, not a real notification channel. Still a
+real improvement over the status quo of finding out only after a
+registration already failed. `GET /relayer/balance` is deliberately
+separate from `GET /health` since it makes a live RPC call and shouldn't
+be on a healthcheck's hot path (see `docker-compose.yml`'s few-second
+healthcheck intervals for the other services).

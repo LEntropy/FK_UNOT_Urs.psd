@@ -24,6 +24,9 @@ apps/protection-svc/ml-engine/.venv/
 apps/protection-svc/ml-engine/out/
 apps/protection-svc/rust-core/target/
 
+# delivery-gateway
+apps/delivery-gateway/target/
+
 # detection-svc
 apps/detection-svc/out/
 apps/detection-svc/data/

@@ -185,6 +185,29 @@ services:
       timeout: 3s
       retries: 20
 
+  delivery-gateway:
+    # Standalone Rust binary, no repo-root context needed (no file:
+    # dependency on infra/kms-adapter like api-gateway/asset-service --
+    # this service never touches KMS at all).
+    build:
+      context: apps/delivery-gateway
+    ports:
+      - "4500:4500"
+    environment:
+      PORT: "4500"
+      ASSET_SERVICE_URL: http://asset-service:3002
+      # Dev-only secret, fine to hardcode here -- never use this for a real
+      # deployment (see apps/delivery-gateway/README.md).
+      DELIVERY_SIGNING_SECRET: dev-compose-signing-secret-not-for-production
+    depends_on:
+      asset-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4500/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   web:
     build:
       context: apps/web

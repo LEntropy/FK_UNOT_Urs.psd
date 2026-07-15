@@ -178,6 +178,22 @@ jobs:
         working-directory: apps/protection-svc/rust-core
         run: cargo test
 
+  delivery-gateway:
+    name: delivery-gateway (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/delivery-gateway
+      - name: cargo build
+        working-directory: apps/delivery-gateway
+        run: cargo build
+      - name: cargo test
+        working-directory: apps/delivery-gateway
+        run: cargo test
+
   protection-svc-lint:
     name: protection-svc (ruff lint + server.py pytest)
     runs-on: ubuntu-latest

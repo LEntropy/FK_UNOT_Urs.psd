@@ -175,11 +175,18 @@ calling them directly (unproxied) bypasses that.
   still always a local file path, same PoC-scope limit as `protection-svc`'s
   `imageUri` (`apps/protection-svc/INTEGRATION.md`) -- the object-storage
   migration above covers the encrypted-at-rest ciphertext, not this.
-- The S3 backend's code has real unit test coverage for the local backend
-  and the URI-parsing logic, but hasn't been exercised end-to-end against
-  a live MinIO in this session (blocked by an unrelated, pre-existing
-  disk-space issue on this project's Pi deployment target) -- treat it as
-  reviewed-but-not-live-verified until that happens.
+- The S3 backend is now live-verified: `docker compose --profile storage up
+  minio` + `S3_TEST_ENDPOINT=localhost npm test` round-trips real bytes
+  through a real MinIO container (write → `s3://` URI → read back →
+  delete → confirm gone). Catching this needed a real fix to the test
+  itself, not just running it: the test's `?t=<timestamp>` cache-busting
+  query only forced a fresh `objectStorage.js` module, while its own
+  internal `import { env } from "../env.js"` -- an unbusted specifier --
+  kept resolving to whichever `env` singleton was parsed first (this
+  project's standard "env parses `process.env` once, at first import"
+  gotcha, see other services' test files for the same class of bug).
+  Fixed with `vi.resetModules()`, which clears the whole registry so the
+  re-import's full dependency graph re-reads current `process.env`.
 - No auth, no per-tenant isolation (this service itself -- `apps/api-gateway`
   sits in front of it now, but asset-service's own endpoints still trust
   whatever creatorId a caller sends).

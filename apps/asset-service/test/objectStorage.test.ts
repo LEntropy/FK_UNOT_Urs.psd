@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 describe("local storage backend (default, no env needed)", () => {
   it("round-trips real bytes through the real filesystem", async () => {
@@ -9,7 +9,16 @@ describe("local storage backend (default, no env needed)", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "dontai-storage-test-"));
     process.env.STORAGE_LOCAL_DIR = tempDir;
 
-    const { getObjectStorage } = await import("../src/storage/objectStorage.js?t=" + Date.now());
+    // vi.resetModules(), not a hand-rolled `?t=` cache-busting query --
+    // objectStorage.ts's own `import { env } from "../env.js"` is a plain,
+    // unbusted specifier, so a query trick on objectStorage.js's own import
+    // only re-evaluates *that* module while its nested env.js import still
+    // resolves to whatever env.js was first parsed as (env.ts's singleton
+    // reads process.env once, at first import, project-wide gotcha) --
+    // resetModules() clears the whole registry so the re-import's entire
+    // dependency graph, env.js included, re-reads current process.env.
+    vi.resetModules();
+    const { getObjectStorage } = await import("../src/storage/objectStorage.js");
     const storage = getObjectStorage();
 
     const uri = await storage.write("ast_test.enc", Buffer.from("real ciphertext bytes"));
@@ -40,7 +49,8 @@ describe.skipIf(!process.env.S3_TEST_ENDPOINT)("s3 storage backend (real MinIO, 
     process.env.S3_SECRET_KEY = process.env.S3_TEST_SECRET_KEY ?? "minioadmin";
     process.env.S3_BUCKET = "dontai-storage-test";
 
-    const { getObjectStorage } = await import("../src/storage/objectStorage.js?t=" + Date.now());
+    vi.resetModules();
+    const { getObjectStorage } = await import("../src/storage/objectStorage.js");
     const storage = getObjectStorage();
 
     const uri = await storage.write("ast_test.enc", Buffer.from("real ciphertext bytes via s3"));

@@ -1,5 +1,6 @@
 pub mod crawlers;
 pub mod enumeration;
+pub mod honeypot;
 pub mod rate_limit;
 pub mod signing;
 
@@ -12,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use enumeration::EnumerationDetector;
+use honeypot::HoneypotTracker;
 use rate_limit::RateLimiter;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,7 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub rate_limiter: RateLimiter,
     pub enumeration_detector: EnumerationDetector,
+    pub honeypot: HoneypotTracker,
     pub sign_ttl_seconds: u64,
 }
 
@@ -33,11 +36,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/robots.txt", get(robots_txt))
         .route("/internal/sign", post(sign_url))
+        .route("/internal/honeypot-hits", get(honeypot_hits))
         .route("/asset/{id}/render", get(render_asset))
+        .route("/decoy/{token}", get(decoy))
         .with_state(state)
 }
 
-async fn robots_txt() -> impl IntoResponse {
+async fn robots_txt(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut body = String::from(
         "User-agent: *\nDisallow: /asset/\n\n\
          # PROJECT_DESIGN.md \u{00a7}3-5: this file is a cooperative signal only,\n\
@@ -48,7 +53,53 @@ async fn robots_txt() -> impl IntoResponse {
     for ua in crawlers::AI_CRAWLER_USER_AGENTS {
         body.push_str(&format!("\nUser-agent: {ua}\nDisallow: /\n"));
     }
+
+    if !state.honeypot.tokens().is_empty() {
+        body.push_str(
+            "\n# PHASE4_SCOPING.md \u{00a7}2 honeypot URLs: no real page in this app ever\n\
+             # links to these -- listing them here is the *only* place they're\n\
+             # mentioned. A real hit is either a crawler ignoring Disallow, or one\n\
+             # scraping robots.txt for \"interesting\" paths -- not a human.\n",
+        );
+        for token in state.honeypot.tokens() {
+            body.push_str(&format!("Disallow: /decoy/{token}\n"));
+        }
+    }
+
     ([("content-type", "text/plain; charset=utf-8")], body)
+}
+
+/// Serves a real, valid, 200-OK decoy image and logs the hit -- never a
+/// 403/404, since tipping the scraper off would stop it generating more
+/// signal. See src/honeypot.rs's module doc for the full reasoning.
+async fn decoy(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if state.honeypot.is_honeypot_token(&token) {
+        let user_agent = headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let client_ip: IpAddr = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(addr.ip());
+        state.honeypot.record_hit(&token, client_ip, user_agent);
+    }
+    ([("content-type", "image/png")], honeypot::DECOY_PNG_1X1)
+}
+
+/// Ops-only introspection, not meant to be public -- no auth of its own
+/// (matching every other "internal" endpoint's trust boundary in this
+/// project), a real deployment would put this behind a private network or
+/// its own auth, not expose it the way /asset/:id/render is meant to be.
+async fn honeypot_hits(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(state.honeypot.recent_hits(100))
 }
 
 #[derive(Deserialize)]

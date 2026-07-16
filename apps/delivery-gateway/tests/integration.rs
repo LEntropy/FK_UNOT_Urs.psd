@@ -12,6 +12,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use delivery_gateway::enumeration::EnumerationDetector;
+use delivery_gateway::honeypot::HoneypotTracker;
 use delivery_gateway::rate_limit::RateLimiter;
 use delivery_gateway::{AppState, build_router};
 use http_body_util::BodyExt;
@@ -27,6 +28,7 @@ fn state_with_mock_asset_service(mock_server_uri: &str) -> Arc<AppState> {
         vec![],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     )
 }
 
@@ -35,6 +37,7 @@ fn build_state(
     allowed_referer_hosts: Vec<String>,
     rate_limiter: RateLimiter,
     enumeration_detector: EnumerationDetector,
+    honeypot: HoneypotTracker,
 ) -> Arc<AppState> {
     Arc::new(AppState {
         signing_secret: SECRET.to_string(),
@@ -43,6 +46,7 @@ fn build_state(
         http: reqwest::Client::new(),
         rate_limiter,
         enumeration_detector,
+        honeypot,
         sign_ttl_seconds: 300,
     })
 }
@@ -197,6 +201,7 @@ async fn mismatched_referer_is_blocked_when_an_allowlist_is_configured() {
         vec!["dontai.example".to_string()],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -234,6 +239,7 @@ async fn missing_referer_is_allowed_even_with_an_allowlist_configured() {
         vec!["dontai.example".to_string()],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -252,6 +258,7 @@ async fn rate_limit_blocks_after_the_configured_threshold() {
         vec![],
         RateLimiter::new(2, Duration::from_secs(60)),
         EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -278,6 +285,7 @@ async fn browsing_a_few_distinct_artworks_is_never_flagged_as_enumeration() {
         vec![],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(2, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -296,6 +304,7 @@ async fn requesting_many_distinct_artworks_quickly_is_flagged_as_enumeration() {
         vec![],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(2, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -331,6 +340,7 @@ async fn repeatedly_re_requesting_the_same_artwork_never_trips_enumeration() {
         vec![],
         RateLimiter::new(1000, Duration::from_secs(60)),
         EnumerationDetector::new(1, Duration::from_secs(60)),
+        HoneypotTracker::new(vec![]),
     );
     let app = build_router(state);
 
@@ -341,6 +351,90 @@ async fn repeatedly_re_requesting_the_same_artwork_never_trips_enumeration() {
     }
 
     tokio::fs::remove_file(&tmp_file).await.ok();
+}
+
+#[tokio::test]
+async fn robots_txt_lists_configured_honeypot_tokens_as_disallowed() {
+    let state = build_state(
+        "http://unused",
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec!["decoytoken1".to_string()]),
+    );
+    let app = build_router(state);
+    let res = send(app, request("/robots.txt")).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("Disallow: /decoy/decoytoken1"));
+}
+
+#[tokio::test]
+async fn robots_txt_omits_the_honeypot_section_when_no_tokens_are_configured() {
+    let state = state_with_mock_asset_service("http://unused");
+    let app = build_router(state);
+    let res = send(app, request("/robots.txt")).await;
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!text.contains("/decoy/"));
+}
+
+#[tokio::test]
+async fn a_configured_honeypot_token_returns_a_real_png_and_records_a_hit() {
+    let state = build_state(
+        "http://unused",
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec!["decoytoken1".to_string()]),
+    );
+    let app = build_router(state.clone());
+
+    let res = send(
+        app.clone(),
+        request_with_ua("/decoy/decoytoken1", "SomeScraperBot/1.0"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], delivery_gateway::honeypot::DECOY_PNG_1X1);
+
+    let hits_res = send(app, request("/internal/honeypot-hits")).await;
+    let hits_body = hits_res.into_body().collect().await.unwrap().to_bytes();
+    let hits: serde_json::Value = serde_json::from_slice(&hits_body).unwrap();
+    let hits_arr = hits.as_array().unwrap();
+    assert_eq!(hits_arr.len(), 1);
+    assert_eq!(hits_arr[0]["token"], "decoytoken1");
+    assert_eq!(
+        hits_arr[0]["userAgent"]
+            .as_str()
+            .unwrap_or(hits_arr[0]["user_agent"].as_str().unwrap()),
+        "SomeScraperBot/1.0"
+    );
+}
+
+#[tokio::test]
+async fn an_unconfigured_token_still_returns_a_png_but_records_no_hit() {
+    let state = build_state(
+        "http://unused",
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec!["decoytoken1".to_string()]),
+    );
+    let app = build_router(state.clone());
+
+    let res = send(app.clone(), request("/decoy/not-a-real-token")).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], delivery_gateway::honeypot::DECOY_PNG_1X1);
+
+    let hits_res = send(app, request("/internal/honeypot-hits")).await;
+    let hits_body = hits_res.into_body().collect().await.unwrap().to_bytes();
+    let hits: serde_json::Value = serde_json::from_slice(&hits_body).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

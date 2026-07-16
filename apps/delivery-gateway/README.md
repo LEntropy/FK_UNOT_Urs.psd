@@ -67,6 +67,18 @@ shouldn't -- it "has no auth of its own").
   drift apart. **Cooperative only, no enforcement power** (§3-5's own
   caveat) -- a crawler that ignores this file entirely still can't get
   past step 2's real check.
+- **Honeypot assets/URLs** (`PHASE4_SCOPING.md` §2, `src/honeypot.rs`):
+  `GET /decoy/:token` -- never linked from any real page, seeded only into
+  `robots.txt`'s `Disallow` list (if `HONEYPOT_TOKENS` is configured, or
+  one random token generated at startup otherwise), so a hit is
+  high-confidence-bad-actor *by construction*: either a crawler ignoring
+  `Disallow` outright, or one scraping `robots.txt` for "interesting"
+  disallowed paths. Always returns a real, valid, `200 OK` 1x1 PNG (never
+  a `403`) specifically so the scraper doesn't realize it's been caught
+  and keeps generating signal instead of adapting. Hits are recorded
+  in-memory and exposed at `GET /internal/honeypot-hits` (ops-only, no
+  auth of its own -- same trust boundary as every other `/internal/*`
+  route in this project).
 
 ## Trust boundary
 
@@ -123,11 +135,14 @@ isolation.
   not the full behavioral/reputation system it also describes and
   explicitly defers (needs real production traffic to tune against, which
   this project doesn't have).
-- **No decoy/honeypot responses.** §3-5 offers "차단 또는 decoy" for
-  detected crawlers; this only implements the block half. Honeypot assets
-  are explicitly Phase 4 scope (PROJECT_DESIGN.md's Nightshade-style
-  concept-misalignment layer + honeypot section) -- connecting to that
-  later, not duplicating it here.
+- **Honeypot hit log is in-memory, single-process, unbounded growth over a
+  long uptime** -- same "not a real store yet" caveat as rate limiting and
+  enumeration detection above; a real deployment would persist hits and
+  cap the map's size. Only `recent_hits(100)` is ever returned, but nothing
+  currently prunes old entries out of the underlying map.
+- **The Concept Misalignment Layer** (`PROJECT_DESIGN.md`'s Nightshade-style
+  poisoning-signal work) is separate, unrelated Phase 4 scope, not
+  attempted here.
 - **No object storage** -- variant files are read from a local filesystem
   path (`assetVersions.storageUri`), same PoC-scope limit as every other
   service (`asset-service`/`protection-svc` READMEs).

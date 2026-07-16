@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use delivery_gateway::enumeration::EnumerationDetector;
+use delivery_gateway::honeypot::HoneypotTracker;
 use delivery_gateway::rate_limit::RateLimiter;
 use delivery_gateway::{AppState, build_router};
 
@@ -44,6 +45,7 @@ async fn main() {
                     .unwrap_or(60),
             ),
         ),
+        honeypot: HoneypotTracker::new(honeypot_tokens()),
         sign_ttl_seconds: std::env::var("SIGN_TTL_SECONDS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -66,4 +68,33 @@ async fn main() {
     )
     .await
     .expect("server error");
+}
+
+/// HONEYPOT_TOKENS (comma-separated) if explicitly set; otherwise one
+/// random token is generated at startup -- honeypots work with zero
+/// configuration, and unlike a signing secret, a honeypot token doesn't
+/// need to stay stable across restarts to keep working (the only place it
+/// needs to match anything is this same process's own robots.txt output,
+/// generated from the same value).
+fn honeypot_tokens() -> Vec<String> {
+    let configured: Vec<String> = std::env::var("HONEYPOT_TOKENS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !configured.is_empty() {
+        return configured;
+    }
+
+    use sha2::{Digest, Sha256};
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before 1970")
+        .as_nanos()
+        .to_le_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(seed);
+    hasher.update(std::process::id().to_le_bytes());
+    vec![hex::encode(&hasher.finalize()[..8])]
 }

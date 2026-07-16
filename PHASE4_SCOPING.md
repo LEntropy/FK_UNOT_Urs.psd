@@ -92,7 +92,7 @@ per PROJECT_DESIGN.md §3-5's "차단 또는 decoy": it blocks (`403`). The
 decoy half was explicitly deferred to this phase
 (`apps/delivery-gateway/README.md`'s "What this does not do").
 
-### Design
+### Design (as originally planned)
 
 - **Honeypot assets**: instead of a flat `403` for a *known* crawler hit
   on a real artwork's signed URL, serve a decoy image variant with a
@@ -118,12 +118,49 @@ decoy half was explicitly deferred to this phase
   (adaptive anti-scrape) -- a honeypot hit should immediately and
   permanently flag that fingerprint, not just nudge a score.
 
+### What's actually built (`apps/delivery-gateway/src/honeypot.rs`), and how it differs
+
+**Honeypot URLs are built as planned** -- `GET /decoy/:token`, never linked
+from any real page, seeded only into `robots.txt`'s `Disallow` list
+(`HONEYPOT_TOKENS` env, or one random token auto-generated at startup).
+Same "hit is unambiguous by construction" reasoning as above, unchanged.
+
+**Honeypot *assets* were simplified, not built as originally planned.**
+The per-hit-unique-watermark-payload design above requires the decoy to be
+served through the *same* real-artwork signed-URL path a known crawler
+already reached (`render_asset`'s step 2, the existing `403` branch) --
+i.e. swapping the `403` for a uniquely-watermarked real image, so a later
+leak of that exact payload proves which crawler hit did it. What's built
+instead is a dedicated route (`/decoy/:token`) serving one fixed, static
+1x1 PNG (`honeypot::DECOY_PNG_1X1`) to every hit, with no per-hit
+watermark and no connection to any real artwork's signed-URL flow. This
+still delivers the honeypot-*URL* signal (§ above) at full strength, but
+gives up the "prove which specific hit leaked" capability the
+watermarked-real-image design would have provided. Reason for the
+simplification: wiring a *known-crawler-only* branch of `render_asset`
+into a per-hit watermark-and-serve call is meaningfully more surface area
+(real artwork lookup, real watermark payload generation, real image
+encode) for a benefit (leak attribution) that has no way to be exercised
+or verified without an actual leaked-payload incident to test against --
+same "don't build unvalidatable machinery" reasoning §3 below applies to
+adaptive anti-scrape. The static-decoy version is fully testable and
+already is (see `apps/delivery-gateway/tests/integration.rs`). Watermarked
+per-hit decoys on the real signed-URL path remain real, well-scoped future
+work if this project reaches a stage with actual scraper incidents to
+attribute.
+
+**Detection loop**: implemented as `HoneypotTracker::record_hit` /
+`GET /internal/honeypot-hits` (ops-only, no auth of its own, same trust
+boundary as every other `/internal/*` route in this project) -- logs
+`(token, ip, user_agent, unix_time)` per hit, in-memory. Feeding this into
+an adaptive-anti-scrape scoring loop is still item 3's deferred future
+work, unchanged.
+
 ### Where it plugs in
 
-New module inside `apps/delivery-gateway` (e.g. `src/honeypot.rs`) rather
-than a separate service -- it needs the same signed-URL/variant-serving
-machinery already built there, and the crawler-classification list it
-extends already lives in that crate.
+`apps/delivery-gateway/src/honeypot.rs`, alongside `src/enumeration.rs` and
+`src/rate_limit.rs` -- same in-memory `DashMap`-backed-state shape, wired
+into `AppState`/`build_router` in `src/lib.rs`.
 
 ## 3. Adaptive anti-scrape (bulk-collection pattern learning)
 

@@ -24,6 +24,16 @@ const envSchema = z.object({
   KMS_CA_CERT_PATH: z.string().default("./kms-keys/kms_ca.crt"),
   KMS_ORG: z.string().default("teamA/teamA1"),
   KMS_KEY_ID: z.string().default("key_v1"),
+  // decryptToTempFile() needs one genuinely local scratch file regardless of
+  // STORAGE_BACKEND -- deliberately NOT os.tmpdir(): on a deployment where
+  // the app's own data dir lives on a separate, larger volume than the OS
+  // root filesystem (this project's Pi deployment: root partition can be
+  // full while the SSD holding ./data has plenty of room), os.tmpdir()
+  // silently writes to the wrong disk and fails with ENOSPC even though the
+  // app has real free space available. Same "./data/..."-relative-to-cwd
+  // convention as DATABASE_URL/STORAGE_LOCAL_DIR above, so it lands
+  // alongside them on whatever volume the deployment actually put ./data on.
+  DECRYPT_TEMP_DIR: z.string().default("./data/tmp"),
 
   // src/storage/objectStorage.ts. "local" (default) preserves every
   // existing local-dev workflow unchanged; "s3" talks to any

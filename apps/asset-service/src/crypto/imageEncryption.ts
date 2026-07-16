@@ -1,7 +1,6 @@
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { wrapKey, unwrapKey } from "@dontai/kms-adapter";
 import { env } from "../env.js";
 import { getObjectStorage } from "../storage/objectStorage.js";
@@ -82,8 +81,11 @@ export async function decryptToTempFile(encrypted: EncryptedImage, artworkId: st
   decipher.setAuthTag(authTag);
   const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-  const tempPath = join(tmpdir(), `dontai-decrypted-${artworkId}${extname(encrypted.encryptedImagePath)}`);
-  mkdirSync(dirname(tempPath), { recursive: true });
+  // env.DECRYPT_TEMP_DIR, not os.tmpdir() -- see env.ts's doc comment on why:
+  // the OS temp dir can be on a different, more space-constrained volume
+  // than wherever this deployment's ./data actually lives.
+  mkdirSync(env.DECRYPT_TEMP_DIR, { recursive: true });
+  const tempPath = join(env.DECRYPT_TEMP_DIR, `dontai-decrypted-${artworkId}${extname(encrypted.encryptedImagePath)}`);
   writeFileSync(tempPath, plainBytes);
   return tempPath;
 }

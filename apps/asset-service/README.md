@@ -102,9 +102,15 @@ an unencrypted one. The DEK itself is RSA-wrapped (client-side, no network
 call -- `@dontai/kms-adapter`'s `wrapKey()`) against the org's KMS public
 key and stored alongside the ciphertext path. Decrypting back (needed once,
 briefly, right before `protection-svc` processes the image) calls the live
-KMS server's `unwrapKey()` and writes to a temp file that's deleted again
-once the protect job finishes -- see `orchestration.ts`. This is the first
-real use of `infra/kms-adapter` for actual image data, not just the
+KMS server's `unwrapKey()` and writes to a temp file (`env.DECRYPT_TEMP_DIR`,
+default `./data/tmp` -- deliberately *not* the OS temp dir, see the env var's
+doc comment in `env.ts`: a deployment where `./data` lives on a bigger,
+separate volume than the OS root filesystem can have `os.tmpdir()` silently
+write to the wrong disk and fail with `ENOSPC` despite real free space being
+available -- this hit the real Pi deployment, whose root partition was full
+while its data-holding SSD mount was not) that's deleted again once the
+protect job finishes -- see `orchestration.ts`. This is the first real use
+of `infra/kms-adapter` for actual image data, not just the
 custodial-wallet/relayer-key uses elsewhere in this project.
 
 ## Object storage (§5-1)

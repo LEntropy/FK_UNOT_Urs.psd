@@ -1,4 +1,5 @@
 import { env } from "../env.js";
+import { withRetry } from "../lib/retry.js";
 
 /** Matches apps/protection-svc/INTEGRATION.md's job contract exactly. */
 export interface ProtectRequest {
@@ -38,23 +39,31 @@ export interface ProtectJob {
 }
 
 export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: string; status: string }> {
-  const res = await fetch(`${env.PROTECTION_SVC_URL}/protect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/protect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (res.status !== 202) {
+      throw new Error(`protection-svc POST /protect failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
   });
-  if (res.status !== 202) {
-    throw new Error(`protection-svc POST /protect failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
 }
 
 export async function getProtectJob(jobId: string): Promise<ProtectJob> {
-  const res = await fetch(`${env.PROTECTION_SVC_URL}/protect/${jobId}`);
-  if (!res.ok) {
-    throw new Error(`protection-svc GET /protect/${jobId} failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
+  // Retried here, not just once at the top of pollProtectJob's loop -- a
+  // single dropped poll request over a multi-minute-to-hours job shouldn't
+  // throw the whole job away; the next poll a few seconds later would have
+  // succeeded anyway, this just doesn't wait for it.
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/protect/${jobId}`);
+    if (!res.ok) {
+      throw new Error(`protection-svc GET /protect/${jobId} failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
 }
 
 /**

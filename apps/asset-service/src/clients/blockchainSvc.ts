@@ -1,4 +1,5 @@
 import { env } from "../env.js";
+import { withRetry } from "../lib/retry.js";
 
 /** Matches apps/blockchain-svc/INTEGRATION.md's contract exactly. */
 export interface RegisterAssetRequest {
@@ -38,26 +39,33 @@ export class AlreadyRegisteredError extends Error {
 }
 
 export async function registerAsset(req: RegisterAssetRequest): Promise<RegisterAssetResult> {
-  const res = await fetch(`${env.BLOCKCHAIN_SVC_URL}/assets/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
+  return withRetry(async () => {
+    const res = await fetch(`${env.BLOCKCHAIN_SVC_URL}/assets/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
 
-  if (res.status === 409) {
-    const body = await res.json();
-    throw new AlreadyRegisteredError(body.contentHash);
-  }
-  if (res.status !== 201) {
-    throw new Error(`blockchain-svc POST /assets/register failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
+    if (res.status === 409) {
+      const body = await res.json();
+      // Not transient (a definitive answer, not a network/server fault) --
+      // withRetry's default isRetryable only matches TypeError/system
+      // error codes/5xx, so this already falls straight through unretried.
+      throw new AlreadyRegisteredError(body.contentHash);
+    }
+    if (res.status !== 201) {
+      throw new Error(`blockchain-svc POST /assets/register failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
 }
 
 export async function verifyAsset(contentHash: string): Promise<VerifyAssetResult> {
-  const res = await fetch(`${env.BLOCKCHAIN_SVC_URL}/assets/verify/${contentHash}`);
-  if (!res.ok) {
-    throw new Error(`blockchain-svc GET /assets/verify failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
+  return withRetry(async () => {
+    const res = await fetch(`${env.BLOCKCHAIN_SVC_URL}/assets/verify/${contentHash}`);
+    if (!res.ok) {
+      throw new Error(`blockchain-svc GET /assets/verify failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
 }

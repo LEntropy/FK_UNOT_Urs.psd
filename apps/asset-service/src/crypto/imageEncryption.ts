@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { wrapKey, unwrapKey } from "@dontai/kms-adapter";
 import { env } from "../env.js";
 import { getObjectStorage } from "../storage/objectStorage.js";
+import { withRetry } from "../lib/retry.js";
 
 /**
  * Envelope-encrypts the original uploaded image at rest (PROJECT_DESIGN.md
@@ -63,15 +64,20 @@ export async function encryptImageAtRest(plainImagePath: string, artworkId: stri
  */
 export async function decryptToTempFile(encrypted: EncryptedImage, artworkId: string): Promise<string> {
   const wrappedDek = Buffer.from(encrypted.encryptedDekBase64, "base64");
-  const dek = await unwrapKey({
-    host: env.KMS_HOST,
-    port: env.KMS_PORT,
-    caCertPath: env.KMS_CA_CERT_PATH,
-    requesterOrg: env.KMS_ORG,
-    fileOrg: env.KMS_ORG,
-    keyId: env.KMS_KEY_ID,
-    encKey: wrappedDek,
-  });
+  // Retried -- this is a raw TLS socket to the KMS server (infra/kms-adapter),
+  // which rejects with the underlying Node system error (ECONNREFUSED etc)
+  // on a dropped connection, same as any other transient network fault.
+  const dek = await withRetry(() =>
+    unwrapKey({
+      host: env.KMS_HOST,
+      port: env.KMS_PORT,
+      caCertPath: env.KMS_CA_CERT_PATH,
+      requesterOrg: env.KMS_ORG,
+      fileOrg: env.KMS_ORG,
+      keyId: env.KMS_KEY_ID,
+      encKey: wrappedDek,
+    }),
+  );
 
   const ciphertext = await getObjectStorage().read(encrypted.encryptedImagePath);
   const iv = Buffer.from(encrypted.encryptionIv, "base64");

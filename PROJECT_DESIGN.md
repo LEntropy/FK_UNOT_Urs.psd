@@ -425,7 +425,7 @@ contract OwnershipRegistry {
 - `POST /assets/register` 응답의 `txHash`/`blockNumber`를 `ownership_records` 테이블에 저장 (§4 데이터 모델의 축소판, `apps/asset-service/src/db/schema.ts`)
 - **동기 호출 금지**: `POST /artworks`는 즉시 202를 반환하고, 실제 오케스트레이션은 백그라운드로 실행 (`apps/asset-service/README.md`의 상태 머신 참고). 지금은 in-process fire-and-forget 방식 — Phase 2+에서 Redis/BullMQ 큐로 격리 예정
 - **409(중복 해시) 처리 — 실제 구현 + 테스트까지 완료**: 응답의 `contentHash`로 `GET /assets/verify/:contentHash` 재조회 → on-chain owner가 asset-service가 알고 있는 owner와 같으면 멱등 처리(재시도로 간주) → `PUBLISHED`, 다르면 실제 해시 충돌이므로 `FAILED` + 명확한 에러 메시지 (`apps/asset-service/test/orchestration.test.ts`로 mocked 테스트 검증)
-- **재시도 정책**: 아직 미구현 — 현재는 실패 시 바로 `FAILED`로 전환. 지수 백오프 재시도는 Phase 2+ 과제로 남음
+- **재시도 정책 — 구현 완료**: 네트워크/서버 오류(연결 거부·리셋·타임아웃·5xx)는 지수 백오프+jitter로 자동 재시도(`apps/asset-service/src/lib/retry.ts`), `registerAsset`/`verifyAsset`(blockchain-svc)·`createProtectJob`/`getProtectJob`(protection-svc)·`unwrapKey`(KMS) 호출 전부에 적용. 409(AlreadyRegisteredError)나 4xx, protection-svc가 정상적으로 반환한 `status: "failed"`처럼 재시도해도 결과가 같을 게 뻔한 경우는 재시도하지 않고 바로 처리(`apps/asset-service/test/retry.test.ts`)
 
 **protection-svc가 책임지는 것** (INTEGRATION.md 상세): `perceptualHash`(공개용 보호본 기준)와 `metadataHash` 계산까지만 하고, 온체인 호출은 절대 직접 하지 않는다 — protection-svc는 이미지 변환에만 집중하는 순수 서비스로 유지.
 

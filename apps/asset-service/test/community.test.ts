@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import { artworks } from "../src/db/schema.js";
+import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
@@ -183,5 +183,32 @@ describe("feed", () => {
 
     const res = await request(app).get("/feed?type=popular");
     expect(res.body.map((a: { id: string }) => a.id)).toEqual(["ast_liked_twice", "ast_liked_once"]);
+  });
+
+  it("includes assetVersions on every feed type -- FeedPage can't render a thumbnail without this", async () => {
+    const db = createTestDb();
+    seedArtwork(db, { id: "ast_1", creatorId: "creator_a" });
+    db.insert(assetVersions)
+      .values({
+        artworkId: "ast_1",
+        variantName: "grid_thumbnail_150",
+        storageUri: "/tmp/thumb.png",
+        width: 150,
+        height: 150,
+        scaleVsSource: 0.5,
+        protectionStatus: "SAFE",
+      })
+      .run();
+    const app = createApp(db);
+
+    const latest = await request(app).get("/feed?type=latest");
+    expect(latest.body[0].assetVersions).toHaveLength(1);
+
+    const popular = await request(app).get("/feed?type=popular");
+    expect(popular.body[0].assetVersions).toHaveLength(1);
+
+    await request(app).post("/users/creator_a/follow").send({ userId: "viewer" });
+    const following = await request(app).get("/feed?type=following&userId=viewer");
+    expect(following.body[0].assetVersions).toHaveLength(1);
   });
 });

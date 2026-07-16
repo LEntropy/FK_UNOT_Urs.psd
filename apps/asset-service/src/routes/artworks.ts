@@ -10,6 +10,7 @@ import { artworks, assetVersions, ownershipRecords } from "../db/schema.js";
 import { runUploadPipeline } from "../orchestration.js";
 import { encryptImageAtRest } from "../crypto/imageEncryption.js";
 import { env } from "../env.js";
+import { attachAssetVersions } from "../lib/attachAssetVersions.js";
 
 const createArtworkSchema = z.object({
   title: z.string().min(1),
@@ -132,7 +133,12 @@ export function artworksRouter(db: Db): Router {
       ? db.select().from(artworks).where(eq(artworks.creatorId, creatorId)).all()
       : db.select().from(artworks).all();
 
-    res.json(rows);
+    // Without this, GalleryPage/FeedPage have no way to know whether an
+    // artwork has a renderable image yet -- ArtworkImage needs
+    // assetVersions.length > 0 before it'll even ask delivery-gateway for
+    // a signed URL. GET /artworks/:id already joined this in; the list
+    // route never did.
+    res.json(attachAssetVersions(db, rows));
   });
 
   router.get("/:id", (req, res) => {

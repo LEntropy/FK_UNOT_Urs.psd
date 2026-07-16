@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import * as community from "../api/community";
 import type { FeedType } from "../api/types";
+import { ArtworkImage } from "../components/ArtworkImage";
 
 const TABS: Array<{ type: FeedType; label: string }> = [
   { type: "latest", label: "최신" },
@@ -19,7 +20,7 @@ export function FeedPage() {
   });
 
   return (
-    <div className="mx-auto mt-8 max-w-3xl">
+    <div className="mx-auto mt-8 max-w-5xl">
       <div className="mb-6 flex gap-2">
         {TABS.map((tab) => (
           <button
@@ -42,24 +43,29 @@ export function FeedPage() {
         </p>
       )}
 
-      <ul className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
         {data?.map((artwork) => (
-          <li key={artwork.id}>
-            <Link
-              to={`/artworks/${artwork.id}`}
-              className="flex items-center justify-between rounded border border-neutral-800 px-4 py-3 hover:bg-neutral-900"
-            >
-              <div>
-                <span className="font-medium">{artwork.title}</span>
-                <span className="ml-2 text-sm text-neutral-500">@{artwork.creatorId}</span>
+          <Link
+            key={artwork.id}
+            to={`/artworks/${artwork.id}`}
+            className="group flex flex-col overflow-hidden rounded border border-neutral-800 hover:border-neutral-600"
+          >
+            <ArtworkImage
+              artworkId={artwork.id}
+              hasVariants={artwork.assetVersions.length > 0}
+              variant="thumbnail"
+              className="aspect-square w-full object-cover"
+            />
+            <div className="flex flex-col gap-0.5 px-2 py-2">
+              <span className="truncate text-sm font-medium">{artwork.title}</span>
+              <div className="flex items-center justify-between text-xs text-neutral-500">
+                <span className="truncate">@{artwork.creatorId}</span>
+                {typeof artwork.likeCount === "number" && <span>♡ {artwork.likeCount}</span>}
               </div>
-              {typeof artwork.likeCount === "number" && (
-                <span className="text-sm text-neutral-400">♡ {artwork.likeCount}</span>
-              )}
-            </Link>
-          </li>
+            </div>
+          </Link>
         ))}
-      </ul>
+      </div>
     </div>
   );
 }

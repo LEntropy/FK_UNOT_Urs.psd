@@ -174,6 +174,7 @@ struct AssetVersion {
     variant_name: String,
     #[serde(rename = "storageUri")]
     storage_uri: String,
+    width: i64,
 }
 
 #[derive(Deserialize)]
@@ -280,12 +281,22 @@ async fn render_asset(
         .asset_versions
         .iter()
         .find(|v| v.variant_name == q.variant)
+        // rust-core deliberately never upscales (variants.rs's own
+        // skips_variants_that_would_upscale) -- a modest-resolution real
+        // upload can genuinely have no public_preview_2048 or even
+        // grid_thumbnail_512 variant, only whatever's smaller than the
+        // source. The signed token authorizes "this artwork, this
+        // requested tier, this expiry," not a guarantee that exact tier
+        // exists -- falling back to the largest variant that *does* exist
+        // serves something real instead of leaving the whole page with a
+        // broken image over a request nobody could have satisfied exactly.
+        .or_else(|| detail.asset_versions.iter().max_by_key(|v| v.width))
     {
         Some(v) => v,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                "variant not generated for this artwork",
+                "no variants generated for this artwork yet",
             )
                 .into_response();
         }

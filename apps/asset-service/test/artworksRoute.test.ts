@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import { artworks } from "../src/db/schema.js";
+import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
@@ -55,6 +55,31 @@ describe("GET /artworks", () => {
     const res = await request(createApp(db)).get("/artworks");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
+  });
+
+  it("includes assetVersions per row -- GalleryPage/FeedPage can't render a thumbnail without this", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_with_image", status: "PUBLISHED" });
+    seed(db, { id: "ast_no_image", status: "PROTECTING" });
+    db.insert(assetVersions)
+      .values({
+        artworkId: "ast_with_image",
+        variantName: "grid_thumbnail_150",
+        storageUri: "/tmp/thumb.png",
+        width: 150,
+        height: 150,
+        scaleVsSource: 0.5,
+        protectionStatus: "SAFE",
+      })
+      .run();
+
+    const res = await request(createApp(db)).get("/artworks");
+    expect(res.status).toBe(200);
+    const withImage = res.body.find((a: { id: string }) => a.id === "ast_with_image");
+    const noImage = res.body.find((a: { id: string }) => a.id === "ast_no_image");
+    expect(withImage.assetVersions).toHaveLength(1);
+    expect(withImage.assetVersions[0].variantName).toBe("grid_thumbnail_150");
+    expect(noImage.assetVersions).toEqual([]);
   });
 });
 

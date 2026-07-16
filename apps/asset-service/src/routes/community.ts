@@ -4,6 +4,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { artworks, bookmarks, collections, comments, follows, likes, reports } from "../db/schema.js";
+import { attachAssetVersions } from "../lib/attachAssetVersions.js";
 
 /**
  * PROJECT_DESIGN.md §3-2 community features: feed, follow, like, bookmark,
@@ -250,7 +251,7 @@ export function communityRouter(db: Db): Router {
         .orderBy(desc(artworks.publishedAt))
         .limit(limit)
         .all();
-      return res.json(rows);
+      return res.json(attachAssetVersions(db, rows));
     }
 
     if (type === "popular") {
@@ -267,7 +268,7 @@ export function communityRouter(db: Db): Router {
         .orderBy(desc(sql`like_count`))
         .limit(limit)
         .all();
-      return res.json(rows.map((r) => ({ ...r.artwork, likeCount: r.likeCount })));
+      return res.json(attachAssetVersions(db, rows.map((r) => ({ ...r.artwork, likeCount: r.likeCount }))));
     }
 
     // "latest" (default)
@@ -278,7 +279,7 @@ export function communityRouter(db: Db): Router {
       .orderBy(desc(artworks.publishedAt))
       .limit(limit)
       .all();
-    res.json(rows);
+    res.json(attachAssetVersions(db, rows));
   });
 
   return router;

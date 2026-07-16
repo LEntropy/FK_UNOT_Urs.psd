@@ -117,7 +117,7 @@ async fn sign_then_render_returns_the_real_image_bytes_from_asset_service() {
         .and(path("/artworks/ast_1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "assetVersions": [
-                { "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap() }
+                { "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }
             ]
         })))
         .mount(&mock_server)
@@ -229,7 +229,7 @@ async fn missing_referer_is_allowed_even_with_an_allowlist_configured() {
     Mock::given(method("GET"))
         .and(path("/artworks/ast_2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap() }]
+            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }]
         })))
         .mount(&mock_server)
         .await;
@@ -330,7 +330,7 @@ async fn repeatedly_re_requesting_the_same_artwork_never_trips_enumeration() {
     Mock::given(method("GET"))
         .and(path("/artworks/ast_repeat"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap() }]
+            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }]
         })))
         .mount(&mock_server)
         .await;

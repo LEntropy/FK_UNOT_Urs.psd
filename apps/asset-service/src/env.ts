@@ -53,7 +53,13 @@ const envSchema = z.object({
   STORAGE_LOCAL_DIR: z.string().default("./data/encrypted"),
   S3_ENDPOINT: z.string().optional(),
   S3_PORT: z.coerce.number().default(9000),
-  S3_USE_SSL: z.coerce.boolean().default(false),
+  // NOT z.coerce.boolean() -- that's Boolean(value) under the hood, and
+  // Boolean("false") is true (any non-empty string is truthy in JS). Real
+  // bug, not hypothetical: caught live against the Pi's actual MinIO
+  // deployment -- S3_USE_SSL=false in a real .env file was silently
+  // read as true, so the minio client tried a TLS handshake against a
+  // plaintext server and failed with an opaque SSL error.
+  S3_USE_SSL: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   S3_ACCESS_KEY: z.string().optional(),
   S3_SECRET_KEY: z.string().optional(),
   S3_BUCKET: z.string().default("dontai-encrypted-originals"),

@@ -15,7 +15,14 @@ const createArtworkSchema = z.object({
   title: z.string().min(1),
   sourceImageUri: z.string().min(1).optional(),
   protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN"]).optional(),
-  allowAiTraining: z.coerce.boolean().optional(),
+  // Not z.coerce.boolean() -- Boolean("false") is true in JS, so a real
+  // "false" multipart field would coerce to true. See asset-service's
+  // identical fix (routes/artworks.ts) for the live bug this was caught
+  // from (S3_USE_SSL=false silently read as true).
+  allowAiTraining: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === true || v === "true")),
 });
 
 // Memory storage, not disk -- api-gateway only holds the bytes long enough

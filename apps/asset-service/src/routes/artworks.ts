@@ -23,10 +23,17 @@ const createArtworkSchema = z.object({
   creatorId: z.string().min(1),
   ownerWalletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "must be a 20-byte hex address"),
   protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN"]).default("L3_ANTI_TRAIN"),
-  // multipart/form-data fields arrive as strings, never real booleans --
-  // z.coerce so the same schema works for both the JSON and multipart path
-  // instead of needing two schemas.
-  allowAiTraining: z.coerce.boolean().default(false),
+  // multipart/form-data fields arrive as strings, never real booleans, so
+  // this needs to accept both shapes -- a real boolean from a JSON body,
+  // or "true"/"false" from a multipart field. Deliberately NOT
+  // z.coerce.boolean(): that's just Boolean(value) under the hood, and
+  // Boolean("false") is true (any non-empty string is truthy in JS) --
+  // a real bug, not a hypothetical one, caught live when a genuine
+  // S3_USE_SSL=false env value hit the identical mistake in env.ts.
+  allowAiTraining: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .default(false)
+    .transform((v) => v === true || v === "true"),
 });
 
 // multer's own disk storage, not os.tmpdir() -- same reasoning as

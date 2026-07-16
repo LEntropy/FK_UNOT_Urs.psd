@@ -108,7 +108,7 @@ describe("POST /artworks (envelope encryption at rest)", () => {
       .field("title", "Real browser upload")
       .field("creatorId", "creator_upload")
       .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
-      .field("allowAiTraining", "true") // multipart fields are always strings -- proves z.coerce.boolean() is wired up
+      .field("allowAiTraining", "true") // multipart fields are always strings -- proves the string "true" is parsed correctly
       .attach("image", Buffer.from("not a real png, just needs bytes to encrypt"), "mona_lisa.jpg");
 
     expect(res.status).toBe(202);
@@ -117,6 +117,24 @@ describe("POST /artworks (envelope encryption at rest)", () => {
     expect(row.allowAiTraining).toBe(true);
     expect(row.sourceImageUri).toBe("upload:mona_lisa.jpg");
     expect(existsSync(row.encryptedImagePath)).toBe(true); // the uploaded bytes really did get encrypted and stored
+
+    unlinkSync(row.encryptedImagePath);
+  });
+
+  it("parses the multipart string \"false\" as false, not true (z.coerce.boolean()'s exact failure mode)", async () => {
+    const db = createTestDb();
+
+    const res = await request(createApp(db))
+      .post("/artworks")
+      .field("title", "Explicit false")
+      .field("creatorId", "creator_false")
+      .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
+      .field("allowAiTraining", "false")
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(202);
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(row.allowAiTraining).toBe(false);
 
     unlinkSync(row.encryptedImagePath);
   });

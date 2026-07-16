@@ -10,7 +10,19 @@ const envSchema = z.object({
   // trust-boundary note. The browser then hits the returned signed URL on
   // delivery-gateway directly (image bytes don't need to round-trip
   // through this gateway).
+  //
+  // DELIVERY_GATEWAY_URL is used for this gateway's own server-to-server
+  // call to /internal/sign -- on a host where "localhost" resolves to ::1
+  // before 127.0.0.1 (true on the Pi deployment) that call needs an
+  // explicit IPv4 address since delivery-gateway only binds 0.0.0.0.
+  // DELIVERY_GATEWAY_PUBLIC_URL is a separate origin because the signed
+  // URL is handed to the *browser*, which is a different machine from this
+  // server in any real deployment -- it needs the externally-reachable
+  // host/port, not this server's internal view of delivery-gateway.
+  // Defaults to DELIVERY_GATEWAY_URL, which is correct for local dev where
+  // browser and server are the same machine.
   DELIVERY_GATEWAY_URL: z.string().url().default("http://localhost:4500"),
+  DELIVERY_GATEWAY_PUBLIC_URL: z.string().url().optional(),
 
   // HS256 shared-secret JWT for now -- the real KMS server only implements
   // envelope-key decrypt (no Sign()), so KMS-backed JWT signing isn't

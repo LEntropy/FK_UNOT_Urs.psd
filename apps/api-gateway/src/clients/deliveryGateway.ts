@@ -18,6 +18,9 @@ export async function signRenderUrl(artworkId: string, viewer: "anonymous" | "lo
   const body = (await res.json()) as { url: string };
   // delivery-gateway returns a path relative to itself, not an absolute
   // URL -- the browser hits delivery-gateway directly (not through this
-  // gateway) for the actual image bytes, so it needs the full origin.
-  return `${env.DELIVERY_GATEWAY_URL}${body.url}`;
+  // gateway) for the actual image bytes, so it needs the full origin. This
+  // is intentionally DELIVERY_GATEWAY_PUBLIC_URL, not the URL just used
+  // above to reach delivery-gateway server-to-server -- see env.ts's
+  // comment on why those two can differ.
+  return `${env.DELIVERY_GATEWAY_PUBLIC_URL ?? env.DELIVERY_GATEWAY_URL}${body.url}`;
 }

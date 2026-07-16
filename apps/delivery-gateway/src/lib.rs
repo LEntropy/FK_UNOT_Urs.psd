@@ -246,6 +246,22 @@ async fn render_asset(
         .and_then(|v| v.split(',').next())
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(addr.ip());
+
+    // PHASE4_SCOPING.md §2's own recommendation, previously unimplemented:
+    // "a honeypot hit should immediately and permanently flag that
+    // fingerprint, not just nudge a score." A hit on /decoy/:token is
+    // unambiguous by construction (see honeypot.rs's module doc) -- no
+    // real user can ever reach it, so there's no false-positive risk in
+    // blocking that IP outright, unlike the rate limiter/enumeration
+    // detector below, which use soft, resettable thresholds because they
+    // reason about ambiguous signals a real heavy user could trip.
+    if state.honeypot.is_flagged(client_ip) {
+        return (
+            StatusCode::FORBIDDEN,
+            "blocked -- this IP already tripped a honeypot",
+        )
+            .into_response();
+    }
     if !state.rate_limiter.check(client_ip) {
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }

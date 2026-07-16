@@ -415,6 +415,71 @@ async fn a_configured_honeypot_token_returns_a_real_png_and_records_a_hit() {
     );
 }
 
+/// PHASE4_SCOPING.md §2/§3's recommendation, previously unimplemented: a
+/// honeypot hit should immediately and permanently block that IP, not just
+/// sit in `/internal/honeypot-hits` as observability. `request()`'s fixed
+/// ConnectInfo (127.0.0.1) is what makes the decoy hit and the later
+/// render request "the same IP" here, same as any other test in this file
+/// that doesn't set `x-forwarded-for`.
+#[tokio::test]
+async fn a_honeypot_hit_blocks_that_ip_from_a_later_real_render_request() {
+    let mock_server = MockServer::start().await;
+    let tmp_file = std::env::temp_dir().join("delivery_gateway_test_honeypot_block.png");
+    tokio::fs::write(&tmp_file, b"fake-png-bytes")
+        .await
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/artworks/ast_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "assetVersions": [
+                { "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let state = build_state(
+        &mock_server.uri(),
+        vec![],
+        RateLimiter::new(1000, Duration::from_secs(60)),
+        EnumerationDetector::new(1000, Duration::from_secs(60)),
+        HoneypotTracker::new(vec!["decoytoken1".to_string()]),
+    );
+    let app = build_router(state.clone());
+
+    let sign_res = send(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/internal/sign")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"artworkId": "ast_1", "viewer": "anonymous"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    let sign_body: serde_json::Value =
+        serde_json::from_slice(&sign_res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let signed_url = sign_body["url"].as_str().unwrap().to_string();
+
+    // Sanity check: before any honeypot hit, the real render request works.
+    let ok_res = send(app.clone(), request(&signed_url)).await;
+    assert_eq!(ok_res.status(), StatusCode::OK);
+
+    let decoy_res = send(app.clone(), request("/decoy/decoytoken1")).await;
+    assert_eq!(decoy_res.status(), StatusCode::OK);
+
+    // Same IP (127.0.0.1, request()'s fixed ConnectInfo) that just hit the
+    // honeypot -- now blocked outright, even with an otherwise-valid,
+    // unexpired, correctly-signed URL for a real artwork.
+    let blocked_res = send(app, request(&signed_url)).await;
+    assert_eq!(blocked_res.status(), StatusCode::FORBIDDEN);
+
+    tokio::fs::remove_file(&tmp_file).await.ok();
+}
+
 #[tokio::test]
 async fn an_unconfigured_token_still_returns_a_png_but_records_no_hit() {
     let state = build_state(

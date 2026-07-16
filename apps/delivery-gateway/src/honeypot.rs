@@ -14,7 +14,7 @@
 //! that it's been caught, so it keeps behaving normally and every future
 //! hit keeps generating signal instead of the scraper adapting.
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +30,13 @@ pub struct HoneypotTracker {
     tokens: Vec<String>,
     hits: DashMap<u64, HoneypotHit>,
     next_id: std::sync::atomic::AtomicU64,
+    // PHASE4_SCOPING.md §2/§3: "a honeypot hit should immediately and
+    // permanently flag that fingerprint, not just nudge a score" --
+    // in-memory and per-process (same lifetime/limitation as rate_limit.rs
+    // and enumeration.rs; see this crate's README), but unlike those two
+    // this is a one-way set with no expiry, because a honeypot hit isn't
+    // an ambiguous signal that should decay -- see is_flagged's doc.
+    flagged_ips: DashSet<IpAddr>,
 }
 
 impl HoneypotTracker {
@@ -38,6 +45,7 @@ impl HoneypotTracker {
             tokens,
             hits: DashMap::new(),
             next_id: std::sync::atomic::AtomicU64::new(0),
+            flagged_ips: DashSet::new(),
         }
     }
 
@@ -66,6 +74,17 @@ impl HoneypotTracker {
                 unix_time,
             },
         );
+        self.flagged_ips.insert(ip);
+    }
+
+    /// Whether `ip` has ever hit a honeypot -- `src/lib.rs`'s `render_asset`
+    /// blocks flagged IPs outright, before the rate limiter or enumeration
+    /// detector even run. No expiry, unlike those two: this only trips on a
+    /// URL no real user can ever reach (see this module's doc), so there's
+    /// no ambiguous-signal case to let decay back to trusted the way a
+    /// heavy-but-real user's rate-limit or enumeration count should.
+    pub fn is_flagged(&self, ip: IpAddr) -> bool {
+        self.flagged_ips.contains(&ip)
     }
 
     pub fn recent_hits(&self, limit: usize) -> Vec<HoneypotHit> {
@@ -124,6 +143,27 @@ mod tests {
             t.record_hit("abc123", IpAddr::V4(Ipv4Addr::new(1, 1, 1, i)), "bot");
         }
         assert_eq!(t.recent_hits(3).len(), 3);
+    }
+
+    #[test]
+    fn record_hit_flags_the_ip_permanently() {
+        let t = HoneypotTracker::new(vec!["abc123".to_string()]);
+        let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+        assert!(!t.is_flagged(ip));
+
+        t.record_hit("abc123", ip, "bot");
+        assert!(t.is_flagged(ip));
+    }
+
+    #[test]
+    fn flagging_one_ip_does_not_flag_another() {
+        let t = HoneypotTracker::new(vec!["abc123".to_string()]);
+        t.record_hit(
+            "abc123",
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            "bot",
+        );
+        assert!(!t.is_flagged(IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2))));
     }
 
     #[test]

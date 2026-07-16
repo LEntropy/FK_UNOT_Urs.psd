@@ -202,9 +202,19 @@ attribute.
 **Detection loop**: implemented as `HoneypotTracker::record_hit` /
 `GET /internal/honeypot-hits` (ops-only, no auth of its own, same trust
 boundary as every other `/internal/*` route in this project) -- logs
-`(token, ip, user_agent, unix_time)` per hit, in-memory. Feeding this into
-an adaptive-anti-scrape scoring loop is still item 3's deferred future
-work, unchanged.
+`(token, ip, user_agent, unix_time)` per hit, in-memory.
+
+**Update**: the "immediately and permanently flag that fingerprint" half
+of this section's own recommendation is now implemented, not just logged
+-- `HoneypotTracker` tracks a `flagged_ips` set alongside its hit log, and
+`render_asset` blocks any request from a flagged IP with `403` before the
+rate limiter or enumeration detector even run (both of those stay
+soft/resettable, since they reason about ambiguous signals a real heavy
+user could trip; a honeypot hit has none of that ambiguity -- see
+§3 below for why that made it "worth building now" rather than the fuller
+scoring loop). Tested in
+`apps/delivery-gateway/tests/integration.rs`'s
+`a_honeypot_hit_blocks_that_ip_from_a_later_real_render_request`.
 
 ### Where it plugs in
 
@@ -271,6 +281,14 @@ traffic patterns to tune it against. Also worth noting as a real
 limitation of what's built now: it's IP-based only, so a scraper rotating
 IPs defeats it the same way it defeats the existing rate limiter.
 
+**Update**: one more piece of "worth building now" surfaced without
+needing real production data -- §2's honeypot hits were already
+unambiguous by construction (no real user can ever trigger one), which is
+exactly the property that made turning a hit into an immediate, permanent
+IP block safe to ship without traffic to tune against (unlike the
+scoring/reputation system above, which genuinely does need that data).
+See §2's "Update" note for what's now implemented.
+
 ### Where it plugs in
 
 Implemented as `delivery-gateway`'s own `src/enumeration.rs` module (same
@@ -308,6 +326,16 @@ appears -- adding standard compliance later, once real registered records
 already exist, is itself a migration this scoping should already flag
 honestly (existing Amoy `tokenId`s would need an explicit mapping strategy
 to ERC-721 `tokenId`s, not an in-place reinterpretation).
+
+**Update**: `contracts/src/OwnershipRegistryERC721.sol` now exists --
+written and tested (`contracts/test/OwnershipRegistryERC721.t.sol`),
+consistent with the recommendation above in that it's explicitly *not
+deployed anywhere* and *not* wired into any running service. Having the
+contract ready removes the "would need to write and test this from
+scratch" cost from the "revisit later" path this section already
+recommends, without pre-committing to the migration itself -- see
+`contracts/README.md`'s "ERC-721 migration" section for the deploy/cutover
+plan this still leaves as a separate, explicit decision.
 
 ### Mainnet transition checklist
 

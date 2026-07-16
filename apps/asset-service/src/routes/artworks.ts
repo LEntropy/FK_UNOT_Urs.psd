@@ -19,7 +19,7 @@ const createArtworkSchema = z.object({
 export function artworksRouter(db: Db): Router {
   const router = Router();
 
-  router.post("/", (req, res) => {
+  router.post("/", async (req, res) => {
     const parsed = createArtworkSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
@@ -38,7 +38,7 @@ export function artworksRouter(db: Db): Router {
     // request that can't even read its own upload never creates one.
     let encrypted;
     try {
-      encrypted = encryptImageAtRest(parsed.data.sourceImageUri, id);
+      encrypted = await encryptImageAtRest(parsed.data.sourceImageUri, id);
     } catch (err) {
       return res.status(400).json({
         error: `could not read sourceImageUri ${JSON.stringify(parsed.data.sourceImageUri)}: ${err instanceof Error ? err.message : String(err)}`,

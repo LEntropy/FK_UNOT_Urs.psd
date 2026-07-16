@@ -24,6 +24,25 @@ const envSchema = z.object({
   KMS_CA_CERT_PATH: z.string().default("./kms-keys/kms_ca.crt"),
   KMS_ORG: z.string().default("teamA/teamA1"),
   KMS_KEY_ID: z.string().default("key_v1"),
-});
+
+  // src/storage/objectStorage.ts. "local" (default) preserves every
+  // existing local-dev workflow unchanged; "s3" talks to any
+  // S3-compatible endpoint (MinIO locally, real S3/R2/etc. in a real
+  // deployment) via the `minio` client library. Only the encrypted
+  // original goes through this -- generated public variants stay on
+  // local disk for now (see the module's own doc comment for why).
+  STORAGE_BACKEND: z.enum(["local", "s3"]).default("local"),
+  STORAGE_LOCAL_DIR: z.string().default("./data/encrypted"),
+  S3_ENDPOINT: z.string().optional(),
+  S3_PORT: z.coerce.number().default(9000),
+  S3_USE_SSL: z.coerce.boolean().default(false),
+  S3_ACCESS_KEY: z.string().optional(),
+  S3_SECRET_KEY: z.string().optional(),
+  S3_BUCKET: z.string().default("dontai-encrypted-originals"),
+  S3_REGION: z.string().default("us-east-1"),
+})
+  .refine((v) => v.STORAGE_BACKEND !== "s3" || (v.S3_ENDPOINT && v.S3_ACCESS_KEY && v.S3_SECRET_KEY), {
+    message: "STORAGE_BACKEND=s3 requires S3_ENDPOINT, S3_ACCESS_KEY, and S3_SECRET_KEY",
+  });
 
 export const env = envSchema.parse(process.env);

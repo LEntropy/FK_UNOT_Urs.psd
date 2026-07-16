@@ -80,6 +80,36 @@ services:
       timeout: 5s
       retries: 20
 
+  # Real S3-compatible object storage for asset-service's encrypted
+  # originals (src/storage/objectStorage.ts) -- opt-in, not the default in
+  # this compose file yet (asset-service below still defaults to
+  # STORAGE_BACKEND=local). Set STORAGE_BACKEND=s3 on asset-service to
+  # actually route through this. Not flipped on by default here because
+  # it hasn't been verified end-to-end against a live MinIO in this
+  # session (the Pi this project deploys to ran out of root-filesystem
+  # disk space mid-session -- a real, separate, pre-existing issue, not
+  # something this feature caused) -- only the local-filesystem backend
+  # and the S3 client code have been verified so far. Real local-dev
+  # verification: `docker compose --profile storage up minio` then set
+  # STORAGE_BACKEND=s3/S3_ENDPOINT=minio on asset-service and re-up.
+  minio:
+    image: minio/minio:latest
+    profiles: [storage]
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   asset-service:
     # Build context is the repo root now, not apps/asset-service alone --
     # see the api-gateway service's comment above for why (file: dependency
@@ -107,6 +137,14 @@ services:
       # error, which is correct behavior, not a bug to silently work around.
       KMS_HOST: "${KMS_HOST:-127.0.0.1}"
       KMS_PORT: "${KMS_PORT:-8443}"
+      # Object storage for the encrypted original (src/storage/
+      # objectStorage.ts) -- "local" (default) needs nothing extra. To
+      # exercise the S3 path against the minio service above instead:
+      # STORAGE_BACKEND=s3 docker compose --profile storage up
+      STORAGE_BACKEND: "${STORAGE_BACKEND:-local}"
+      S3_ENDPOINT: minio
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
     volumes:
       - asset_data:/apps/asset-service/data
       - shared:/shared:ro
@@ -250,3 +288,4 @@ volumes:
   detection_data:
   detection_out:
   api_gateway_data:
+  minio_data:

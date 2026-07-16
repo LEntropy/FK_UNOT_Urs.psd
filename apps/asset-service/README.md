@@ -107,6 +107,27 @@ once the protect job finishes -- see `orchestration.ts`. This is the first
 real use of `infra/kms-adapter` for actual image data, not just the
 custodial-wallet/relayer-key uses elsewhere in this project.
 
+## Object storage (§5-1)
+
+`src/storage/objectStorage.ts`: the encrypted original (the ciphertext
+`imageEncryption.ts` produces, the single most sensitive asset in this
+system) now goes through a real storage abstraction instead of always
+being a hardcoded local path. `STORAGE_BACKEND=local` (default) preserves
+every existing local-dev workflow unchanged. `STORAGE_BACKEND=s3` talks to
+any S3-compatible endpoint (MinIO locally via `docker compose --profile
+storage up minio`, real S3/R2/etc. in a real deployment) via the `minio`
+client library, which despite its name speaks plain S3 API against any
+compatible service. `encryptedImagePath` in the DB becomes either a local
+path or an `s3://bucket/key` URI depending on backend -- `decryptToTempFile`
+reads through the same abstraction either way, no branching in
+`orchestration.ts`.
+
+**Scoped deliberately narrow**: only the encrypted original is migrated.
+`protection-svc`'s generated public variants (watermarked/thumbnail
+outputs, served through `delivery-gateway`) stay on local disk -- they're
+regenerable derivatives, not the thing storage security is actually
+protecting. Migrating those is real future work, not attempted here.
+
 ## Community features (§3-2)
 
 `src/routes/community.ts`: feed, follows, likes, bookmarks/collections,
@@ -144,10 +165,15 @@ calling them directly (unproxied) bypasses that.
 
 ## What this does not do
 
-- No object storage — `sourceImageUri` is a local file path, same PoC-scope
-  limit as `protection-svc`'s `imageUri` (`apps/protection-svc/INTEGRATION.md`).
-  The image itself is encrypted at rest now (see above), but *where* it's
-  stored is still a local filesystem path, not S3-or-equivalent.
+- `sourceImageUri` (the *plaintext upload path*, before encryption) is
+  still always a local file path, same PoC-scope limit as `protection-svc`'s
+  `imageUri` (`apps/protection-svc/INTEGRATION.md`) -- the object-storage
+  migration above covers the encrypted-at-rest ciphertext, not this.
+- The S3 backend's code has real unit test coverage for the local backend
+  and the URI-parsing logic, but hasn't been exercised end-to-end against
+  a live MinIO in this session (blocked by an unrelated, pre-existing
+  disk-space issue on this project's Pi deployment target) -- treat it as
+  reviewed-but-not-live-verified until that happens.
 - No auth, no per-tenant isolation (this service itself -- `apps/api-gateway`
   sits in front of it now, but asset-service's own endpoints still trust
   whatever creatorId a caller sends).

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { wrapKey, unwrapKey } from "@dontai/kms-adapter";
 import { env } from "../env.js";
+import { getObjectStorage } from "../storage/objectStorage.js";
 
 /**
  * Envelope-encrypts the original uploaded image at rest (PROJECT_DESIGN.md
@@ -27,9 +28,7 @@ export interface EncryptedImage {
   encryptionAuthTag: string;
 }
 
-const ENCRYPTED_DIR = "./data/encrypted";
-
-export function encryptImageAtRest(plainImagePath: string, artworkId: string): EncryptedImage {
+export async function encryptImageAtRest(plainImagePath: string, artworkId: string): Promise<EncryptedImage> {
   const plainBytes = readFileSync(plainImagePath);
 
   const dek = randomBytes(32); // AES-256
@@ -38,9 +37,12 @@ export function encryptImageAtRest(plainImagePath: string, artworkId: string): E
   const ciphertext = Buffer.concat([cipher.update(plainBytes), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
-  mkdirSync(ENCRYPTED_DIR, { recursive: true });
-  const encryptedImagePath = join(ENCRYPTED_DIR, `${artworkId}.enc`);
-  writeFileSync(encryptedImagePath, ciphertext);
+  // Local filesystem or S3-compatible object storage, per STORAGE_BACKEND
+  // (src/storage/objectStorage.ts) -- this is the "at rest" storage the
+  // encrypted ciphertext actually lives in; the plaintext source (read
+  // above, deleted below) is a separate, always-local upload path, not
+  // something this migration touches.
+  const encryptedImagePath = await getObjectStorage().write(`${artworkId}.enc`, ciphertext);
 
   const wrappedDek = wrapKey(env.KMS_PUBLIC_KEY_PATH, dek);
 
@@ -72,7 +74,7 @@ export async function decryptToTempFile(encrypted: EncryptedImage, artworkId: st
     encKey: wrappedDek,
   });
 
-  const ciphertext = readFileSync(encrypted.encryptedImagePath);
+  const ciphertext = await getObjectStorage().read(encrypted.encryptedImagePath);
   const iv = Buffer.from(encrypted.encryptionIv, "base64");
   const authTag = Buffer.from(encrypted.encryptionAuthTag, "base64");
 

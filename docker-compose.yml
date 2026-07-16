@@ -74,6 +74,10 @@ services:
       USE_REMOTE_GPU: "0"
     volumes:
       - protection_out:/app/out
+      # Job state (jobs_db.py) -- without this volume, GET /protect/:jobId
+      # for anything from before a container restart would 404 even though
+      # jobs_db.py's whole point is surviving that restart.
+      - protection_data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 5s
@@ -284,6 +288,7 @@ services:
 volumes:
   shared:
   protection_out:
+  protection_data:
   asset_data:
   detection_data:
   detection_out:

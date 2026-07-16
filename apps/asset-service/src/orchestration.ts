@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Db } from "./db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "./db/schema.js";
 import { createProtectJob, pollProtectJob } from "./clients/protectionSvc.js";
@@ -85,70 +85,142 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
         .run();
     }
 
-    await setStatus(db, artworkId, "REGISTERING");
-
-    try {
-      const registration = await registerAsset({
-        ownerAddress: artwork.ownerWalletAddress,
-        perceptualHash: job.perceptualHash,
-        metadataHash: job.metadataHash,
-        doNotTrain: !artwork.allowAiTraining,
-      });
-
-      db.insert(ownershipRecords)
-        .values({
-          artworkId,
-          ownerWallet: registration.ownerAddress,
-          contentHash: registration.contentHash,
-          chain: env.CHAIN_NAME,
-          registryAddress: env.REGISTRY_ADDRESS,
-          txHash: registration.txHash,
-          blockNumber: registration.blockNumber,
-          registeredAt: new Date(),
-        })
-        .run();
-
-      await setStatus(db, artworkId, "PUBLISHED");
-    } catch (err) {
-      if (err instanceof AlreadyRegisteredError) {
-        // apps/blockchain-svc/INTEGRATION.md's documented 409 handling,
-        // actually implemented here: re-verify on-chain ownership. Same
-        // owner => idempotent (e.g. a retried request), not a failure.
-        // Different owner => a genuine hash collision, worth flagging
-        // rather than silently overwriting.
-        const onChain = await verifyAsset(err.contentHash);
-        if (onChain.exists && onChain.owner?.toLowerCase() === artwork.ownerWalletAddress.toLowerCase()) {
-          db.insert(ownershipRecords)
-            .values({
-              artworkId,
-              ownerWallet: onChain.owner,
-              contentHash: err.contentHash,
-              chain: env.CHAIN_NAME,
-              registryAddress: env.REGISTRY_ADDRESS,
-              txHash: "(pre-existing registration, no new tx)",
-              blockNumber: 0,
-              registeredAt: onChain.timestamp ? new Date(onChain.timestamp * 1000) : new Date(),
-            })
-            .run();
-          await setStatus(db, artworkId, "PUBLISHED");
-        } else {
-          await setStatus(
-            db,
-            artworkId,
-            "FAILED",
-            `content hash collision: ${err.contentHash} is already registered to a different owner (${onChain.owner}), not this artwork's owner (${artwork.ownerWalletAddress})`,
-          );
-        }
-      } else {
-        throw err;
-      }
-    }
+    await runRegistrationStep(db, artworkId, artwork.ownerWalletAddress, job.perceptualHash, job.metadataHash, artwork.allowAiTraining);
   } catch (err) {
     await setStatus(db, artworkId, "FAILED", err instanceof Error ? err.message : String(err));
   } finally {
     // Decrypted plaintext only ever exists for the duration of this job --
     // clean it up regardless of success/failure, not just on the happy path.
     if (decryptedTempPath) cleanupTempFile(decryptedTempPath);
+  }
+}
+
+/**
+ * Extracted from runUploadPipeline so recoverInterruptedUploads() can
+ * resume an artwork stuck at REGISTERING without re-running protection --
+ * by the time a row reaches REGISTERING, perceptualHash/metadataHash are
+ * already persisted on it (set just before this is first called), so
+ * there's nothing to recompute, only the on-chain call to retry.
+ */
+async function runRegistrationStep(
+  db: Db,
+  artworkId: string,
+  ownerWalletAddress: string,
+  perceptualHash: string,
+  metadataHash: string,
+  allowAiTraining: boolean,
+): Promise<void> {
+  await setStatus(db, artworkId, "REGISTERING");
+
+  try {
+    const registration = await registerAsset({
+      ownerAddress: ownerWalletAddress,
+      perceptualHash,
+      metadataHash,
+      doNotTrain: !allowAiTraining,
+    });
+
+    db.insert(ownershipRecords)
+      .values({
+        artworkId,
+        ownerWallet: registration.ownerAddress,
+        contentHash: registration.contentHash,
+        chain: env.CHAIN_NAME,
+        registryAddress: env.REGISTRY_ADDRESS,
+        txHash: registration.txHash,
+        blockNumber: registration.blockNumber,
+        registeredAt: new Date(),
+      })
+      .run();
+
+    await setStatus(db, artworkId, "PUBLISHED");
+  } catch (err) {
+    if (err instanceof AlreadyRegisteredError) {
+      // apps/blockchain-svc/INTEGRATION.md's documented 409 handling,
+      // actually implemented here: re-verify on-chain ownership. Same
+      // owner => idempotent (e.g. a retried request), not a failure.
+      // Different owner => a genuine hash collision, worth flagging
+      // rather than silently overwriting.
+      const onChain = await verifyAsset(err.contentHash);
+      if (onChain.exists && onChain.owner?.toLowerCase() === ownerWalletAddress.toLowerCase()) {
+        db.insert(ownershipRecords)
+          .values({
+            artworkId,
+            ownerWallet: onChain.owner,
+            contentHash: err.contentHash,
+            chain: env.CHAIN_NAME,
+            registryAddress: env.REGISTRY_ADDRESS,
+            txHash: "(pre-existing registration, no new tx)",
+            blockNumber: 0,
+            registeredAt: onChain.timestamp ? new Date(onChain.timestamp * 1000) : new Date(),
+          })
+          .run();
+        await setStatus(db, artworkId, "PUBLISHED");
+      } else {
+        await setStatus(
+          db,
+          artworkId,
+          "FAILED",
+          `content hash collision: ${err.contentHash} is already registered to a different owner (${onChain.owner}), not this artwork's owner (${ownerWalletAddress})`,
+        );
+      }
+    } else {
+      throw err;
+    }
+  }
+}
+
+/**
+ * Called once at asset-service startup (index.ts) -- the resumability fix.
+ * Any artwork left at PROTECTING or REGISTERING when this process starts
+ * was, by definition, interrupted by a previous process's death (a fresh
+ * process has issued no POST /artworks yet, so nothing can legitimately be
+ * mid-flight already).
+ *
+ * REGISTERING is safely resumable: protection already finished and its
+ * hashes are already persisted on the row, so this just retries the
+ * on-chain call (registerAsset/verifyAsset are already idempotent-safe,
+ * see runRegistrationStep's AlreadyRegisteredError handling).
+ *
+ * PROTECTING is not resumed, only failed cleanly: there's no reliable way
+ * to know whether protection-svc's job for it is still running, already
+ * finished, or itself died (protection-svc's own restart-recovery,
+ * jobs_db.py, would have already marked it failed if protection-svc
+ * itself restarted -- but asset-service has no way to distinguish that
+ * from "protection-svc is still fine and still working on it" without
+ * risking a duplicate protect job). Marking it failed with an honest
+ * message and asking for a re-upload is the safe choice over silently
+ * leaving it stuck forever or guessing.
+ */
+export async function recoverInterruptedUploads(db: Db): Promise<void> {
+  const stuck = db.select().from(artworks).where(inArray(artworks.status, ["PROTECTING", "REGISTERING"])).all();
+
+  for (const artwork of stuck) {
+    if (artwork.status === "REGISTERING" && artwork.perceptualHash && artwork.metadataHash) {
+      console.log(`[recovery] resuming REGISTERING for ${artwork.id} after a restart`);
+      // Awaited (unlike runUploadPipeline's own fire-and-forget dispatch
+      // from the request handler) -- this runs once at startup, not inside
+      // an HTTP request cycle, so there's no latency budget forcing this
+      // to return quickly. Awaiting sequentially also means startup
+      // finishes only once every stuck artwork has actually been resolved
+      // one way or the other, not left racing in the background.
+      await runRegistrationStep(
+        db,
+        artwork.id,
+        artwork.ownerWalletAddress,
+        artwork.perceptualHash,
+        artwork.metadataHash,
+        artwork.allowAiTraining,
+      ).catch((err) => setStatus(db, artwork.id, "FAILED", err instanceof Error ? err.message : String(err)));
+    } else {
+      console.log(`[recovery] marking ${artwork.id} failed -- interrupted mid-${artwork.status} by a restart`);
+      await setStatus(
+        db,
+        artwork.id,
+        "FAILED",
+        `interrupted by an asset-service restart while ${artwork.status.toLowerCase()} -- please re-upload`,
+      );
+    }
   }
 }
 

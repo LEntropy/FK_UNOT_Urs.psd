@@ -21,19 +21,24 @@ safe on the one GPU this project has tested against.
 Known gaps, not hidden:
 - `imageUri` is a local file path in this PoC, not a real object-storage
   URI -- there's no S3-or-equivalent integration here.
-- Job state is an in-memory dict -- lost on restart. A real deployment needs
-  persistent job state, not just this (the Postgres/Redis stack
-  PROJECT_DESIGN.md already calls for elsewhere would be the natural home).
+- Job state now persists to SQLite (src/jobs_db.py) instead of an
+  in-memory dict -- a *finished* job's status/result survives a restart.
+  This does NOT make an interrupted GPU job resumable (no checkpoint
+  mechanism exists in ml-engine/rust-core to resume a partial
+  optimization from) -- any job genuinely mid-flight when the process
+  dies gets marked failed with an honest "interrupted by restart" message
+  on the next startup, rather than sitting in queued/processing forever
+  with no way to tell "still running" from "died silently". See
+  jobs_db.py's own module doc for the full reasoning.
 - No auth, no per-tenant isolation -- this is a dev-loopback service.
 """
 
+import os
 import sys
-import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -41,12 +46,17 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 from orchestrate import ML_ENGINE_DIR, PRESETS, protect  # noqa: E402
+import jobs_db  # noqa: E402
 
 app = FastAPI(title="protection-svc", version="0.1.0")
 
 _executor = ThreadPoolExecutor(max_workers=1)  # see module docstring for why
-_jobs: dict[str, dict] = {}
-_jobs_lock = Lock()
+_JOBS_DB_PATH = os.environ.get("JOBS_DB_PATH", str(Path(__file__).parent / "data" / "jobs.db"))
+_jobs_conn = jobs_db.connect(_JOBS_DB_PATH)
+
+_interrupted_count = jobs_db.mark_interrupted_jobs_failed(_jobs_conn)
+if _interrupted_count:
+    print(f"[startup] marked {_interrupted_count} job(s) failed -- interrupted by a previous process's restart")
 
 
 class ProtectRequest(BaseModel):
@@ -62,8 +72,7 @@ class ProtectRequest(BaseModel):
 
 
 def _run_job(job_id: str, req: ProtectRequest) -> None:
-    with _jobs_lock:
-        _jobs[job_id]["status"] = "processing"
+    jobs_db.set_processing(_jobs_conn, job_id)
 
     try:
         out_dir = str(Path(ML_ENGINE_DIR).parent / "out" / job_id)
@@ -81,13 +90,9 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
             size=req.size,
             eot=req.eot,
         )
-        with _jobs_lock:
-            _jobs[job_id].update(result)  # result already has "status": "completed"
+        jobs_db.set_completed(_jobs_conn, job_id, result)  # result already has "status": "completed"
     except Exception as exc:  # noqa: BLE001 -- report failure via job status, don't just kill the thread silently
-        with _jobs_lock:
-            _jobs[job_id]["status"] = "failed"
-            _jobs[job_id]["error"] = str(exc)
-            _jobs[job_id]["traceback"] = traceback.format_exc()
+        jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
 
 
 @app.get("/health")
@@ -105,8 +110,7 @@ def create_protect_job(req: ProtectRequest):
         raise HTTPException(400, f"imageUri {req.imageUri!r} not found (local file path in this PoC, see module docstring)")
 
     job_id = f"job_{uuid.uuid4().hex[:12]}"
-    with _jobs_lock:
-        _jobs[job_id] = {"jobId": job_id, "status": "queued", "queuedAt": time.time()}
+    jobs_db.create_job(_jobs_conn, job_id, req.model_dump())
 
     _executor.submit(_run_job, job_id, req)
     return {"jobId": job_id, "status": "queued"}
@@ -114,8 +118,7 @@ def create_protect_job(req: ProtectRequest):
 
 @app.get("/protect/{job_id}")
 def get_protect_job(job_id: str):
-    with _jobs_lock:
-        job = _jobs.get(job_id)
+    job = jobs_db.get_job(_jobs_conn, job_id)
     if job is None:
         raise HTTPException(404, f"no job {job_id!r}")
     return job

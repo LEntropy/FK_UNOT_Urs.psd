@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { createApp } from "./app.js";
 import { createDb } from "./db/client.js";
 import { env } from "./env.js";
+import { recoverInterruptedUploads } from "./orchestration.js";
 
 mkdirSync(dirname(env.DATABASE_URL), { recursive: true });
 const db = createDb(env.DATABASE_URL);
@@ -10,3 +11,5 @@ const db = createDb(env.DATABASE_URL);
 createApp(db).listen(env.PORT, () => {
   console.log(`asset-service listening on http://localhost:${env.PORT}`);
 });
+
+void recoverInterruptedUploads(db);

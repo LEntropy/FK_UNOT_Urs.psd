@@ -23,6 +23,8 @@ apps/protection-svc/**/__pycache__/
 apps/protection-svc/ml-engine/.venv/
 apps/protection-svc/ml-engine/out/
 apps/protection-svc/rust-core/target/
+apps/protection-svc/data/
+apps/protection-svc/test/test_jobs.db*
 
 # delivery-gateway
 apps/delivery-gateway/target/

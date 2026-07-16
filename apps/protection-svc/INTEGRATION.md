@@ -177,9 +177,17 @@ can already approach an 8GB card's limit for a *single* job). A second
 worker pool yet.
 
 **What's still a PoC shortcut, not production**: `imageUri` is a local file
-path (no object storage integration); job state is an in-memory dict (lost
-on server restart, no persistence); there's no auth. All noted in
-`server.py`'s own docstring, not hidden.
+path (no object storage integration -- contrast with asset-service, which
+now has a real S3-compatible option for the encrypted original,
+`apps/asset-service/README.md`'s "Object storage" section); there's no
+auth. Job state used to be an in-memory dict (lost on restart) -- now
+persists to SQLite (`jobs_db.py`), so a *finished* job's status/result
+survives a restart, and anything genuinely mid-flight when the process
+dies gets marked failed with an honest "interrupted by restart" message
+on the next startup rather than silently vanishing. This is not the same
+as resumable -- there's no checkpoint mechanism to actually continue a
+partial GPU optimization from. All noted in `server.py`'s own docstring
+and `jobs_db.py`'s module doc, not hidden.
 
 On `completed`, asset-service takes `perceptualHash` + `metadataHash`
 straight into `blockchain-svc`'s `POST /assets/register`

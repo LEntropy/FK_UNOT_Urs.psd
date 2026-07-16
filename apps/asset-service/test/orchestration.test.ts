@@ -30,7 +30,7 @@ vi.mock("../src/clients/blockchainSvc.js", async (importOriginal) => {
 const { createProtectJob, pollProtectJob } = await import("../src/clients/protectionSvc.js");
 const { registerAsset, verifyAsset, AlreadyRegisteredError } = await import("../src/clients/blockchainSvc.js");
 const { cleanupTempFile } = await import("../src/crypto/imageEncryption.js");
-const { runUploadPipeline } = await import("../src/orchestration.js");
+const { runUploadPipeline, recoverInterruptedUploads } = await import("../src/orchestration.js");
 
 const OWNER = "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2";
 
@@ -181,5 +181,65 @@ describe("runUploadPipeline", () => {
     const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_test1")).get()!;
     expect(artwork.status).toBe("FAILED");
     expect(artwork.errorMessage).toContain("collision");
+  });
+});
+
+describe("recoverInterruptedUploads", () => {
+  it("marks a PROTECTING artwork FAILED with an honest interrupted message, doesn't touch protection-svc", async () => {
+    const db = createTestDb();
+    seedArtwork(db, { id: "ast_stuck_protecting", status: "PROTECTING" });
+
+    await recoverInterruptedUploads(db);
+
+    const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_stuck_protecting")).get()!;
+    expect(artwork.status).toBe("FAILED");
+    expect(artwork.errorMessage).toContain("interrupted");
+    expect(artwork.errorMessage).toContain("re-upload");
+    expect(createProtectJob).not.toHaveBeenCalled();
+  });
+
+  it("resumes a REGISTERING artwork by retrying only the on-chain call, not re-protecting", async () => {
+    const db = createTestDb();
+    seedArtwork(db, {
+      id: "ast_stuck_registering",
+      status: "REGISTERING",
+      perceptualHash: "0xaaaa",
+      metadataHash: "0xbbbb",
+    });
+
+    vi.mocked(registerAsset).mockResolvedValue({
+      contentHash: "0xcccc",
+      ownerAddress: OWNER,
+      doNotTrain: true,
+      txHash: "0xresumed",
+      blockNumber: 456,
+    });
+
+    await recoverInterruptedUploads(db);
+
+    const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_stuck_registering")).get()!;
+    expect(artwork.status).toBe("PUBLISHED");
+    expect(registerAsset).toHaveBeenCalledWith({
+      ownerAddress: OWNER,
+      perceptualHash: "0xaaaa",
+      metadataHash: "0xbbbb",
+      doNotTrain: true,
+    });
+    expect(createProtectJob).not.toHaveBeenCalled(); // never re-ran protection
+  });
+
+  it("leaves UPLOADED/PUBLISHED/FAILED artworks alone -- only PROTECTING/REGISTERING are stuck states", async () => {
+    const db = createTestDb();
+    seedArtwork(db, { id: "ast_uploaded", status: "UPLOADED" });
+    seedArtwork(db, { id: "ast_published", status: "PUBLISHED" });
+    seedArtwork(db, { id: "ast_failed", status: "FAILED", errorMessage: "some earlier real failure" });
+
+    await recoverInterruptedUploads(db);
+
+    expect(db.select().from(artworks).where(eq(artworks.id, "ast_uploaded")).get()!.status).toBe("UPLOADED");
+    expect(db.select().from(artworks).where(eq(artworks.id, "ast_published")).get()!.status).toBe("PUBLISHED");
+    const failedArtwork = db.select().from(artworks).where(eq(artworks.id, "ast_failed")).get()!;
+    expect(failedArtwork.status).toBe("FAILED");
+    expect(failedArtwork.errorMessage).toBe("some earlier real failure"); // not overwritten
   });
 });

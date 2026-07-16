@@ -182,6 +182,14 @@ calling them directly (unproxied) bypasses that.
   asking, so "followers-only" behaves like "public" today. A real
   enforcement would need api-gateway to pass the viewer's own id through to
   reads, not just writes, which it doesn't do yet.
-- Job state (both here and in protection-svc) is not resumable across a
-  process restart mid-job — a killed server loses in-flight orchestration
-  state, `artworks.status` just stays wherever it was.
+- Job state used to be lost entirely on a restart mid-job -- `index.ts` now
+  calls `orchestration.ts`'s `recoverInterruptedUploads()` once at startup,
+  which resumes anything stuck at `REGISTERING` (protection already
+  finished, its hashes are already persisted -- only the on-chain call
+  needs retrying) and marks anything stuck at `PROTECTING` `FAILED` with an
+  honest "interrupted by restart, please re-upload" message rather than
+  either leaving it stuck forever or guessing at a protection-svc job's
+  fate. Not the same as making protection itself resumable -- there's no
+  checkpoint mechanism for a partial GPU optimization to continue from
+  (protection-svc's own restart-recovery, `jobs_db.py`, has the matching
+  caveat).

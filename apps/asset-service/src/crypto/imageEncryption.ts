@@ -1,6 +1,6 @@
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { wrapKey, unwrapKey } from "@dontai/kms-adapter";
 import { env } from "../env.js";
 import { getObjectStorage } from "../storage/objectStorage.js";
@@ -83,9 +83,15 @@ export async function decryptToTempFile(encrypted: EncryptedImage, artworkId: st
 
   // env.DECRYPT_TEMP_DIR, not os.tmpdir() -- see env.ts's doc comment on why:
   // the OS temp dir can be on a different, more space-constrained volume
-  // than wherever this deployment's ./data actually lives.
-  mkdirSync(env.DECRYPT_TEMP_DIR, { recursive: true });
-  const tempPath = join(env.DECRYPT_TEMP_DIR, `dontai-decrypted-${artworkId}${extname(encrypted.encryptedImagePath)}`);
+  // than wherever this deployment's ./data actually lives. Resolved to an
+  // absolute path (not left cwd-relative like STORAGE_LOCAL_DIR) because,
+  // unlike object storage, this path is handed to protection-svc -- a
+  // separate process with its own cwd -- as the imageUri for it to open
+  // directly; a relative path resolves against the wrong process's cwd
+  // there and 400s with "not found" even though the file exists.
+  const tempDir = resolve(env.DECRYPT_TEMP_DIR);
+  mkdirSync(tempDir, { recursive: true });
+  const tempPath = join(tempDir, `dontai-decrypted-${artworkId}${extname(encrypted.encryptedImagePath)}`);
   writeFileSync(tempPath, plainBytes);
   return tempPath;
 }

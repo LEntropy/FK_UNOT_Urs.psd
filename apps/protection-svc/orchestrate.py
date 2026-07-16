@@ -186,6 +186,7 @@ def protect(
     watermark_payload_hex: str,
     size: int = 256,
     eot: bool | None = None,
+    concept_misalign_target_path: str | None = None,
 ) -> dict:
     start = time.time()
     out = Path(out_dir)
@@ -236,6 +237,43 @@ def protect(
             size=size,
         )
 
+    # Concept Misalignment Layer (PHASE4_SCOPING.md §1, PROJECT_DESIGN.md
+    # §3-3 layer [3]) -- opt-in only, off unless a caller explicitly passes
+    # concept_misalign_target_path, for the same reason it's not on by
+    # default in any preset: concept_misalign.py's own module doc is
+    # explicit that PHASE4_SCOPING.md §1's recommended LoRA-training
+    # validation experiment has not been run against it, so this is an
+    # unvalidated mechanism, not a proven protection effect -- a caller
+    # opting in is accepting that, not getting a silently-upgraded default.
+    # Also a no-op under USE_REMOTE_GPU, same reasoning as
+    # _maybe_auto_select_style_target above: needs a local torch/CLIP
+    # forward pass, and extending remote_gpu.py to cover this too is
+    # future work, not silently done wrong here.
+    if concept_misalign_target_path:
+        if USE_REMOTE_GPU:
+            print(
+                "[orchestrate] concept_misalign_target_path is set but USE_REMOTE_GPU=1 -- "
+                "concept misalignment needs a local CLIP pass, skipping",
+                flush=True,
+            )
+        else:
+            from concept_misalign import CONCEPT_PRESETS, misalign
+
+            misalign_preset = preset_name if preset_name in CONCEPT_PRESETS else "L3_ANTI_TRAIN"
+            print(
+                f"[orchestrate] 1b/4 concept-misalign (local, EXPERIMENTAL/unvalidated -- "
+                f"see concept_misalign.py's module doc) preset={misalign_preset} ...",
+                flush=True,
+            )
+            misalign(
+                original_path=str(cloaked_path),
+                concept_target_path=concept_misalign_target_path,
+                output_path=str(cloaked_path),
+                preset_name=misalign_preset,
+                eot=eot,
+                size=size,
+            )
+
     watermarked_path = out / "watermarked.png"
     print("[orchestrate] 2/4 watermark ...", flush=True)
     run_rust_core(
@@ -272,6 +310,7 @@ def protect(
         "sizeValidated": size == 256,  # see the `size` param's doc comment above
         "doNotTrain": not allow_ai_training,
         "watermarkPayloadHex": watermark_payload_hex,
+        "conceptMisalignApplied": bool(concept_misalign_target_path) and not USE_REMOTE_GPU,
         "processingTimeMs": round((time.time() - start) * 1000),
         "variants": variants,
     }
@@ -291,6 +330,13 @@ if __name__ == "__main__":
     parser.add_argument("--allow-ai-training", action="store_true")
     parser.add_argument("--watermark-payload-hex", default="deadbeefcafef00d")
     parser.add_argument(
+        "--concept-misalign-target",
+        default=None,
+        help="EXPERIMENTAL/opt-in (PHASE4_SCOPING.md §1, unvalidated -- see concept_misalign.py's "
+        "module doc): path to a decoy-concept image. If set, runs concept_misalign.py on the "
+        "style-cloaked output before watermarking. Omit (default) to skip entirely.",
+    )
+    parser.add_argument(
         "--size",
         type=int,
         default=256,
@@ -309,6 +355,7 @@ if __name__ == "__main__":
         allow_ai_training=args.allow_ai_training,
         watermark_payload_hex=args.watermark_payload_hex,
         size=args.size,
+        concept_misalign_target_path=args.concept_misalign_target,
     )
 
     print(json.dumps(result, indent=2))

@@ -82,6 +82,56 @@ opt-in shape) rather than folded into the existing style-cloak function,
 since the two have genuinely different loss targets and shouldn't share
 one optimization loop.
 
+### What's actually built, and what's honestly still missing
+
+`apps/protection-svc/ml-engine/src/concept_misalign.py` implements the
+optimization loop above: `model.py`'s new `ConceptFeatureExtractor` wraps
+a CLIP (`open_clip`, `ViT-B-32/openai`) image encoder the same way
+`StyleFeatureExtractor` wraps VGG19, and `misalign()` runs the same
+epsilon-bounded gradient-descent shape as `style_cloak.py`'s `cloak()`,
+minimizing `1 - cosine_similarity` between the image's CLIP embedding and
+a decoy concept image's CLIP embedding instead of VGG19 Gram-matrix MSE.
+Wired into `orchestrate.py`'s `protect()` as a fully opt-in
+`concept_misalign_target_path` parameter (`None` by default, `--concept-
+misalign-target` on the CLI) -- when set, runs after style-cloaking and
+before watermarking; when unset (the default for every existing caller),
+`protect()`'s behavior is byte-for-byte unchanged from before this file
+existed.
+
+**Two real gaps, stated plainly rather than glossed over:**
+
+1. **No CLIP-text-side signal.** This pipeline optimizes toward a decoy
+   *image's* CLIP embedding, not toward a mismatched *caption's* CLIP
+   text embedding, because `orchestrate.py`'s inputs (`title`,
+   `creator_id`) aren't the kind of descriptive training caption a real
+   fine-tuning pipeline would pair with the image -- there's no real
+   caption in this project's data model to target against. Using a decoy
+   *image* embedding as the target is a reasonable proxy (CLIP's
+   image-text space is joint, so pulling toward another image's region of
+   that space still pulls away from whatever real caption the image would
+   otherwise pair with correctly) but is not the literal mechanism
+   described above, and that gap should stay visible rather than get
+   quietly assumed away.
+2. **The recommended validation methodology (three paragraphs up: train a
+   real SD1.5 LoRA on misaligned-image/real-caption pairs, measure
+   generation drift) has not been run.** It needs a real GPU LoRA-training
+   run, the same kind `ml-engine/README.md`'s LoRA-validation experiment
+   used on a separate GPU machine -- not available in the session this
+   file was written in. Separately, even a CPU-only smoke test of
+   `concept_misalign.py` itself (confirming the loop runs and the
+   embedding actually drifts, short of any training-based claim) could not
+   be completed in that same session: loading `open_clip`'s pretrained
+   CLIP checkpoint was blocked by that environment's own external-code
+   safety gate before a single forward pass ran. **Until someone runs
+   either check for real, `concept_misalign.py` is unexercised code that
+   compiles and follows the designed mechanism -- not a verified
+   mechanism, and absolutely not a verified protection effect.** This is
+   why it's wired as strictly opt-in with no default-on path anywhere
+   (`orchestrate.py`, `server.py`'s HTTP API does not expose it at all,
+   matching `select_style_target.py`'s existing env-var-only, no-HTTP-
+   exposure pattern for the same "no curated pool/no validation yet"
+   reason).
+
 ## 2. Honeypot assets / honeypot URLs
 
 ### Direct extension of what `delivery-gateway` already built

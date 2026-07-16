@@ -66,3 +66,55 @@ def _gram_matrix(feature_map: torch.Tensor) -> torch.Tensor:
     flat = feature_map.view(c, h * w)
     gram = flat @ flat.t()
     return gram / (c * h * w)  # normalize so magnitude doesn't scale with feature map size
+
+
+class ConceptFeatureExtractor(nn.Module):
+    """Wraps CLIP's image encoder for concept_misalign.py -- the joint
+    image-text embedding space is what actually correlates with a
+    downstream model's caption-to-visual-feature association during
+    fine-tuning (PHASE4_SCOPING.md §1), unlike StyleFeatureExtractor's
+    VGG19 Gram matrices, which have no notion of text at all.
+
+    ViT-B-32/openai (the original CLIP release) is the smallest,
+    best-documented checkpoint open_clip ships -- picked for the same
+    "smallest thing that proves the mechanism" reasoning as VGG19 above,
+    not for best embedding quality. Requires network access to fetch the
+    pretrained checkpoint on first use (same one-time cost as
+    torchvision's VGG19_Weights.DEFAULT above).
+    """
+
+    def __init__(self, device: torch.device):
+        super().__init__()
+        import open_clip
+
+        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        model = model.to(device).eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        self.model = model
+        self.device = device
+        # open_clip's own preprocessing normalizes with CLIP's own
+        # mean/std, not ImageNet's -- pulled from the transform it built,
+        # not hardcoded here, so this always matches whatever checkpoint
+        # was actually loaded.
+        normalize = next(t for t in preprocess.transforms if hasattr(t, "mean"))
+        self.mean = torch.tensor(normalize.mean).view(1, 3, 1, 1).to(device)
+        self.std = torch.tensor(normalize.std).view(1, 3, 1, 1).to(device)
+        # CLIP's own input resolution (fixed by the checkpoint's patch
+        # embedding), independent of whatever `size` a caller's image
+        # tensor was loaded at -- resized here so callers can keep using
+        # style_cloak.py's load_image_tensor at this project's own
+        # (256, validated) resolution.
+        self.input_resolution = model.visual.image_size[0] if hasattr(model.visual, "image_size") else 224
+
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        # x is expected in [0, 1], NCHW, at any resolution.
+        x = torch.nn.functional.interpolate(
+            x, size=(self.input_resolution, self.input_resolution), mode="bicubic", align_corners=False
+        )
+        return (x - self.mean) / self.std
+
+    def embed(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns the (unnormalized -- concept_loss's cosine similarity
+        handles that) CLIP image embedding for a 1x3xHxW [0,1] tensor."""
+        return self.model.encode_image(self._normalize(x))

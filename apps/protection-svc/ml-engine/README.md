@@ -19,9 +19,13 @@ gives 100% protection.
 ```
 src/
   model.py           VGG19 feature extractor -> Gram matrices at 5 layers
-                      (same layer convention as Gatys et al. neural style transfer)
+                      (same layer convention as Gatys et al. neural style transfer);
+                      also ConceptFeatureExtractor, a CLIP image-encoder wrapper
+                      for concept_misalign.py below
   style_cloak.py      the cloaking optimization (PGD/Adam, L-infinity bounded);
                       --eot optimizes against random resize round-trips too
+  concept_misalign.py EXPERIMENTAL/opt-in, unvalidated -- see "Concept Misalignment
+                      Layer" section below and PHASE4_SCOPING.md §1 before using this
   evaluate.py         quantifies style drift + perceptual preservation
   robustness_test.py  re-measures style drift after JPEG recompression /
                       resize round-trips, to see how much survives a real
@@ -336,9 +340,52 @@ on-chain registration use case (the protected image is still identifiably
 near-duplicates/derivatives found elsewhere on the web, distinct from
 completely unrelated images.
 
+## Concept Misalignment Layer (`concept_misalign.py`) — EXPERIMENTAL, unvalidated
+
+`PROJECT_DESIGN.md` §3-3's layer [3] (Nightshade's actual mechanism,
+distinct from the style-confusion layer above -- see
+`PHASE4_SCOPING.md` §1 for the full design). `concept_misalign.py` runs
+the same epsilon-bounded optimization shape as `style_cloak.py`, but
+against `model.py`'s new `ConceptFeatureExtractor` (a CLIP image encoder,
+`open_clip` `ViT-B-32/openai`) instead of VGG19 Gram matrices, pulling the
+image's CLIP embedding toward a decoy concept image's embedding.
+
+```bash
+./.venv/Scripts/python.exe src/concept_misalign.py \
+  --original out/original.png --concept-target out/some_other_concept.png \
+  --preset L3_ANTI_TRAIN
+```
+
+Wired into `orchestrate.py`'s `protect()` as a fully opt-in
+`concept_misalign_target_path` parameter / `--concept-misalign-target` CLI
+flag, `None`/unset by default -- every existing caller's behavior is
+unchanged unless this is explicitly passed. **Not exposed through
+`server.py`'s HTTP API** (same reasoning as `select_style_target.py`'s
+env-var-only wiring: no curated decoy-concept pool exists in this repo,
+and see the next two points).
+
+**Two real, stated-plainly gaps** (full detail in `PHASE4_SCOPING.md` §1):
+
+1. Targets a decoy *image's* CLIP embedding, not a mismatched *caption's*
+   CLIP text embedding — this project's pipeline has no real training
+   caption to target against, only `title`/`creator_id`. A reasonable
+   proxy given CLIP's joint space, but not the literal text-alignment
+   mechanism Nightshade describes.
+2. **Unvalidated.** `PHASE4_SCOPING.md` §1's recommended methodology (a
+   real GPU LoRA-training run measuring generation drift) has not been
+   executed — no GPU was available in the session this was written in.
+   Even a CPU-only smoke test of the optimization loop itself couldn't be
+   completed in that session: downloading `open_clip`'s pretrained CLIP
+   checkpoint was blocked by that environment's own external-code safety
+   gate. This code compiles and follows the designed mechanism; it has
+   not been run even once. Treat any claim about its effect as
+   unsubstantiated until someone actually runs it.
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
-- No concept-misalignment (Nightshade-style) layer — style confusion only.
+- Concept-misalignment exists as opt-in, unvalidated code
+  (`concept_misalign.py`, above) — not a proven protection layer yet, and
+  not on by default anywhere.
 - EOT here only covers resize; JPEG recompression isn't part of the training
   loop (real JPEG encoding isn't differentiable — would need a differentiable
   JPEG approximation to include it in EOT, not implemented here).

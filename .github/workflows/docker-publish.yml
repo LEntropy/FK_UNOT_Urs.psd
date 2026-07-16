@@ -74,5 +74,15 @@ jobs:
           # "repository name must be lowercase" if used directly. Hardcoded
           # lowercase to match the image: tags already in docker-compose.yml.
           tags: ghcr.io/lentropy/dontai-${{ matrix.service }}:latest
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # Was type=gha here -- confirmed stale with a real reproduction: a
+          # commit that genuinely changed apps/detection-svc/server.py
+          # (3d5f86f) completed this job in 34-58 seconds, far too fast for
+          # a real multi-arch QEMU-emulated build (torch/playwright/cargo
+          # installs each take minutes on their own). `type=gha` is
+          # documented by Docker as best-effort, not guaranteed
+          # content-correct -- `type=registry` is their own recommended fix
+          # for exactly this staleness class, since it's addressed by the
+          # registry's own content digests rather than GHA's cache blob
+          # store. Costs an extra `:buildcache` tag in GHCR per service.
+          cache-from: type=registry,ref=ghcr.io/lentropy/dontai-${{ matrix.service }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/lentropy/dontai-${{ matrix.service }}:buildcache,mode=max

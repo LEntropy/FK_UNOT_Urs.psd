@@ -35,7 +35,7 @@ DEFAULT_WATERMARK_HEX = os.environ.get("DEFAULT_WATERMARK_HEX", "deadbeefcafef00
 OUT_DIR = Path(os.environ.get("DETECTION_OUT_DIR", str(Path(__file__).parent / "out")))
 DB_PATH = os.environ.get("DETECTION_DB_PATH", str(Path(__file__).parent / "data" / "detection.db"))
 
-app = FastAPI(title="detection-svc", version="0.1.0")
+app = FastAPI(title="detection-svc", version="0.1.1")
 _db = connect(DB_PATH)
 
 

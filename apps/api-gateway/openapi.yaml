@@ -232,7 +232,9 @@ paths:
       summary: >
         Create an artwork. creatorId and ownerWalletAddress come from the
         verified JWT, never from the request body -- proxies straight to
-        asset-service's POST /artworks with those injected.
+        asset-service's POST /artworks with those injected. Accepts either
+        shape below -- exactly one of sourceImageUri or an uploaded image
+        file is required.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -240,6 +242,26 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateArtworkRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [title, image]
+              properties:
+                title:
+                  type: string
+                image:
+                  type: string
+                  format: binary
+                  description: A real uploaded image file -- what apps/web's UploadPage actually sends.
+                protectionProfile:
+                  type: string
+                  enum: [L1_PREVIEW, L2_PORTFOLIO, L3_ANTI_TRAIN]
+                  default: L3_ANTI_TRAIN
+                allowAiTraining:
+                  type: string
+                  enum: ["true", "false"]
+                  default: "false"
+                  description: multipart fields are always strings; coerced server-side.
       responses:
         "202":
           description: Upload accepted, protection pipeline running in the background
@@ -418,8 +440,12 @@ components:
         sourceImageUri:
           type: string
           description: >
-            Local file path in this PoC, not a real object-storage URI
-            (see apps/asset-service/README.md).
+            A server-local file path this process can read directly --
+            for script/service callers already running on the same host
+            (tests, detection-svc), not what a browser upload sends. A
+            real browser file upload uses the multipart/form-data shape
+            on this same endpoint instead (see apps/asset-service/README.md's
+            "Real browser uploads" section).
         protectionProfile:
           type: string
           enum: [L1_PREVIEW, L2_PORTFOLIO, L3_ANTI_TRAIN]

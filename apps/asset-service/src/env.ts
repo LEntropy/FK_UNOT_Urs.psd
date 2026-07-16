@@ -35,6 +35,14 @@ const envSchema = z.object({
   // alongside them on whatever volume the deployment actually put ./data on.
   DECRYPT_TEMP_DIR: z.string().default("./data/tmp"),
 
+  // Real browser file uploads (POST /artworks as multipart/form-data,
+  // src/routes/artworks.ts) land here via multer's disk storage before
+  // encryptImageAtRest() picks them up -- same volume-placement reasoning
+  // as DECRYPT_TEMP_DIR above (not the OS temp dir), and in fact the same
+  // directory by default, since both are "a local scratch file this
+  // process's own code reads back a moment later," not object storage.
+  UPLOAD_TEMP_DIR: z.string().default("./data/tmp"),
+
   // src/storage/objectStorage.ts. "local" (default) preserves every
   // existing local-dev workflow unchanged; "s3" talks to any
   // S3-compatible endpoint (MinIO locally, real S3/R2/etc. in a real

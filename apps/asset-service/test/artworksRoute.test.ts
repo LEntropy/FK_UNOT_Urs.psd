@@ -99,4 +99,37 @@ describe("POST /artworks (envelope encryption at rest)", () => {
     expect(res.status).toBe(400);
     expect(db.select().from(artworks).all()).toHaveLength(0); // no partial row left behind
   });
+
+  it("accepts a real multipart file upload (the browser's actual path, not just a server-side sourceImageUri)", async () => {
+    const db = createTestDb();
+
+    const res = await request(createApp(db))
+      .post("/artworks")
+      .field("title", "Real browser upload")
+      .field("creatorId", "creator_upload")
+      .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
+      .field("allowAiTraining", "true") // multipart fields are always strings -- proves z.coerce.boolean() is wired up
+      .attach("image", Buffer.from("not a real png, just needs bytes to encrypt"), "mona_lisa.jpg");
+
+    expect(res.status).toBe(202);
+
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(row.allowAiTraining).toBe(true);
+    expect(row.sourceImageUri).toBe("upload:mona_lisa.jpg");
+    expect(existsSync(row.encryptedImagePath)).toBe(true); // the uploaded bytes really did get encrypted and stored
+
+    unlinkSync(row.encryptedImagePath);
+  });
+
+  it("400s when neither a file nor sourceImageUri is given", async () => {
+    const db = createTestDb();
+    const res = await request(createApp(db)).post("/artworks").send({
+      title: "Nothing to upload",
+      creatorId: "creator_x",
+      ownerWalletAddress: "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2",
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.select().from(artworks).all()).toHaveLength(0);
+  });
 });

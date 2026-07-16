@@ -11,7 +11,7 @@ const PRESETS = [
 export function UploadPage() {
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
-  const [sourceImageUri, setSourceImageUri] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [protectionProfile, setProtectionProfile] = useState("L3_ANTI_TRAIN");
   const [allowAiTraining, setAllowAiTraining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,14 +20,19 @@ export function UploadPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!file) {
+      setError("이미지 파일을 선택해주세요.");
+      return;
+    }
     setSubmitting(true);
     try {
-      const res = await api.post<{ id: string }>("/artworks", {
-        title,
-        sourceImageUri,
-        protectionProfile,
-        allowAiTraining,
-      });
+      const form = new FormData();
+      form.set("title", title);
+      form.set("protectionProfile", protectionProfile);
+      form.set("allowAiTraining", String(allowAiTraining));
+      form.set("image", file);
+
+      const res = await api.upload<{ id: string }>("/artworks", form);
       navigate(`/artworks/${res.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? JSON.stringify(err.body) : "업로드에 실패했습니다.");
@@ -39,10 +44,6 @@ export function UploadPage() {
   return (
     <div className="mx-auto mt-12 max-w-lg">
       <h1 className="mb-2 text-2xl font-semibold">작품 업로드</h1>
-      <p className="mb-6 text-sm text-neutral-400">
-        아직 오브젝트 스토리지가 연동되지 않아, protection-svc/asset-service가 실제로 접근할 수 있는 서버 측
-        로컬 경로를 입력해야 합니다 (PoC 범위 한계, apps/asset-service/README.md 참고).
-      </p>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <label className="flex flex-col gap-1 text-sm">
           제목
@@ -54,12 +55,12 @@ export function UploadPage() {
           />
         </label>
         <label className="flex flex-col gap-1 text-sm">
-          이미지 경로
+          이미지 파일
           <input
             required
-            placeholder="C:/path/to/image.png"
-            value={sourceImageUri}
-            onChange={(e) => setSourceImageUri(e.target.value)}
+            type="file"
+            accept="image/*"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2"
           />
         </label>

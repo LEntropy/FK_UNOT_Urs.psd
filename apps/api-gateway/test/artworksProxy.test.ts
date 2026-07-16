@@ -5,6 +5,7 @@ import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/clients/assetService.js", () => ({
   createArtwork: vi.fn(),
+  createArtworkWithFile: vi.fn(),
   listArtworks: vi.fn(),
   getArtwork: vi.fn(),
   AssetServiceError: class AssetServiceError extends Error {
@@ -15,7 +16,7 @@ vi.mock("../src/clients/assetService.js", () => ({
 }));
 vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }));
 
-const { createArtwork, listArtworks, getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
+const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
 const { signRenderUrl } = await import("../src/clients/deliveryGateway.js");
 
 beforeEach(() => {
@@ -54,6 +55,46 @@ describe("artworks proxy", () => {
       userId,
       walletAddress,
     );
+  });
+
+  it("routes a real multipart file upload to createArtworkWithFile, not createArtwork", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, walletAddress, userId } = await signupAndGetToken(app);
+
+    vi.mocked(createArtworkWithFile).mockResolvedValue({ id: "ast_2", status: "UPLOADED" });
+
+    const res = await request(app)
+      .post("/artworks")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .field("title", "Mona Lisa")
+      .field("creatorId", "someone-else") // still must be ignored, same as the JSON path
+      .attach("image", Buffer.from("fake image bytes"), "mona_lisa.jpg");
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ id: "ast_2", status: "UPLOADED" });
+    expect(createArtwork).not.toHaveBeenCalled();
+    expect(createArtworkWithFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Mona Lisa",
+        file: expect.objectContaining({ originalname: "mona_lisa.jpg" }),
+      }),
+      userId,
+      walletAddress,
+    );
+  });
+
+  it("400s when a multipart request has neither a file nor sourceImageUri", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+
+    const res = await request(app)
+      .post("/artworks")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .field("title", "Nothing attached");
+
+    expect(res.status).toBe(400);
+    expect(createArtwork).not.toHaveBeenCalled();
+    expect(createArtworkWithFile).not.toHaveBeenCalled();
   });
 
   it("forwards asset-service's list, scoped to the caller", async () => {

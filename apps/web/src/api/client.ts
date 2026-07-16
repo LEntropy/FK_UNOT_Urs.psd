@@ -11,7 +11,13 @@ export class ApiError extends Error {
 async function rawFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const accessToken = useAuthStore.getState().accessToken;
   const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
+  // A FormData body must NOT get an explicit Content-Type -- the browser
+  // sets its own `multipart/form-data; boundary=...` when it sees the body
+  // is a FormData instance, and a caller-set "application/json" here would
+  // silently break every multipart upload's boundary parsing server-side.
+  if (!(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
 
   return fetch(`${BASE_URL}${path}`, { ...init, headers });
@@ -60,4 +66,8 @@ export const api = {
     apiFetch<T>(path, { method: "PATCH", body: body !== undefined ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string, body?: unknown) =>
     apiFetch<T>(path, { method: "DELETE", body: body !== undefined ? JSON.stringify(body) : undefined }),
+  // Real file uploads (UploadPage) -- takes a FormData directly, never
+  // JSON.stringify'd (see rawFetch's FormData check above for why that
+  // matters: the browser needs to set its own multipart boundary header).
+  upload: <T>(path: string, form: FormData) => apiFetch<T>(path, { method: "POST", body: form }),
 };

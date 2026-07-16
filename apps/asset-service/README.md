@@ -169,12 +169,34 @@ calling them directly (unproxied) bypasses that.
   real counter would need to also handle unlikes. `following` requires
   `userId` and 400s without it.
 
+## Real browser uploads (multipart/form-data)
+
+`POST /artworks` now accepts either a JSON body with `sourceImageUri` (a
+server-local path -- still the right shape for scripts/tests/detection-svc
+that already run on this host) **or** a real `multipart/form-data` upload
+with an `image` file field, exactly what a browser's `<input type="file">`
+naturally produces. `apps/web`'s `UploadPage` uses the latter now -- no
+more asking a browser user to type a server-side filesystem path.
+
+Wired through the whole chain: the browser posts `FormData` directly (no
+`JSON.stringify`, see `apps/web/src/api/client.ts`'s `upload()`) →
+`api-gateway` receives it with `multer` (memory storage -- it only holds
+the bytes long enough to repack them into a fresh multipart body for
+asset-service, `createArtworkWithFile`) → asset-service's own `multer`
+(disk storage, `env.UPLOAD_TEMP_DIR`, same "not `os.tmpdir()`" reasoning
+as `DECRYPT_TEMP_DIR` below -- and the same fix: multer's `diskStorage`
+does not create its destination directory itself, unlike this project's
+own `mkdirSync` calls elsewhere, so the route creates it once up front)
+→ `encryptImageAtRest()`, completely unchanged from the path-based flow,
+since a multer temp file *is* just another local path.
+
 ## What this does not do
 
-- `sourceImageUri` (the *plaintext upload path*, before encryption) is
-  still always a local file path, same PoC-scope limit as `protection-svc`'s
-  `imageUri` (`apps/protection-svc/INTEGRATION.md`) -- the object-storage
-  migration above covers the encrypted-at-rest ciphertext, not this.
+- The plaintext upload is briefly a real local file either way (multer's
+  temp file for a browser upload, or a caller-given path for a
+  script/test) before `encryptImageAtRest()` reads and deletes it -- the
+  object-storage migration above covers the encrypted-at-rest ciphertext,
+  not this brief plaintext-on-disk window itself.
 - The S3 backend is now live-verified: `docker compose --profile storage up
   minio` + `S3_TEST_ENDPOINT=localhost npm test` round-trips real bytes
   through a real MinIO container (write → `s3://` URI → read back →

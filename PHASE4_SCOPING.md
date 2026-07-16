@@ -127,6 +127,18 @@ existed.
    compiles and follows the designed mechanism -- not a verified
    mechanism, and absolutely not a verified protection effect.** This is
    why it's wired as strictly opt-in with no default-on path anywhere
+
+   **Update**: the validation experiment itself is now written, mirroring
+   `experiments/lora_validation/`'s already-proven structure --
+   `apps/protection-svc/ml-engine/experiments/concept_misalignment_
+   validation/` (`prepare_dataset.py`, `generate_and_score.py`) plus
+   `apps/protection-svc/ml-engine/remote/
+   run_concept_misalignment_validation.ps1` to orchestrate the actual
+   training run on the GPU PC. **Still not run** -- this closes the "would
+   need to design and write this experiment from scratch" gap, not the
+   gap itself. The verdict stays "unvalidated" until someone actually runs
+   it and reviews `out/report.txt`; see that experiment's own README.md
+   for what a real pass/fail requires.
    (`orchestrate.py`, `server.py`'s HTTP API does not expose it at all,
    matching `select_style_target.py`'s existing env-var-only, no-HTTP-
    exposure pattern for the same "no curated pool/no validation yet"

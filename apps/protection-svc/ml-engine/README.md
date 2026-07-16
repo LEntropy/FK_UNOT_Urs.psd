@@ -381,6 +381,15 @@ and see the next two points).
    not been run even once. Treat any claim about its effect as
    unsubstantiated until someone actually runs it.
 
+   The validation experiment this needs is now written --
+   `experiments/concept_misalignment_validation/` (mirrors
+   `experiments/lora_validation/`'s already-run structure on the
+   `ai-engine` branch) plus `remote/run_concept_misalignment_
+   validation.ps1` to orchestrate the actual training run on the GPU PC.
+   **Still not run** — see that experiment's README.md for what it
+   measures and what a real pass/fail requires before this section's
+   "unvalidated" can change.
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
 - Concept-misalignment exists as opt-in, unvalidated code

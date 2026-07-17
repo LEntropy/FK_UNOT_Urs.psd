@@ -71,8 +71,23 @@ if ($LASTEXITCODE -ne 0) {
 # fails here too, that gate is this run's actual first blocker, before
 # training even starts -- resolve it (approve the download / pre-seed the
 # checkpoint cache) before continuing.
+# Must run from src/ (or with it on PYTHONPATH) -- model.py isn't
+# installed as a package, it's a plain sibling module `misalign()` (and
+# every other script here) reaches via sys.path.insert(str(...,"src")) in
+# their own file, which this inline -c check doesn't get for free.
+#
+# Also needs the same $ErrorActionPreference toggle Train-Condition uses
+# below -- open_clip prints a benign UserWarning (QuickGELU mismatch) to
+# stderr on load, which "Stop" would otherwise wrap into a terminating
+# error even though the checkpoint loads fine (exit code 0).
+Push-Location "$ML_ENGINE\src"
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $ML_VENV_PY -c "from model import ConceptFeatureExtractor; import torch; ConceptFeatureExtractor(torch.device('cpu'))" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
+$clipCheckExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+Pop-Location
+if ($clipCheckExit -ne 0) {
     throw "ConceptFeatureExtractor failed to load its CLIP checkpoint -- see concept_misalign.py's module doc for the known blocker this hit in a different environment. Resolve before continuing."
 }
 

@@ -56,6 +56,31 @@ checkpoint cache) before the real run.
 the actual LoRA training end-to-end on the GPU PC -- sync this repo
 there, then run that file directly.
 
+## Follow-up: multi-image LoRA (prepared, not yet run)
+
+The single-image result above (WEAK/FAIL) leaves one question open: is
+the null result about the misalignment *mechanism*, or about the
+single-image LoRA setup diluting it? Each single-image LoRA only ever
+sees one (image, trigger) example repeated many times -- closer to
+memorizing that one pair than learning a generalizable caption-to-
+visual-feature association a small pixel perturbation could bend. A real
+scraper's training set looks nothing like that: many different images and
+captions trained jointly.
+
+| Script | Venv | What it does |
+|---|---|---|
+| `prepare_multiimage.py` | ml-engine | Reuses `prepare_dataset.py`'s `IMAGE_CONFIGS` (same 5 images/targets/prompts, so this stays a controlled follow-up) but builds ONE joint kohya multi-subset dataset per condition (all 5 images/triggers in one `[[datasets.subsets]]` list) instead of 5 separate single-image datasets. Writes `out_multiimage/manifest_multiimage.json`. |
+| `generate_and_score_multiimage.py` | kohya | Same CLIP-similarity-to-true-and-decoy measurement as `generate_and_score.py`, but each seed has only ONE baseline LoRA and ONE misaligned LoRA (trained jointly on all 5 images), reused across all 5 prompts, instead of 5 separate per-image LoRAs. Imports `generate_samples`/`clip_similarity`/`ci_margin` from `generate_and_score.py` rather than duplicating them. |
+
+`remote/run_concept_misalignment_multiimage_validation.ps1` orchestrates
+this end-to-end -- only 6 LoRA trainings total (2 conditions × 3 seeds),
+not 30, since each condition's LoRA now covers all 5 images jointly.
+**Not yet run** -- same "written and believed correct, not yet executed
+on real GPU hardware" status the single-image experiment was in before
+its first run. Once run, add its verdict here and to
+`PHASE4_SCOPING.md` §1's "Update" note the same way the single-image
+result was added.
+
 ## Reading the result
 
 Per PHASE4_SCOPING.md §1: "if this specific image is used in fine-tuning,

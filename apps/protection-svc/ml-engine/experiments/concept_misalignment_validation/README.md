@@ -56,16 +56,33 @@ checkpoint cache) before the real run.
 the actual LoRA training end-to-end on the GPU PC -- sync this repo
 there, then run that file directly.
 
-## Follow-up: multi-image LoRA (prepared, not yet run)
+## Follow-up: multi-image LoRA -- run, verdict still WEAK/FAIL
 
-The single-image result above (WEAK/FAIL) leaves one question open: is
-the null result about the misalignment *mechanism*, or about the
+The single-image result above (WEAK/FAIL) left one question open: was the
+null result about the misalignment *mechanism*, or about the
 single-image LoRA setup diluting it? Each single-image LoRA only ever
 sees one (image, trigger) example repeated many times -- closer to
 memorizing that one pair than learning a generalizable caption-to-
 visual-feature association a small pixel perturbation could bend. A real
 scraper's training set looks nothing like that: many different images and
-captions trained jointly.
+captions trained jointly. This follow-up trains one shared LoRA per
+condition per seed across all 5 images/triggers jointly instead.
+
+**Result (n=15, 3 shared LoRAs per condition): mean delta_true = -0.0020**
+(95% CI [-0.0115, +0.0075], includes zero), **mean delta_decoy = +0.0027**
+(95% CI [-0.0023, +0.0078], includes zero) -- still **WEAK/FAIL**, both
+means far below the 0.03 threshold. `delta_decoy` did flip from slightly
+negative (single-image: -0.0044) to slightly positive here, but the
+magnitude is noise-level either way and the CI still includes zero.
+
+**Conclusion, combining both experiments:** the null result is not an
+artifact of the single-image setup -- a more realistic joint multi-image
+training regime shows the same lack of effect. This is now a
+better-supported negative finding than either experiment alone: the
+CLIP-embedding pixel perturbation `concept_misalign.py` applies does not
+measurably redirect what a LoRA learns to associate with an image's
+caption, under either training configuration tested. Full per-run numbers
+in `out_multiimage/report_multiimage.txt` (GPU PC, not committed).
 
 | Script | Venv | What it does |
 |---|---|---|

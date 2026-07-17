@@ -151,15 +151,34 @@ existed.
    because a 1-image LoRA at these settings essentially memorizes the
    image/trigger pair rather than learning a generalizable caption-to-
    visual-feature association fine-grained enough for a small pixel
-   perturbation to redirect. **Conclusion: `concept_misalign.py`'s
-   mechanism is confirmed to run and does perturb the target embedding as
-   designed, but the per-image poisoning *effect* this section originally
-   hoped for is not supported by this measurement.** Stays strictly
+   perturbation to redirect.
+
+   **Follow-up (ruling out the single-image explanation): also run, also
+   negative.** To check whether that single-image explanation was actually
+   right, a second experiment (`experiments/concept_misalignment_
+   validation/prepare_multiimage.py` + `remote/run_concept_misalignment_
+   multiimage_validation.ps1`) trained one shared LoRA per condition per
+   seed across all 5 images/triggers *jointly* instead -- closer to a real
+   scraper's actual training set than an isolated single-image LoRA.
+   Result (n=15, 3 shared LoRAs per condition): mean delta_true = -0.0020
+   (95% CI includes zero), mean delta_decoy = +0.0027 (95% CI includes
+   zero) -- **still WEAK/FAIL**, both means far below the 0.03 threshold.
+   `delta_decoy` flipped sign (single-image: -0.0044) but stayed
+   noise-level either way.
+
+   **Conclusion, combining both experiments: the null result is not an
+   artifact of the single-image setup.** A more realistic joint
+   multi-image training regime shows the same lack of effect, which is a
+   better-supported negative finding than either experiment alone --
+   `concept_misalign.py`'s CLIP-embedding pixel perturbation does not
+   measurably redirect what a LoRA learns to associate with an image's
+   caption, under either training configuration tested. Stays strictly
    opt-in with no default-on path, now for a stronger reason than
-   "unvalidated" -- it's validated and the effect wasn't there. Full
+   "unvalidated" -- it's validated twice and the effect wasn't there. Full
    per-run numbers in `experiments/concept_misalignment_validation/
-   out/report.txt` on the GPU PC (not committed -- generated output, see
-   that experiment's `.gitignore`).
+   out/report.txt` and `out_multiimage/report_multiimage.txt` on the GPU
+   PC (not committed -- generated output, see that experiment's
+   `.gitignore`).
    (`orchestrate.py`, `server.py`'s HTTP API does not expose it at all,
    matching `select_style_target.py`'s existing env-var-only, no-HTTP-
    exposure pattern for the same "no curated pool/no validation yet"

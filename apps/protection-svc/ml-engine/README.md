@@ -25,7 +25,7 @@ src/
   style_cloak.py      the cloaking optimization (PGD/Adam, L-infinity bounded);
                       --eot optimizes against random resize round-trips too
   concept_misalign.py EXPERIMENTAL/opt-in, validated negative (real LoRA-training
-                      test found no effect) -- see "Concept Misalignment Layer" below
+                      tests, single- and multi-image, found no effect) -- see below
   evaluate.py         quantifies style drift + perceptual preservation
   robustness_test.py  re-measures style drift after JPEG recompression /
                       resize round-trips, to see how much survives a real
@@ -387,12 +387,23 @@ and see the next two points).
    pixel-level perturbation into a text/cross-attention shift large
    enough to redirect generation, plausibly because it's closer to
    memorizing the (image, trigger) pair than learning a generalizable
-   association a small perturbation could bend. Full numbers in
-   `PHASE4_SCOPING.md` §1's "Update" note and
-   `experiments/concept_misalignment_validation/out/report.txt` (GPU PC,
-   not committed). Stays strictly opt-in with no default-on path, now
-   because the effect wasn't measured, not just because it wasn't
-   checked.
+   association a small perturbation could bend.
+
+   **Follow-up to rule that out: also run, also negative.** A second
+   experiment (`experiments/concept_misalignment_validation/
+   prepare_multiimage.py`) trained one shared LoRA per condition per seed
+   across all 5 images jointly instead of 5 isolated single-image LoRAs --
+   closer to a real scraper's actual training set. Result (n=15): mean
+   delta_true = -0.0020 (95% CI includes zero), mean delta_decoy = +0.0027
+   (95% CI includes zero) -- still WEAK/FAIL. **Combining both: the null
+   result is not an artifact of the single-image setup** -- a more
+   realistic joint training regime shows the same lack of effect. Full
+   numbers in `PHASE4_SCOPING.md` §1's "Update" note and
+   `experiments/concept_misalignment_validation/out/report.txt` +
+   `out_multiimage/report_multiimage.txt` (GPU PC, not committed). Stays
+   strictly opt-in with no default-on path, now because the effect wasn't
+   measured under two different training regimes, not just because it
+   wasn't checked.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

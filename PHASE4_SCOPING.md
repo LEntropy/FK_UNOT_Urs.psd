@@ -128,17 +128,38 @@ existed.
    mechanism, and absolutely not a verified protection effect.** This is
    why it's wired as strictly opt-in with no default-on path anywhere
 
-   **Update**: the validation experiment itself is now written, mirroring
-   `experiments/lora_validation/`'s already-proven structure --
-   `apps/protection-svc/ml-engine/experiments/concept_misalignment_
-   validation/` (`prepare_dataset.py`, `generate_and_score.py`) plus
-   `apps/protection-svc/ml-engine/remote/
-   run_concept_misalignment_validation.ps1` to orchestrate the actual
-   training run on the GPU PC. **Still not run** -- this closes the "would
-   need to design and write this experiment from scratch" gap, not the
-   gap itself. The verdict stays "unvalidated" until someone actually runs
-   it and reviews `out/report.txt`; see that experiment's own README.md
-   for what a real pass/fail requires.
+   **Update -- run for real, result is negative.** The validation
+   experiment (`apps/protection-svc/ml-engine/experiments/
+   concept_misalignment_validation/`, mirroring `experiments/
+   lora_validation/`'s structure) was executed on the GPU PC via
+   `remote/run_concept_misalignment_validation.ps1`: 5 images x 3 seeds x
+   2 conditions = 30 real SD1.5 LoRA trainings, then generation + CLIP
+   scoring against both the true and decoy concepts (n=15 image x seed
+   combinations). Result: **mean delta_true = -0.0058** (95% CI
+   [-0.0180, +0.0063], includes zero) and **mean delta_decoy = -0.0044**
+   (95% CI [-0.0102, +0.0014], includes zero) -- verdict **WEAK/FAIL**.
+   Training on the misaligned image did not measurably push generation
+   away from the true concept or toward the decoy concept; both deltas
+   are noise-level and, if anything, trend slightly the wrong direction.
+
+   The CLIP-embedding optimization itself does work as designed (concept
+   loss converges from ~0.3 to <0.001 within the epsilon budget during
+   `misalign()` -- confirmed live during this run), so the gap is
+   specifically that a single-image LoRA's training dynamics don't
+   propagate that pixel-level perturbation into the text-encoder/
+   cross-attention association the way the mechanism assumes -- plausibly
+   because a 1-image LoRA at these settings essentially memorizes the
+   image/trigger pair rather than learning a generalizable caption-to-
+   visual-feature association fine-grained enough for a small pixel
+   perturbation to redirect. **Conclusion: `concept_misalign.py`'s
+   mechanism is confirmed to run and does perturb the target embedding as
+   designed, but the per-image poisoning *effect* this section originally
+   hoped for is not supported by this measurement.** Stays strictly
+   opt-in with no default-on path, now for a stronger reason than
+   "unvalidated" -- it's validated and the effect wasn't there. Full
+   per-run numbers in `experiments/concept_misalignment_validation/
+   out/report.txt` on the GPU PC (not committed -- generated output, see
+   that experiment's `.gitignore`).
    (`orchestrate.py`, `server.py`'s HTTP API does not expose it at all,
    matching `select_style_target.py`'s existing env-var-only, no-HTTP-
    exposure pattern for the same "no curated pool/no validation yet"

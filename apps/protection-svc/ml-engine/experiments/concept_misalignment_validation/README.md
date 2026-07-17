@@ -8,13 +8,17 @@ the *decoy* concept instead of the true one? See PHASE4_SCOPING.md §1's
 design, and that same section's "What's actually built, and what's
 honestly still missing" for exactly what gap this closes.
 
-**Status: prepared, not run.** These scripts exist and are believed
-correct (they compile; mirrored closely from
-`experiments/lora_validation/`'s already-proven, already-run structure on
-the `ai-engine` branch), but nothing here has executed on real GPU
-hardware, and no results exist yet. Do not cite a pass/fail verdict for
-Concept Misalignment until `run_concept_misalignment_validation.ps1` has
-actually been run and `out/report.txt` reviewed.
+**Status: run, verdict WEAK/FAIL.** 30 real SD1.5 LoRA trainings (5 images
+× 3 seeds × 2 conditions) on the GPU PC, then generation + CLIP scoring.
+n=15: mean delta_true = -0.0058 (95% CI includes zero), mean delta_decoy
+= -0.0044 (95% CI includes zero) -- training on the misaligned image did
+not measurably drift generation toward the decoy concept or away from the
+true one. See `PHASE4_SCOPING.md` §1's "Update" note and
+`ml-engine/README.md`'s "Concept Misalignment Layer" section for the full
+writeup and what's the likely reason (single-image LoRA training dynamics
+don't propagate the pixel-level perturbation into a large-enough
+text/cross-attention shift). `out/report.txt` has the full per-run numbers
+(GPU PC, not committed -- generated output).
 
 ## Requires
 

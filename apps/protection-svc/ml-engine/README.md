@@ -24,8 +24,8 @@ src/
                       for concept_misalign.py below
   style_cloak.py      the cloaking optimization (PGD/Adam, L-infinity bounded);
                       --eot optimizes against random resize round-trips too
-  concept_misalign.py EXPERIMENTAL/opt-in, unvalidated -- see "Concept Misalignment
-                      Layer" section below and PHASE4_SCOPING.md §1 before using this
+  concept_misalign.py EXPERIMENTAL/opt-in, validated negative (real LoRA-training
+                      test found no effect) -- see "Concept Misalignment Layer" below
   evaluate.py         quantifies style drift + perceptual preservation
   robustness_test.py  re-measures style drift after JPEG recompression /
                       resize round-trips, to see how much survives a real
@@ -340,7 +340,7 @@ on-chain registration use case (the protected image is still identifiably
 near-duplicates/derivatives found elsewhere on the web, distinct from
 completely unrelated images.
 
-## Concept Misalignment Layer (`concept_misalign.py`) — EXPERIMENTAL, unvalidated
+## Concept Misalignment Layer (`concept_misalign.py`) — EXPERIMENTAL, validated negative
 
 `PROJECT_DESIGN.md` §3-3's layer [3] (Nightshade's actual mechanism,
 distinct from the style-confusion layer above -- see
@@ -371,30 +371,35 @@ and see the next two points).
    caption to target against, only `title`/`creator_id`. A reasonable
    proxy given CLIP's joint space, but not the literal text-alignment
    mechanism Nightshade describes.
-2. **Unvalidated.** `PHASE4_SCOPING.md` §1's recommended methodology (a
-   real GPU LoRA-training run measuring generation drift) has not been
-   executed — no GPU was available in the session this was written in.
-   Even a CPU-only smoke test of the optimization loop itself couldn't be
-   completed in that session: downloading `open_clip`'s pretrained CLIP
-   checkpoint was blocked by that environment's own external-code safety
-   gate. This code compiles and follows the designed mechanism; it has
-   not been run even once. Treat any claim about its effect as
-   unsubstantiated until someone actually runs it.
-
-   The validation experiment this needs is now written --
-   `experiments/concept_misalignment_validation/` (mirrors
-   `experiments/lora_validation/`'s already-run structure on the
-   `ai-engine` branch) plus `remote/run_concept_misalignment_
-   validation.ps1` to orchestrate the actual training run on the GPU PC.
-   **Still not run** — see that experiment's README.md for what it
-   measures and what a real pass/fail requires before this section's
-   "unvalidated" can change.
+2. **Validated, and the effect isn't there.** `PHASE4_SCOPING.md` §1's
+   recommended methodology (a real GPU LoRA-training run measuring
+   generation drift) has now been executed --
+   `experiments/concept_misalignment_validation/` on the GPU PC, 30 real
+   SD1.5 LoRA trainings (5 images × 3 seeds × 2 conditions), then
+   generation + CLIP scoring against both the true and decoy concepts.
+   **Result: WEAK/FAIL.** Mean delta_true = -0.0058 (95% CI includes
+   zero), mean delta_decoy = -0.0044 (95% CI includes zero) — training on
+   the misaligned image did not measurably drift generation away from the
+   true concept or toward the decoy one. The CLIP-embedding optimization
+   itself does work (concept loss converges from ~0.3 to <0.001 within
+   the epsilon budget, confirmed live during this run) — the gap is that
+   a single-image LoRA's training dynamics don't propagate that
+   pixel-level perturbation into a text/cross-attention shift large
+   enough to redirect generation, plausibly because it's closer to
+   memorizing the (image, trigger) pair than learning a generalizable
+   association a small perturbation could bend. Full numbers in
+   `PHASE4_SCOPING.md` §1's "Update" note and
+   `experiments/concept_misalignment_validation/out/report.txt` (GPU PC,
+   not committed). Stays strictly opt-in with no default-on path, now
+   because the effect wasn't measured, not just because it wasn't
+   checked.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
-- Concept-misalignment exists as opt-in, unvalidated code
-  (`concept_misalign.py`, above) — not a proven protection layer yet, and
-  not on by default anywhere.
+- Concept-misalignment exists as opt-in code (`concept_misalign.py`,
+  above) — a real GPU LoRA-training validation found no measurable
+  protection effect, not just "not proven yet." Not on by default
+  anywhere.
 - EOT here only covers resize; JPEG recompression isn't part of the training
   loop (real JPEG encoding isn't differentiable — would need a differentiable
   JPEG approximation to include it in EOT, not implemented here).

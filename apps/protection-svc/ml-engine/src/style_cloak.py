@@ -175,6 +175,60 @@ def color_preservation_loss(original: torch.Tensor, x_adv: torch.Tensor) -> torc
     return F.mse_loss(pooled_adv, pooled_original)
 
 
+def compute_perceptual_mask(original: torch.Tensor, low: float = 0.3, high: float = 1.7) -> torch.Tensor:
+    """Per-pixel multiplier on the epsilon clamp, in [low, high] -- the
+    real fix real steganography/Glaze-style tools use for "noise looks
+    too visible": a human eye is far more sensitive to noise in smooth,
+    flat regions (sky, skin, a plain background) than in already-textured,
+    high-detail regions (brushwork, foliage, hair). A *uniform* epsilon
+    clamp (what this file did before) spends the same noise budget
+    everywhere, which is the worst place to spend it evenly -- it's
+    exactly as visible as the flattest region in the image can tolerate.
+
+    Built from a Sobel gradient-magnitude map (local edge/texture
+    strength), normalized to [0, 1] per image, then rescaled to [low,
+    high] so the *average* multiplier stays close to 1.0 -- redistributing
+    where the epsilon budget goes rather than changing the total budget,
+    which is what keeps the protection effect (style drift) close to
+    unchanged while the perturbation becomes far less visible in the
+    regions a human actually looks at first.
+    """
+    device = original.device
+    gray = original.mean(dim=1, keepdim=True)  # 1x1xHxW, luminance proxy
+
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=device).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=device).view(1, 1, 3, 3)
+    # replicate padding, not conv2d's default zero-padding -- padding with
+    # 0 creates a fake high-contrast "edge" between real content and the
+    # artificial black border on every side, which the mask would then
+    # (wrongly) read as "this border region is highly textured."
+    gray_padded = F.pad(gray, (1, 1, 1, 1), mode="replicate")
+    gx = F.conv2d(gray_padded, sobel_x)
+    gy = F.conv2d(gray_padded, sobel_y)
+    edge_strength = torch.sqrt(gx**2 + gy**2)  # exactly 0 for genuinely flat regions, no floor offset
+
+    # Widen each edge's influence -- a pixel a few steps away from a strong
+    # edge is still in a "textured neighborhood" a human won't scrutinize
+    # as closely as a truly flat region, and a single-pixel-wide mask would
+    # leave razor-thin safe strips the optimizer can't meaningfully use.
+    edge_strength = F.max_pool2d(F.pad(edge_strength, (4, 4, 4, 4), mode="replicate"), kernel_size=9, stride=1)
+
+    spread = edge_strength.max() - edge_strength.min()
+    if spread < 1e-4:
+        # Degenerate case: a genuinely (near-)flat image has no texture
+        # signal to redistribute toward -- normalizing near-equal values
+        # by a near-zero range is numerically unstable (floating-point
+        # noise around the floor can dominate the ratio and swing the
+        # result to either end). Fall back to `low` uniformly, the
+        # conservative choice for "nothing here is safer to perturb than
+        # anything else."
+        return torch.full_like(gray, low).expand(-1, 3, -1, -1)
+
+    normalized = (edge_strength - edge_strength.min()) / spread
+    mask = low + normalized * (high - low)
+    return mask.expand(-1, 3, -1, -1)  # broadcast the 1-channel mask across RGB
+
+
 def random_resize_round_trip(
     x: torch.Tensor,
     min_scale: float = 0.3,
@@ -216,6 +270,7 @@ def cloak(
     eot_min_scale: float = 0.3,
     eot_max_scale: float = 1.0,
     eot_scales: list[float] | None = None,
+    perceptual_mask: bool = False,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     preset = PRESETS[preset_name]
@@ -225,12 +280,19 @@ def cloak(
     style_target = load_image_tensor(style_target_path, size, device)
     target_grams = extractor.gram_matrices(style_target)
 
+    # Opt-in (default off -- see this parameter's callers/README before
+    # flipping the default): redistributes the same epsilon budget toward
+    # already-textured regions and away from flat ones instead of a
+    # uniform clamp everywhere -- see compute_perceptual_mask's doc.
+    epsilon_mask = compute_perceptual_mask(original) * preset.epsilon if perceptual_mask else preset.epsilon
+
     delta = torch.zeros_like(original, requires_grad=True)
     optimizer = torch.optim.Adam([delta], lr=preset.lr)
 
     scale_desc = f"discrete{eot_scales}" if eot_scales else f"[{eot_min_scale},{eot_max_scale}]"
     mode = f"EOT(resize, samples={eot_samples}, scale={scale_desc})" if eot else "no-EOT (clean image only)"
-    print(f"[cloak] preset={preset_name} epsilon={preset.epsilon} steps={preset.steps} mode={mode}")
+    mask_desc = " perceptual_mask=on" if perceptual_mask else ""
+    print(f"[cloak] preset={preset_name} epsilon={preset.epsilon} steps={preset.steps} mode={mode}{mask_desc}")
     for step in range(preset.steps):
         optimizer.zero_grad()
         x_adv = (original + delta).clamp(0, 1)
@@ -257,7 +319,7 @@ def cloak(
         optimizer.step()
 
         with torch.no_grad():
-            delta.clamp_(-preset.epsilon, preset.epsilon)
+            delta.clamp_(-epsilon_mask, epsilon_mask)
             delta.copy_(((original + delta).clamp(0, 1) - original))  # keep x_adv in [0,1]
 
         if step % 50 == 0 or step == preset.steps - 1:

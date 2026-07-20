@@ -237,6 +237,33 @@ def protect(
             size=size,
         )
 
+    # Real, per-upload protection metrics (asked for: something non-technical
+    # users can be shown, not just "trust us it worked"). Measured right
+    # after style-cloak, before any concept-misalign step further perturbs
+    # cloaked_path -- this is specifically the style-drift number
+    # style_cloak.py's own optimization target maps to, not a mix of two
+    # different mechanisms' effects. Local-only (needs a VGG19 forward pass,
+    # same reason concept-misalign and auto-target-selection above are
+    # local-only): under USE_REMOTE_GPU this machine may have no usable
+    # local torch at all, so this is skipped, not attempted and silently
+    # wrong. Non-fatal either way -- a real upload succeeding is more
+    # important than this nice-to-have number, so any failure here (missing
+    # torch, OOM, whatever) is logged and the pipeline continues without it.
+    protection_metrics: dict = {}
+    if not USE_REMOTE_GPU:
+        try:
+            from evaluate import compute_protection_metrics
+
+            print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
+            protection_metrics = compute_protection_metrics(
+                original_path=input_path,
+                cloaked_path=str(cloaked_path),
+                style_target_path=style_target_path,
+                size=size,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a missing metric shouldn't fail a real upload
+            print(f"[orchestrate] protection-metrics measurement failed, continuing without it: {exc}", flush=True)
+
     # Concept Misalignment Layer (PHASE4_SCOPING.md §1, PROJECT_DESIGN.md
     # §3-3 layer [3]) -- opt-in only, off unless a caller explicitly passes
     # concept_misalign_target_path, for the same reason it's not on by
@@ -313,6 +340,14 @@ def protect(
         "conceptMisalignApplied": bool(concept_misalign_target_path) and not USE_REMOTE_GPU,
         "processingTimeMs": round((time.time() - start) * 1000),
         "variants": variants,
+        # None (not 0) when compute_protection_metrics() above didn't run
+        # or failed -- a real "we didn't measure this" is not the same
+        # value as a real measured drift of zero, and callers (asset-
+        # service, the web UI) need to tell those apart rather than
+        # silently treating a missing measurement as "no protection".
+        "styleDriftScore": protection_metrics.get("styleDriftScore"),
+        "styleSimilarityToOriginal": protection_metrics.get("styleSimilarityToOriginal"),
+        "perceptualPsnrDb": protection_metrics.get("perceptualPsnrDb"),
     }
 
     (out / "result.json").write_text(json.dumps(result, indent=2))

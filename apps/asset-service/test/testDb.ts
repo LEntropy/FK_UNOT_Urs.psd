@@ -29,6 +29,9 @@ export function createTestDb() {
       protected_image_uri TEXT,
       perceptual_hash TEXT,
       metadata_hash TEXT,
+      style_drift_score REAL,
+      style_similarity_to_original REAL,
+      perceptual_psnr_db REAL,
       published_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL

@@ -66,6 +66,9 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
         protectedImageUri: job.protectedImageUri,
         perceptualHash: job.perceptualHash,
         metadataHash: job.metadataHash,
+        styleDriftScore: job.styleDriftScore ?? null,
+        styleSimilarityToOriginal: job.styleSimilarityToOriginal ?? null,
+        perceptualPsnrDb: job.perceptualPsnrDb ?? null,
         updatedAt: new Date(),
       })
       .where(eq(artworks.id, artworkId))

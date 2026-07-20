@@ -7,6 +7,7 @@ import { LikeButton } from "../components/LikeButton";
 import { FollowButton } from "../components/FollowButton";
 import { CommentSection } from "../components/CommentSection";
 import { ReportButton } from "../components/ReportButton";
+import { ProtectionSummary } from "../components/ProtectionSummary";
 
 const STATUS_LABEL: Record<Artwork["status"], string> = {
   UPLOADED: "업로드됨",
@@ -52,6 +53,8 @@ export function ArtworkDetailPage() {
           <span className="text-xs text-neutral-500">2초마다 자동 갱신 중...</span>
         )}
       </div>
+
+      {data.status === "PUBLISHED" && <ProtectionSummary artwork={data} />}
 
       {data.status === "PUBLISHED" && (
         <div className="mb-6 flex items-center gap-3">

@@ -76,6 +76,9 @@ describe("runUploadPipeline", () => {
       metadataHash: "0xbbbb",
       appliedPreset: "L1_PREVIEW",
       eotUsed: false,
+      styleDriftScore: 0.1888,
+      styleSimilarityToOriginal: 0.8552,
+      perceptualPsnrDb: 34.5,
       variants: [
         { name: "grid_thumbnail_150", width: 150, height: 150, scaleVsSource: 0.59, protectionStatus: "SAFE" },
       ],
@@ -95,6 +98,9 @@ describe("runUploadPipeline", () => {
     expect(artwork.perceptualHash).toBe("0xaaaa");
     expect(artwork.metadataHash).toBe("0xbbbb");
     expect(artwork.protectJobId).toBe("job_1");
+    expect(artwork.styleDriftScore).toBeCloseTo(0.1888);
+    expect(artwork.styleSimilarityToOriginal).toBeCloseTo(0.8552);
+    expect(artwork.perceptualPsnrDb).toBeCloseTo(34.5);
 
     expect(registerAsset).toHaveBeenCalledWith({
       ownerAddress: OWNER,
@@ -152,6 +158,13 @@ describe("runUploadPipeline", () => {
 
     const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_test1")).get()!;
     expect(artwork.status).toBe("PUBLISHED");
+    // protection-svc omitted the protection-metrics fields entirely (e.g.
+    // USE_REMOTE_GPU skipped the measurement) -- must persist as null, not
+    // silently coerce to 0, which would misrepresent "not measured" as "no
+    // protection effect".
+    expect(artwork.styleDriftScore).toBeNull();
+    expect(artwork.styleSimilarityToOriginal).toBeNull();
+    expect(artwork.perceptualPsnrDb).toBeNull();
   });
 
   it("marks the artwork FAILED (not silently overwritten) on a genuine hash collision with a different owner", async () => {

@@ -21,6 +21,11 @@ export interface Artwork {
   protectedImageUri: string | null;
   perceptualHash: string | null;
   metadataHash: string | null;
+  // Real, per-upload measurements (protection-svc's evaluate.py) -- null
+  // when protection-svc skipped the measurement, not a claim of zero effect.
+  styleDriftScore: number | null;
+  styleSimilarityToOriginal: number | null;
+  perceptualPsnrDb: number | null;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;

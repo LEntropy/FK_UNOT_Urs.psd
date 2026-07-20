@@ -59,6 +59,19 @@ export const artworks = sqliteTable("artworks", {
   perceptualHash: text("perceptual_hash"),
   metadataHash: text("metadata_hash"),
 
+  // Real, per-upload measurements (protection-svc's orchestrate.py,
+  // evaluate.py's compute_protection_metrics -- VGG19 Gram-matrix style
+  // drift vs. the cloak target, and PSNR vs. the original) -- what
+  // GalleryPage/ArtworkDetailPage's plain-language protection indicator is
+  // actually built from, not a display-only number invented in the UI
+  // layer. Nullable: protection-svc skips this measurement under
+  // USE_REMOTE_GPU (no local torch there) or if it errors -- a real
+  // "we didn't measure this" is a different fact from a measured drift of
+  // zero, so it's null, not 0, when unavailable.
+  styleDriftScore: real("style_drift_score"),
+  styleSimilarityToOriginal: real("style_similarity_to_original"),
+  perceptualPsnrDb: real("perceptual_psnr_db"),
+
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });

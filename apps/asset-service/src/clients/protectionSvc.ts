@@ -36,6 +36,12 @@ export interface ProtectJob {
   variants?: VariantResult[];
   processingTimeMs?: number;
   error?: string;
+  // Real per-upload measurements (orchestrate.py's compute_protection_metrics)
+  // -- null/absent when protection-svc skipped the measurement (USE_REMOTE_GPU,
+  // or it errored), not the same as a measured value of 0.
+  styleDriftScore?: number | null;
+  styleSimilarityToOriginal?: number | null;
+  perceptualPsnrDb?: number | null;
 }
 
 export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: string; status: string }> {

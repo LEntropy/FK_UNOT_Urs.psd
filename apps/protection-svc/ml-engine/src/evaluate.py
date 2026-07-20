@@ -48,6 +48,54 @@ def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
     return 10 * torch.log10(torch.tensor(1.0 / mse)).item()  # images in [0,1]
 
 
+def compute_protection_metrics(
+    original_path: str, cloaked_path: str, style_target_path: str, size: int = 256
+) -> dict:
+    """The numeric core of evaluate()'s CLI output, split out so
+    orchestrate.py's protect() can compute real per-upload numbers instead
+    of this only ever running as an offline, after-the-fact CLI check.
+
+    Cheap relative to cloak() itself: three VGG19 *forward* passes (no
+    gradient descent, no optimization loop), the same cost class as a
+    single style_cloak.py optimization step repeated three times -- adds
+    roughly a second or two on CPU for 256x256 images, not the
+    minutes-to-hours cloak() itself can take. Callers should still treat
+    failure as non-fatal (see protect()'s try/except around this) since
+    it's a nice-to-have measurement, not a pipeline-critical step.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    extractor = StyleFeatureExtractor(device)
+
+    original = load_image_tensor(original_path, size, device)
+    cloaked = load_image_tensor(cloaked_path, size, device)
+    style_target = load_image_tensor(style_target_path, size, device)
+
+    grams_original = extractor.gram_matrices(original)
+    grams_cloaked = extractor.gram_matrices(cloaked)
+    grams_target = extractor.gram_matrices(style_target)
+
+    sim_orig_to_target = gram_cosine_similarity(grams_original, grams_target)
+    sim_cloaked_to_target = gram_cosine_similarity(grams_cloaked, grams_target)
+    sim_cloaked_to_original = gram_cosine_similarity(grams_cloaked, grams_original)
+
+    avg_orig_to_target = mean_sim(sim_orig_to_target)
+    avg_cloaked_to_target = mean_sim(sim_cloaked_to_target)
+    avg_cloaked_to_original = mean_sim(sim_cloaked_to_original)
+    drift = avg_cloaked_to_target - avg_orig_to_target
+
+    diff = (cloaked - original).abs()
+    l_inf = diff.max().item()
+    rmse = torch.sqrt(F.mse_loss(cloaked, original)).item()
+    psnr_db = psnr(cloaked, original)
+
+    return {
+        "styleDriftScore": drift,
+        "styleSimilarityToOriginal": avg_cloaked_to_original,
+        "perceptualPsnrDb": None if psnr_db == float("inf") else psnr_db,
+        "perceptualRmse": rmse,
+    }
+
+
 def evaluate(original_path: str, cloaked_path: str, style_target_path: str, size: int = 256) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     extractor = StyleFeatureExtractor(device)

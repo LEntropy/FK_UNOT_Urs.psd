@@ -59,8 +59,19 @@ class Preset:
 
 
 PRESETS = {
+    # L1_PREVIEW measured PSNR 34.5dB, styleDriftScore 0.19 with real GPU
+    # numbers (see ml-engine/README.md's "L1/L2/L3 measured" section) --
+    # already comfortably above the 30dB "visually near-identical" rule of
+    # thumb, left unchanged.
     "L1_PREVIEW": Preset(epsilon=0.02, steps=150, lr=0.01, color_weight=0.0),
-    "L2_PORTFOLIO": Preset(epsilon=0.04, steps=300, lr=0.01, color_weight=0.0),
+    # epsilon and color_weight tuned the same way as L3 below, after a real
+    # measurement found L2 borderline (PSNR 28.99dB at the original
+    # epsilon=0.04, just under the 30dB rule of thumb). color_weight alone
+    # barely moved it (+0.13dB) -- epsilon was the lever again. epsilon=0.03
+    # (down from 0.04) crosses to 30.88dB while styleDriftScore stays 0.199
+    # (comparable to L1's own 0.19, but L2 still trains 2x the steps, so
+    # this isn't just "L2 became L1").
+    "L2_PORTFOLIO": Preset(epsilon=0.03, steps=300, lr=0.01, color_weight=8.0),
     # epsilon and color_weight both tuned empirically against a real test
     # image on real GPU hardware, with EOT on (matching orchestrate.py's
     # actual production default for this preset) -- see ml-engine/README.md's
@@ -71,7 +82,7 @@ PRESETS = {
     # original epsilon=0.08) only bought ~1dB and plateaued past weight=4 --
     # epsilon was the dominant lever for the reported "looks too different"
     # complaint, not color balance specifically; lowering it to 0.05 (down
-    # from 0.08, still above L2_PORTFOLIO's 0.04 so L3 stays the strongest
+    # from 0.08, still above L2_PORTFOLIO's 0.03 so L3 stays the strongest
     # preset) did the real work.
     "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0),
 }

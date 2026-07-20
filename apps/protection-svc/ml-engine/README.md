@@ -213,6 +213,25 @@ complaint, not a full fix to "PASS" territory, and not free (a further
 epsilon cut would help perceptual quality more but cut into the actual
 protection effect this preset exists for -- see the trade-off table above).
 
+**L1/L2 checked too, same real GPU measurement, not assumed fine because
+L3 was the one reported.** Same test image, each preset's actual
+production EOT default:
+
+| Preset | epsilon | styleDriftScore | PSNR | Verdict |
+|---|---|---|---|---|
+| `L1_PREVIEW` | 0.02 | 0.191 | 34.5 dB | comfortably PASS, left unchanged |
+| `L2_PORTFOLIO` (before) | 0.04 | 0.216 | 29.0 dB | borderline -- just under the 30 dB rule of thumb |
+| `L2_PORTFOLIO` (after) | 0.03 | 0.199 | 30.9 dB | color_weight alone only bought +0.13 dB; epsilon was the lever again |
+| `L3_ANTI_TRAIN` (after) | 0.05 | 0.223 | 27.1 dB | see above |
+
+`L2_PORTFOLIO` now runs at `epsilon=0.03` (was 0.04) plus `color_weight=8`
+(was 0). Its styleDriftScore (0.199) ends up close to L1's (0.191), but L2
+still trains for `steps=300` vs L1's 150 -- this isn't "L2 quietly became
+L1," it's the same epsilon-was-the-real-lever finding as L3, applied once
+epsilon stopped being the *largest* budget in the three-preset lineup and
+started being the thing making L2's own output visibly noisier than it
+needed to be for a "portfolio" tier.
+
 ## Robustness to real-world re-encoding
 
 A cloak that only works on the exact original file isn't worth much — most

@@ -301,6 +301,33 @@ def protect(
                 size=size,
             )
 
+    # Restore the real resolution/aspect ratio. cloak() (and, if it ran,
+    # concept-misalign) only ever process a letterboxed size x size square
+    # (see style_cloak.py's letterbox_resize doc) -- without undoing that,
+    # every published image would stay locked at that small square
+    # regardless of what was actually uploaded, which is exactly the
+    # reported problem (asset-service's larger delivery-gateway variants,
+    # public_preview_1280/2048, structurally can never be generated from a
+    # source that's never bigger than `size` on its long edge). Crop the
+    # letterbox padding back out using the *original* upload's real
+    # dimensions, then use a real super-resolution model (not a naive
+    # resize) to restore something close to that original resolution.
+    try:
+        from PIL import Image as _Image
+        from style_cloak import letterbox_content_box
+        from upscale import upscale_to_size
+
+        orig_w, orig_h = _Image.open(input_path).size
+        box = letterbox_content_box(orig_w, orig_h, size)
+        _Image.open(cloaked_path).crop(box).save(cloaked_path)
+
+        print(f"[orchestrate] 1d/4 restoring resolution to {orig_w}x{orig_h} via super-resolution ...", flush=True)
+        used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
+        if not used_sr:
+            print("[orchestrate] (SR model unavailable or unnecessary -- used a plain resize instead)", flush=True)
+    except Exception as exc:  # noqa: BLE001 -- a small-but-real image beats a crashed upload
+        print(f"[orchestrate] resolution restoration failed, publishing at the smaller processing size instead: {exc}", flush=True)
+
     watermarked_path = out / "watermarked.png"
     print("[orchestrate] 2/4 watermark ...", flush=True)
     run_rust_core(

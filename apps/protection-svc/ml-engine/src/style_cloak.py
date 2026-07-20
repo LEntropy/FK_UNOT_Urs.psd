@@ -41,19 +41,80 @@ STYLE_LOSS_WEIGHTS = {
 class Preset:
     """Maps to the protection strength presets in PROJECT_DESIGN.md §3-4.
     epsilon is the L-infinity pixel-space perturbation budget (in [0,1]
-    image scale); steps is the optimization iteration count.
+    image scale); steps is the optimization iteration count. color_weight
+    is a second loss term's weight (see color_preservation_loss) -- the
+    epsilon clamp alone only bounds the *worst single pixel-channel*
+    deviation, which doesn't stop the optimizer from pushing the *overall*
+    color balance in one direction across the whole image (every pixel's
+    red channel nudged up a little, say) -- individually within budget,
+    but visible as a real tint shift once summed across the image. Real
+    user report on L3 specifically: "색감이 이상해" (colors look wrong,
+    the protected image no longer looks close enough to the original).
     """
 
     epsilon: float
     steps: int
     lr: float
+    color_weight: float = 0.0
 
 
 PRESETS = {
-    "L1_PREVIEW": Preset(epsilon=0.02, steps=150, lr=0.01),
-    "L2_PORTFOLIO": Preset(epsilon=0.04, steps=300, lr=0.01),
-    "L3_ANTI_TRAIN": Preset(epsilon=0.08, steps=500, lr=0.01),
+    "L1_PREVIEW": Preset(epsilon=0.02, steps=150, lr=0.01, color_weight=0.0),
+    "L2_PORTFOLIO": Preset(epsilon=0.04, steps=300, lr=0.01, color_weight=0.0),
+    # epsilon and color_weight both tuned empirically against a real test
+    # image on real GPU hardware, with EOT on (matching orchestrate.py's
+    # actual production default for this preset) -- see ml-engine/README.md's
+    # "L3 color-preservation" section for the full sweep. Measured effect,
+    # EOT on: PSNR 23.95dB -> 27.10dB (+3.15dB) while styleDriftScore only
+    # dropped 0.249 -> 0.223 (~10%, still far above the 0.05 threshold
+    # evaluate.py treats as a real effect). color_weight alone (at the
+    # original epsilon=0.08) only bought ~1dB and plateaued past weight=4 --
+    # epsilon was the dominant lever for the reported "looks too different"
+    # complaint, not color balance specifically; lowering it to 0.05 (down
+    # from 0.08, still above L2_PORTFOLIO's 0.04 so L3 stays the strongest
+    # preset) did the real work.
+    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0),
 }
+
+
+def letterbox_content_box(orig_w: int, orig_h: int, size: int) -> tuple[int, int, int, int]:
+    """Where the real (non-padding) content sits inside a size x size
+    letterboxed canvas for an orig_w x orig_h source -- shared between
+    letterbox_resize (building the canvas) and cloak() (cropping the
+    padding back out of the final output). Kept as its own function so
+    both sides compute the identical box from the same two numbers,
+    instead of risking the resize math drifting apart from the crop math.
+    """
+    scale = size / max(orig_w, orig_h)
+    new_w, new_h = max(1, round(orig_w * scale)), max(1, round(orig_h * scale))
+    left = (size - new_w) // 2
+    top = (size - new_h) // 2
+    return (left, top, left + new_w, top + new_h)
+
+
+def letterbox_resize(img: Image.Image, size: int) -> Image.Image:
+    """Resizes preserving aspect ratio to fit within size x size, then pads
+    with neutral gray to reach exactly size x size.
+
+    Replaces a plain img.resize((size, size)), which silently stretched
+    every non-square upload into a square -- a real, user-visible bug: a
+    portrait or landscape photo came out with the wrong proportions in the
+    published, watermarked result, not just a resolution problem. VGG's
+    Gram-matrix style loss doesn't care about the padding (both the
+    original and the adversarial image carry the same gray border in the
+    same place through the whole optimization, so it doesn't bias the
+    *difference* being optimized) -- the padding only needs to be cropped
+    back out once, after cloak() finishes writing pixels, which is what
+    letterbox_content_box is for.
+    """
+    w, h = img.size
+    scale = size / max(w, h)
+    new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
+    resized = img.resize((new_w, new_h), Image.BICUBIC)
+    canvas = Image.new("RGB", (size, size), (114, 114, 114))
+    left, top, _, _ = letterbox_content_box(w, h, size)
+    canvas.paste(resized, (left, top))
+    return canvas
 
 
 def image_to_tensor(img: Image.Image, size: int, device: torch.device) -> torch.Tensor:
@@ -62,7 +123,7 @@ def image_to_tensor(img: Image.Image, size: int, device: torch.device) -> torch.
     have a PIL image in memory (e.g. robustness_test.py, after simulating a
     JPEG re-encode) don't have to round-trip through a file.
     """
-    img = img.convert("RGB").resize((size, size), Image.BICUBIC)
+    img = letterbox_resize(img.convert("RGB"), size)
     arr = torch.from_numpy(
         __import__("numpy").array(img).astype("float32") / 255.0
     )  # HWC in [0,1]
@@ -85,6 +146,22 @@ def style_loss(grams_a: dict[str, torch.Tensor], grams_b: dict[str, torch.Tensor
     for layer, weight in STYLE_LOSS_WEIGHTS.items():
         total = total + weight * F.mse_loss(grams_a[layer], grams_b[layer])
     return total
+
+
+def color_preservation_loss(original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """MSE between heavily-blurred (16x16 average-pooled) versions of the
+    original and adversarial image -- penalizes a large-scale, low-frequency
+    shift in overall color/tone (a visible "tint" across the whole image)
+    without penalizing the high-frequency pixel noise the epsilon-bounded
+    perturbation actually needs room to move in. The epsilon clamp alone
+    only bounds the worst single pixel-channel deviation; it says nothing
+    about every pixel's red channel drifting the same direction at once,
+    which sums to a real, visible color cast even though each individual
+    pixel stayed inside budget.
+    """
+    pooled_original = F.avg_pool2d(original, kernel_size=16, stride=16)
+    pooled_adv = F.avg_pool2d(x_adv, kernel_size=16, stride=16)
+    return F.mse_loss(pooled_adv, pooled_original)
 
 
 def random_resize_round_trip(
@@ -160,6 +237,10 @@ def cloak(
             loss = loss / (eot_samples + 1)
         else:
             loss = style_loss(extractor.gram_matrices(x_adv), target_grams)
+
+        if preset.color_weight > 0:
+            color_loss = color_preservation_loss(original, x_adv)
+            loss = loss + preset.color_weight * color_loss
 
         loss.backward()
         optimizer.step()

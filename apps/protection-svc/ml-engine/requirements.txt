@@ -1,6 +1,7 @@
 torch>=2.2
 torchvision>=0.17
 open_clip_torch>=2.24  # concept_misalign.py's CLIP image encoder (PHASE4_SCOPING.md §1)
+super-image>=0.1.7  # upscale.py's EDSR super-resolution model, restores resolution after cloak()'s size-256 processing
 Pillow>=10.0
 numpy>=1.26
 ImageHash>=4.3

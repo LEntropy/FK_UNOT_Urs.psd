@@ -159,6 +159,60 @@ Reproduce:
 ./.venv/Scripts/python.exe src/evaluate.py --cloaked out/cloaked_gpu.png   # or out/cloaked.png
 ```
 
+## Resolution preservation and L3 color-preservation (real user report, fixed)
+
+Two real problems reported after real uploads went through the pipeline in
+production, both traced to the same root area and fixed together.
+
+**Resolution was silently capped at `size` (256px), and non-square uploads
+were stretched.** `style_cloak.py`'s `image_to_tensor` used to do a plain
+`img.resize((size, size))` -- every upload, regardless of its real
+resolution or aspect ratio, got squashed into a `size x size` square before
+watermarking. This wasn't just a resolution ceiling: a landscape or portrait
+photo came out with the *wrong proportions* in the published result, and
+`delivery-gateway`'s larger variants (`public_preview_1280`/`2048`) could
+structurally never be generated, since the source was never bigger than 256px
+on its long edge (`rust-core` never upscales -- see its own README).
+
+Fixed with `letterbox_resize`/`letterbox_content_box`: fit the real image
+into the `size x size` canvas without stretching (pad with neutral gray
+instead), crop the padding back out after `cloak()` finishes, then restore
+the original resolution with a real super-resolution model (EDSR, via the
+`super-image` package -- `src/upscale.py`) rather than a naive resize.
+Verified against a real 960x645 test image end-to-end through
+`orchestrate.py`: the published `watermarked.png` came out at exactly
+960x645, and a `grid_thumbnail_512` variant (previously impossible) was
+generated at the correct aspect ratio.
+
+**L3_ANTI_TRAIN's color balance visibly shifted ("색감이 이상해").** Already
+honestly flagged above as "perceptual WEAK" (25.3 dB, below the 30 dB
+"visually near-identical" rule of thumb) -- a real user hit this in
+practice. Root-caused with a real sweep on the GPU PC (RTX 5060 Ti), not
+guessed:
+
+| Change | styleDriftScore | PSNR | Note |
+|---|---|---|---|
+| baseline (epsilon=0.08, no color term) | 0.267 | 24.3 dB | original L3 |
+| + color_weight=8 (epsilon unchanged) | 0.240 | 25.3 dB | ~1 dB gain, plateaus past weight=4 |
+| + epsilon=0.04 (= L2's own epsilon) | 0.221 | 29.3 dB | epsilon is the dominant lever, not color weight alone |
+| **final: epsilon=0.05, color_weight=8** | **0.223** | **27.1 dB** | *measured with EOT on, matching production's actual default for this preset* |
+
+A low-pass (16x16 average-pooled) color-preservation loss term
+(`color_preservation_loss` in `style_cloak.py`) alone only bought about 1 dB
+and stopped improving past `color_weight=4` -- it penalizes a large-scale
+tint shift but does nothing about the sheer magnitude of high-frequency
+pixel noise an epsilon=0.08 budget allows over 500 steps, which is what
+PSNR (a global per-pixel metric) actually responds to. Lowering epsilon
+did the real work: `L3_ANTI_TRAIN` now runs at `epsilon=0.05` (was 0.08,
+kept above L2_PORTFOLIO's 0.04 so L3 stays the strongest preset) plus
+`color_weight=8`. Under EOT (this preset's real production default):
+PSNR 23.95 dB -> 27.10 dB (+3.15 dB), while styleDriftScore only dropped
+0.249 -> 0.223 (~10%, still far above the 0.05 threshold this file already
+treats as a real effect) -- a real, measured improvement to the reported
+complaint, not a full fix to "PASS" territory, and not free (a further
+epsilon cut would help perceptual quality more but cut into the actual
+protection effect this preset exists for -- see the trade-off table above).
+
 ## Robustness to real-world re-encoding
 
 A cloak that only works on the exact original file isn't worth much — most

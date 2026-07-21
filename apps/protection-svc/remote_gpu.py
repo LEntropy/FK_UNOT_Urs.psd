@@ -55,9 +55,21 @@ def remote_cloak(
         if result.returncode != 0:
             raise RuntimeError(f"remote_cloak command failed: {' '.join(args)}\n{result.stderr}")
 
+    # -O forces the legacy SCP protocol instead of modern scp's default
+    # SFTP-based transfer. Found for real, live: the GPU PC's Windows
+    # OpenSSH sftp-server silently truncates downloads at exactly 204800
+    # bytes -- scp reports success (exit 0) but the file is corrupt. Only
+    # showed up once real cloaked-image files started exceeding ~200KB,
+    # which the old fixed size=256 processing never did; the resolution
+    # fix (processing near-native size, see orchestrate.py's
+    # MAX_PROCESSING_SIZE) is exactly what exposed it. Legacy -O transfers
+    # the same file correctly and completely -- verified directly on the
+    # Pi against this same GPU PC.
+    scp_opts = [*ssh_opts, "-O"]
+
     # 1. Upload the input images.
-    run("scp", *ssh_opts, original_path, f"{remote}:{remote_input}")
-    run("scp", *ssh_opts, style_target_path, f"{remote}:{remote_style}")
+    run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
+    run("scp", *scp_opts, style_target_path, f"{remote}:{remote_style}")
 
     # 2. Run style_cloak.py on the GPU PC, in its existing CUDA venv.
     eot_flag = "--eot" if eot else ""
@@ -71,4 +83,4 @@ def remote_cloak(
     run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
 
     # 3. Download the result.
-    run("scp", *ssh_opts, f"{remote}:{remote_output}", output_path)
+    run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)

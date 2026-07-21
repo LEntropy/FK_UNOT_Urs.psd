@@ -34,6 +34,7 @@ def remote_cloak(
     eot: bool,
     size: int = 256,
     eot_samples: int = 2,
+    perceptual_mask: bool = False,
 ) -> None:
     """Runs style_cloak.py on the GPU PC and copies the result back to
     `output_path` (a local path on whatever machine calls this).
@@ -73,12 +74,13 @@ def remote_cloak(
 
     # 2. Run style_cloak.py on the GPU PC, in its existing CUDA venv.
     eot_flag = "--eot" if eot else ""
+    mask_flag = "--perceptual-mask" if perceptual_mask else ""
     remote_cmd = (
         f"cd '{gpu_remote_dir}'; "
         f".\\.venv\\Scripts\\python.exe src/style_cloak.py "
         f"--original '{remote_input}' --style-target '{remote_style}' "
         f"--output '{remote_output}' --preset {preset_name} --size {size} "
-        f"--eot-samples {eot_samples} {eot_flag}"
+        f"--eot-samples {eot_samples} {eot_flag} {mask_flag}"
     )
     run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
 

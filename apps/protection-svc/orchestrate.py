@@ -129,6 +129,21 @@ def choose_eot_samples(size: int) -> int:
     return 2 if size <= 256 else 1
 
 
+def choose_perceptual_mask(preset_name: str) -> bool:
+    """Real GPU measurement on top of the now-fixed native-resolution
+    pipeline (size=1024, eot_samples=1): redistributing the epsilon clamp
+    toward already-textured regions (JND-style) instead of a uniform clamp
+    gave +1.37dB PSNR (27.53 -> 28.90) for only -1.9% styleDriftScore
+    (0.1645 -> 0.1614) on a real high-res L3 upload -- a real quality win
+    at a cost well inside the "same or negligible difference" bar this
+    project holds protection strength to. Only measured against
+    L3_ANTI_TRAIN so far (the tier the noise-visibility complaint was
+    actually about); L1/L2 have not been re-validated with this on, so
+    this stays scoped to L3 rather than assumed to generalize.
+    """
+    return preset_name == "L3_ANTI_TRAIN"
+
+
 def compute_metadata_hash(metadata: dict) -> str:
     """keccak256 of canonical JSON. Must byte-match blockchain-svc's
     computeContentHash expectations (apps/blockchain-svc/src/hash.ts) --
@@ -264,7 +279,8 @@ def protect(
     cloaked_path = out / "cloaked.png"
     mode = "remote GPU" if USE_REMOTE_GPU else "local"
     eot_samples = choose_eot_samples(size)
-    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} ...", flush=True)
+    perceptual_mask = choose_perceptual_mask(preset_name)
+    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} ...", flush=True)
     if USE_REMOTE_GPU:
         remote_cloak(
             original_path=input_path,
@@ -274,6 +290,7 @@ def protect(
             eot=eot,
             size=size,
             eot_samples=eot_samples,
+            perceptual_mask=perceptual_mask,
         )
     else:
         cloak(
@@ -284,6 +301,7 @@ def protect(
             eot=eot,
             size=size,
             eot_samples=eot_samples,
+            perceptual_mask=perceptual_mask,
         )
 
     # Real, per-upload protection metrics (asked for: something non-technical

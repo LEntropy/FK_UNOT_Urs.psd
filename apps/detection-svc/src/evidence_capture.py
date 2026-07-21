@@ -33,7 +33,21 @@ async def capture(url: str, out_dir: Path) -> CapturedEvidence:
             headers = dict(resp.headers)
             content_type = resp.headers.get("content-type", "")
             if content_type.startswith("image/"):
-                image_path = str(out_dir / "candidate_image")
+                # Real bug, found live: rust-core's `detect` (and phash_match's
+                # own PIL.Image.open before it) both resolve the image
+                # decoder from the file's *extension*, not just its content
+                # -- rust-core's `image::open()` failed with "Unsupported
+                # ... Format(Unknown)" against a real, valid PNG saved
+                # extension-less as plain "candidate_image", even though the
+                # file's own magic bytes were unambiguous. Map the real
+                # content-type to a real extension so every downstream
+                # extension-dependent tool (rust-core's watermark detector,
+                # anything else that shells out to a CLI expecting a real
+                # file) can actually open what gets saved here.
+                ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(
+                    content_type.split(";")[0].strip(), ""
+                )
+                image_path = str(out_dir / f"candidate_image{ext}")
                 Path(image_path).write_bytes(resp.content)
         except httpx.HTTPError as exc:
             headers = {"_fetch_error": str(exc)}

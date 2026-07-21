@@ -80,7 +80,20 @@ PRESETS = {
     # numbers (see ml-engine/README.md's "L1/L2/L3 measured" section) --
     # already comfortably above the 30dB "visually near-identical" rule of
     # thumb, left unchanged.
-    "L1_PREVIEW": Preset(epsilon=0.02, steps=150, lr=0.01, color_weight=0.0),
+    #
+    # clip_transfer_weight=0.1: same targeted chat-AI-editing defense as
+    # L2/L3 (see L3_ANTI_TRAIN's comment for the full mechanism rationale),
+    # measured separately for L1's own production settings -- no EOT, no
+    # perceptual_mask (orchestrate.py: `eot = preset_name != "L1_PREVIEW"`;
+    # choose_perceptual_mask only returns True for L2/L3), smallest epsilon
+    # (0.02) and fewest steps (150) of the three tiers. weight=0.1 already
+    # reached clipSimToDecoyTarget=0.9911 (near the 1.0 max) for only -3.7%
+    # styleDriftScore (0.1492 -> 0.1437). weight=0.25 crosses the ~5% bar
+    # (-5.4%) for a marginal effect gain (0.9985); weight=0.5 costs even
+    # more (-7.5%) with a slightly *worse* effect (0.9953) -- weight=0.1 is
+    # the clean pick, completing chat-AI-defense measurement across all
+    # three presets (L1=0.1, L2=0.5, L3=1.0).
+    "L1_PREVIEW": Preset(epsilon=0.02, steps=150, lr=0.01, color_weight=0.0, clip_transfer_weight=0.1),
     # epsilon and color_weight tuned the same way as L3 below, after a real
     # measurement found L2 borderline (PSNR 28.99dB at the original
     # epsilon=0.04, just under the 30dB rule of thumb). color_weight alone

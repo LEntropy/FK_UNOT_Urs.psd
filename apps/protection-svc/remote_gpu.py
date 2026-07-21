@@ -26,6 +26,33 @@ def _env(name: str, default: str | None = None) -> str:
     return value
 
 
+def _connection():
+    """Shared GPU-PC connection details, used by both remote_cloak and
+    remote_upscale."""
+    gpu_host = _env("GPU_HOST")
+    gpu_user = _env("GPU_USER")
+    gpu_remote_dir = _env("GPU_REMOTE_DIR", "C:/dontai-ml-engine")
+    ssh_key = os.path.expanduser(_env("GPU_SSH_KEY", "~/.ssh/dontai_pi_to_gpu"))
+    remote = f"{gpu_user}@{gpu_host}"
+    ssh_opts = ["-i", ssh_key, "-o", "ConnectTimeout=10"]
+    # -O forces the legacy SCP protocol instead of modern scp's default
+    # SFTP-based transfer. Found for real, live: the GPU PC's Windows
+    # OpenSSH sftp-server silently truncates downloads at exactly 204800
+    # bytes -- scp reports success (exit 0) but the file is corrupt. Only
+    # showed up once real files started exceeding ~200KB, which the old
+    # fixed size=256 processing never did. Legacy -O transfers the same
+    # file correctly and completely -- verified directly on the Pi against
+    # this same GPU PC.
+    scp_opts = [*ssh_opts, "-O"]
+    return gpu_remote_dir, remote, ssh_opts, scp_opts
+
+
+def _run(*args: str) -> None:
+    result = subprocess.run(list(args), capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"remote command failed: {' '.join(args)}\n{result.stderr}")
+
+
 def remote_cloak(
     original_path: str,
     style_target_path: str,
@@ -39,38 +66,15 @@ def remote_cloak(
     """Runs style_cloak.py on the GPU PC and copies the result back to
     `output_path` (a local path on whatever machine calls this).
     """
-    gpu_host = _env("GPU_HOST")
-    gpu_user = _env("GPU_USER")
-    gpu_remote_dir = _env("GPU_REMOTE_DIR", "C:/dontai-ml-engine")
-    ssh_key = os.path.expanduser(_env("GPU_SSH_KEY", "~/.ssh/dontai_pi_to_gpu"))
-
-    remote = f"{gpu_user}@{gpu_host}"
-    ssh_opts = ["-i", ssh_key, "-o", "ConnectTimeout=10"]
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _connection()
 
     remote_input = f"{gpu_remote_dir}/out/_remote_job_original{os.path.splitext(original_path)[1]}"
     remote_style = f"{gpu_remote_dir}/out/_remote_job_style{os.path.splitext(style_target_path)[1]}"
     remote_output = f"{gpu_remote_dir}/out/_remote_job_cloaked.png"
 
-    def run(*args: str) -> None:
-        result = subprocess.run(list(args), capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"remote_cloak command failed: {' '.join(args)}\n{result.stderr}")
-
-    # -O forces the legacy SCP protocol instead of modern scp's default
-    # SFTP-based transfer. Found for real, live: the GPU PC's Windows
-    # OpenSSH sftp-server silently truncates downloads at exactly 204800
-    # bytes -- scp reports success (exit 0) but the file is corrupt. Only
-    # showed up once real cloaked-image files started exceeding ~200KB,
-    # which the old fixed size=256 processing never did; the resolution
-    # fix (processing near-native size, see orchestrate.py's
-    # MAX_PROCESSING_SIZE) is exactly what exposed it. Legacy -O transfers
-    # the same file correctly and completely -- verified directly on the
-    # Pi against this same GPU PC.
-    scp_opts = [*ssh_opts, "-O"]
-
     # 1. Upload the input images.
-    run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
-    run("scp", *scp_opts, style_target_path, f"{remote}:{remote_style}")
+    _run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
+    _run("scp", *scp_opts, style_target_path, f"{remote}:{remote_style}")
 
     # 2. Run style_cloak.py on the GPU PC, in its existing CUDA venv.
     eot_flag = "--eot" if eot else ""
@@ -82,7 +86,37 @@ def remote_cloak(
         f"--output '{remote_output}' --preset {preset_name} --size {size} "
         f"--eot-samples {eot_samples} {eot_flag} {mask_flag}"
     )
-    run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
+    _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
 
     # 3. Download the result.
-    run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+    _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+
+
+def remote_upscale(input_path: str, output_path: str, target_width: int, target_height: int) -> None:
+    """Runs upscale.py's super-resolution restoration step on the GPU PC
+    instead of locally. Found for real, live, in production: loading torch
+    + the EDSR CNN and running it on a real near-native-resolution image
+    (the resolution fix processes up to 1024px now, vs. the old fixed 256px)
+    grew protection-svc's memory footprint to ~7.1GB resident, which the
+    Raspberry Pi's kernel OOM-killer then killed outright -- taking down
+    every in-flight job on the Pi, not just the one that triggered it. This
+    delegates the step to the GPU PC instead, the same pattern remote_cloak
+    already uses for the same underlying reason (no GPU / limited resources
+    on the Pi -- see this module's own doc).
+    """
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _connection()
+
+    remote_input = f"{gpu_remote_dir}/out/_remote_job_upscale_input{os.path.splitext(input_path)[1]}"
+    remote_output = f"{gpu_remote_dir}/out/_remote_job_upscaled.png"
+
+    _run("scp", *scp_opts, input_path, f"{remote}:{remote_input}")
+
+    remote_cmd = (
+        f"cd '{gpu_remote_dir}'; "
+        f".\\.venv\\Scripts\\python.exe src/upscale.py "
+        f"--input '{remote_input}' --output '{remote_output}' "
+        f"--target-width {target_width} --target-height {target_height}"
+    )
+    _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
+
+    _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)

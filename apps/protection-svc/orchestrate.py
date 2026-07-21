@@ -72,7 +72,7 @@ from perceptual_hash import compute_perceptual_hash_from_path  # noqa: E402
 USE_REMOTE_GPU = os.environ.get("USE_REMOTE_GPU") == "1"
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_cloak
+    from remote_gpu import remote_cloak, remote_upscale
 else:
     from style_cloak import cloak
 
@@ -386,7 +386,6 @@ def protect(
     try:
         from PIL import Image as _Image
         from style_cloak import letterbox_content_box
-        from upscale import upscale_to_size
 
         orig_w, orig_h = _Image.open(input_path).size
         box = letterbox_content_box(orig_w, orig_h, size)
@@ -400,9 +399,21 @@ def protect(
         cropped.save(cloaked_path)
 
         print(f"[orchestrate] 1d/4 restoring resolution to {orig_w}x{orig_h} via super-resolution ...", flush=True)
-        used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
-        if not used_sr:
-            print("[orchestrate] (SR model unavailable or unnecessary -- used a plain resize instead)", flush=True)
+        if USE_REMOTE_GPU:
+            # Loading torch + the EDSR CNN and running it locally on a real
+            # near-native-resolution image (the resolution fix processes up
+            # to 1024px now, vs. the old fixed 256px) OOM-killed protection-
+            # svc's whole process for real in production on the Pi (~7.1GB
+            # resident on an ~8GB machine, no GPU) -- taking down every
+            # in-flight job, not just the one that triggered it. Delegate to
+            # the GPU PC instead, same reasoning as remote_cloak.
+            remote_upscale(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
+        else:
+            from upscale import upscale_to_size
+
+            used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
+            if not used_sr:
+                print("[orchestrate] (SR model unavailable or unnecessary -- used a plain resize instead)", flush=True)
     except Exception as exc:  # noqa: BLE001 -- a small-but-real image beats a crashed upload
         print(f"[orchestrate] resolution restoration failed, publishing at the smaller processing size instead: {exc}", flush=True)
 

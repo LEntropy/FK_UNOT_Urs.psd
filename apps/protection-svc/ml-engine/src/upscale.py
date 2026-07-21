@@ -64,3 +64,26 @@ def upscale_to_size(input_path: str, output_path: str, target_width: int, target
         print(f"[upscale] SR model unavailable ({exc}), falling back to LANCZOS resize", flush=True)
         img.resize((target_width, target_height), Image.LANCZOS).save(output_path)
         return False
+
+
+if __name__ == "__main__":
+    # CLI entry point for remote_gpu.py's remote_upscale() -- loading torch +
+    # the EDSR CNN and running it on a real near-native-resolution image
+    # (post the resolution fix, often close to 1024px) is real, if modest,
+    # compute. Running it locally on the Pi (no GPU, ~8GB RAM total) OOM-
+    # killed protection-svc's whole process for real in production
+    # (anon-rss grew to ~7.1GB before the kernel's oom-killer stepped in) --
+    # this delegates the step to the GPU PC instead, matching this project's
+    # own established pattern (see remote_cloak's module doc) rather than
+    # running GPU/high-performance work on the resource-constrained Pi.
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--target-width", type=int, required=True)
+    parser.add_argument("--target-height", type=int, required=True)
+    args = parser.parse_args()
+
+    used_sr = upscale_to_size(args.input, args.output, args.target_width, args.target_height)
+    print(f"[upscale] wrote {args.output} used_sr={used_sr}", flush=True)

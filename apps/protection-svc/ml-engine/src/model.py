@@ -63,9 +63,22 @@ class StyleFeatureExtractor(nn.Module):
 def _gram_matrix(feature_map: torch.Tensor) -> torch.Tensor:
     b, c, h, w = feature_map.shape
     assert b == 1, "batch size 1 only (PoC keeps this simple)"
-    flat = feature_map.view(c, h * w)
-    gram = flat @ flat.t()
-    return gram / (c * h * w)  # normalize so magnitude doesn't scale with feature map size
+    # Forced fp32 regardless of an outer torch.autocast context. Hit this
+    # for real under style_cloak.py's opt-in AMP mode: at real processing
+    # resolutions (1024px), early VGG layers have a huge spatial dimension
+    # (e.g. relu1_1 at 1024x1024 input is a (64, ~1M) matrix before any
+    # pooling) -- summing ~1M products per Gram entry in fp16 overflows its
+    # ~65504 max well before the /=(c*h*w) normalization below ever gets a
+    # chance to bring the magnitude back down, producing NaN from step 0.
+    # This is the textbook case PyTorch's own AMP docs call out: large
+    # reductions need float32 accumulation even when the rest of the
+    # network runs in fp16 -- the memory savings AMP is for come from the
+    # conv stack's activations, not this specific matmul, so forcing fp32
+    # here costs little and fixes the overflow.
+    with torch.autocast(device_type="cuda", enabled=False):
+        flat = feature_map.float().view(c, h * w)
+        gram = flat @ flat.t()
+        return gram / (c * h * w)  # normalize so magnitude doesn't scale with feature map size
 
 
 class ConceptFeatureExtractor(nn.Module):

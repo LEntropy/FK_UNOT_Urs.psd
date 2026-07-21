@@ -129,6 +129,32 @@ def choose_eot_samples(size: int) -> int:
     return 2 if size <= 256 else 1
 
 
+def choose_use_amp(size: int) -> bool:
+    """Real GPU measurement (post-fixing a real fp16 overflow bug in
+    model.py's Gram-matrix computation -- large reductions need forced
+    fp32 accumulation even under autocast): at size=1024, mixed precision
+    matched fp32's styleDriftScore/PSNR almost exactly (0.1608 vs 0.1606,
+    29.38dB vs 29.41dB) while running 2.2x faster (90.5s vs 159.3s) and
+    using 29% less peak VRAM (3042MB vs 4294MB) -- a clean win at the
+    resolution this project actually runs at.
+
+    Investigated specifically to see whether the VRAM headroom would let
+    MAX_PROCESSING_SIZE go higher than 1024 -- it doesn't: size=1536 with
+    AMP still hit the same VRAM-pressure/allocator-thrashing wall
+    choose_eot_samples's doc already documents once (this time confirmed
+    stuck for real: 55+ minutes of accumulated CPU time with no
+    progress, killed). So this stays a speed/headroom win at the existing
+    1024 cap, not a lever for raising it further on this project's 8GB
+    GPU PC.
+
+    Only sizes above the originally fp32-validated 256px envelope get
+    AMP -- same reasoning as choose_eot_samples: small enough jobs
+    finish quickly in fp32 anyway, no reason to introduce fp16 into a
+    path that was never measured with it.
+    """
+    return size > 256
+
+
 def choose_perceptual_mask(preset_name: str) -> bool:
     """Real GPU measurement on top of the now-fixed native-resolution
     pipeline (size=1024, eot_samples=1): redistributing the epsilon clamp
@@ -284,7 +310,8 @@ def protect(
     mode = "remote GPU" if USE_REMOTE_GPU else "local"
     eot_samples = choose_eot_samples(size)
     perceptual_mask = choose_perceptual_mask(preset_name)
-    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} ...", flush=True)
+    use_amp = choose_use_amp(size)
+    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} use_amp={use_amp} ...", flush=True)
     if USE_REMOTE_GPU:
         remote_cloak(
             original_path=input_path,
@@ -295,6 +322,7 @@ def protect(
             size=size,
             eot_samples=eot_samples,
             perceptual_mask=perceptual_mask,
+            use_amp=use_amp,
         )
     else:
         cloak(
@@ -306,6 +334,7 @@ def protect(
             size=size,
             eot_samples=eot_samples,
             perceptual_mask=perceptual_mask,
+            use_amp=use_amp,
         )
 
     # Real, per-upload protection metrics (asked for: something non-technical

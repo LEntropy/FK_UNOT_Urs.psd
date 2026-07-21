@@ -93,7 +93,7 @@ def test_resolution_restoration_produces_a_fully_loadable_non_truncated_file(mon
 
     out_dir = tmp_path / "out"
 
-    def fake_cloak(original_path, style_target_path, output_path, preset_name, eot, size, eot_samples, perceptual_mask):
+    def fake_cloak(original_path, style_target_path, output_path, preset_name, eot, size, eot_samples, perceptual_mask, use_amp):
         # Mirrors letterbox_resize's real output shape: a padded square at
         # the processing size, not yet cropped back to the real aspect ratio.
         Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)

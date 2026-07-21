@@ -405,7 +405,7 @@ def cloak(
     # optimization. GradScaler guards against the gradient-underflow risk
     # fp16 introduces (this project's loss values run small, ~0.004-0.02).
     amp_enabled = use_amp and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     # Lazily instantiated (module-level cache, mirrors _lpips_model) --
     # only load CLIP/the SD VAE when a caller actually opts into the

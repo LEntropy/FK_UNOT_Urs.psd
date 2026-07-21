@@ -368,7 +368,14 @@ def protect(
 
         orig_w, orig_h = _Image.open(input_path).size
         box = letterbox_content_box(orig_w, orig_h, size)
-        _Image.open(cloaked_path).crop(box).save(cloaked_path)
+        # .convert("RGB") forces PIL to eagerly load pixel data now, before
+        # the save() below opens (and truncates) this same path for writing.
+        # Without it, Image.open() is lazy and .save(cloaked_path) truncates
+        # the file before .crop() ever reads from it -- hit for real on a
+        # production upload: a valid-looking PNG header but a truncated body
+        # (rust-core's embed step failed with IoError(UnexpectedEof)).
+        cropped = _Image.open(cloaked_path).convert("RGB").crop(box)
+        cropped.save(cloaked_path)
 
         print(f"[orchestrate] 1d/4 restoring resolution to {orig_w}x{orig_h} via super-resolution ...", flush=True)
         used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)

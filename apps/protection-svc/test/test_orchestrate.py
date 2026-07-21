@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import orchestrate  # noqa: E402
@@ -68,3 +69,56 @@ def test_calls_select_most_dissimilar_target_when_candidates_exist(monkeypatch, 
     assert captured["original_path"] == "original.png"
     assert captured["candidate_paths"] == ["a.png", "b.jpg"]
     assert captured["size"] == 512
+
+
+def test_resolution_restoration_produces_a_fully_loadable_non_truncated_file(monkeypatch, tmp_path):
+    """Regression test for a real production failure: the crop-back-out-of-
+    letterbox-padding step used to do `Image.open(cloaked_path).crop(box)
+    .save(cloaked_path)` -- opening and saving the *same* path. PIL's
+    Image.open() is lazy, so .save() truncated the file for writing before
+    .crop() ever read its pixel data, corrupting it (valid PNG header, empty
+    body). A real high-res upload hit this: rust-core's watermark step
+    failed with `IoError(UnexpectedEof)` reading the corrupted cloaked.png.
+    Fixed by forcing an eager load (`.convert("RGB")`) before the in-place
+    save. This test drives protect() with everything except that
+    resolution-restoration block mocked out, and asserts the resulting file
+    survives a real `Image.load()` and has the cropped-back-out aspect
+    ratio, not the padded square.
+    """
+    input_path = tmp_path / "original.png"
+    Image.new("RGB", (400, 200), (10, 20, 30)).save(input_path)  # 2:1 aspect
+
+    style_target_path = tmp_path / "style_target.png"
+    Image.new("RGB", (64, 64), (200, 200, 200)).save(style_target_path)
+
+    out_dir = tmp_path / "out"
+
+    def fake_cloak(original_path, style_target_path, output_path, preset_name, eot, size, eot_samples):
+        # Mirrors letterbox_resize's real output shape: a padded square at
+        # the processing size, not yet cropped back to the real aspect ratio.
+        Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)
+
+    monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
+    monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
+    monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
+    monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
+    monkeypatch.setattr(orchestrate, "compute_perceptual_hash_from_path", lambda path: "deadbeef")
+
+    result = orchestrate.protect(
+        input_path=str(input_path),
+        out_dir=str(out_dir),
+        preset_name="L1_PREVIEW",
+        style_target_path=str(style_target_path),
+        title="t",
+        creator_id="c",
+        allow_ai_training=False,
+        watermark_payload_hex="deadbeefcafef00d",
+        size=256,
+    )
+
+    assert result["status"] == "completed"
+
+    cloaked_path = out_dir / "cloaked.png"
+    restored = Image.open(cloaked_path)
+    restored.load()  # raises OSError("image file is truncated") if corrupted
+    assert restored.size[0] > restored.size[1]  # 2:1 aspect restored, not square

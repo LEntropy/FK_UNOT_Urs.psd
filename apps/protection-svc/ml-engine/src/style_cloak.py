@@ -26,7 +26,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from model import StyleFeatureExtractor
+from model import StyleFeatureExtractor, ConceptFeatureExtractor, DiffusionVAEExtractor
 
 STYLE_LOSS_WEIGHTS = {
     "relu1_1": 1.0,
@@ -56,6 +56,23 @@ class Preset:
     steps: int
     lr: float
     color_weight: float = 0.0
+    tv_weight: float = 0.0
+    lpips_weight: float = 0.0
+    # compute_perceptual_mask's [low, high] range for this preset -- kept
+    # per-preset (not a single global default) because it's only actually
+    # been measured for L3_ANTI_TRAIN so far; see PRESETS' L3 entry below
+    # for the real GPU numbers.
+    mask_low: float = 0.3
+    mask_high: float = 1.7
+    # Both target the "someone pastes this into ChatGPT/Gemini/Grok and asks
+    # it to edit/redraw it" threat -- an inference-time request against a
+    # closed commercial model, which style_loss (targets *training*) was
+    # never built to resist. See model.py's ConceptFeatureExtractor and
+    # DiffusionVAEExtractor doc comments for the mechanism and honesty
+    # caveats (best-effort transfer, not validated against any specific
+    # closed system).
+    clip_transfer_weight: float = 0.0
+    vae_transfer_weight: float = 0.0
 
 
 PRESETS = {
@@ -84,7 +101,24 @@ PRESETS = {
     # complaint, not color balance specifically; lowering it to 0.05 (down
     # from 0.08, still above L2_PORTFOLIO's 0.03 so L3 stays the strongest
     # preset) did the real work.
-    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0),
+    #
+    # mask_low=0.15 (down from 0.3): real GPU noise-reduction sweep on top
+    # of the native-resolution + perceptual_mask pipeline, comparing three
+    # candidate techniques for making the noise even less visible while
+    # holding protection steady. Two of the three (TV/total-variation
+    # regularization on delta, and an LPIPS perceptual loss term) were
+    # tested and REJECTED: both collapsed styleDriftScore by 83-98% (TV
+    # weight=8: 0.1617->0.0161; TV weight=24: ->0.0036; LPIPS weight=20:
+    # ->0.0276) because minimizing "distance from the original image" has a
+    # trivial global optimum at delta=0 -- the optimizer happily converges
+    # there, sacrificing the entire adversarial objective. Only tightening
+    # the perceptual mask's low bound (0.3 -> 0.15, pushing even less noise
+    # into flat regions) was a clean win: styleDriftScore 0.1617 -> 0.1603
+    # (-0.9%, noise), PSNR 28.90 -> 29.40dB (+0.5dB), LPIPS distance to
+    # original 0.4390 -> 0.3772 (~14% better). Only measured for L3 so far
+    # -- L1/L2 keep mask_low=0.3 (the Preset dataclass default) until
+    # separately measured.
+    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15),
 }
 
 
@@ -173,6 +207,83 @@ def color_preservation_loss(original: torch.Tensor, x_adv: torch.Tensor) -> torc
     pooled_original = F.avg_pool2d(original, kernel_size=16, stride=16)
     pooled_adv = F.avg_pool2d(x_adv, kernel_size=16, stride=16)
     return F.mse_loss(pooled_adv, pooled_original)
+
+
+def total_variation_loss(delta: torch.Tensor) -> torch.Tensor:
+    """Mean absolute difference between horizontally/vertically adjacent
+    pixels of the perturbation itself (not the image) -- penalizes a noisy,
+    speckled delta in favor of a smoother one that still fits the same
+    epsilon budget. This is what makes adversarial noise look like grain
+    or a texture instead of static: two neighboring pixels pushed in wildly
+    different directions is what reads as "visible noise" to a human eye,
+    even when both are individually within the epsilon clamp. Classic
+    adversarial-perturbation smoothing technique (same idea as TV
+    regularization in image denoising, applied to the perturbation instead
+    of the image).
+    """
+    dh = (delta[:, :, 1:, :] - delta[:, :, :-1, :]).abs().mean()
+    dw = (delta[:, :, :, 1:] - delta[:, :, :, :-1]).abs().mean()
+    return dh + dw
+
+
+_lpips_model = None
+
+
+def lpips_loss(original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """Learned Perceptual Image Patch Similarity -- a network trained to
+    match human perceptual judgments of "do these two images look the
+    same", used here as a direct optimization target for imperceptibility
+    (unlike color_preservation_loss's blur-MSE heuristic, this is trained
+    specifically to track human visual similarity, including texture and
+    structure, not just low-frequency color). Complementary to, not a
+    replacement for, color_preservation_loss and the perceptual mask --
+    those shape *where* and *how* noise gets clamped; this one gives the
+    optimizer a *direct* incentive to minimize the noise's visible impact
+    in the first place, alongside chasing style drift.
+
+    lpips expects [-1,1]-scaled inputs (not this codebase's [0,1] tensor
+    convention) -- see lpips's own README.
+    """
+    global _lpips_model
+    if _lpips_model is None:
+        import lpips as _lpips_pkg
+
+        _lpips_model = _lpips_pkg.LPIPS(net="vgg").to(original.device)
+        for p in _lpips_model.parameters():
+            p.requires_grad_(False)
+    return _lpips_model(original * 2 - 1, x_adv * 2 - 1).mean()
+
+
+_clip_extractor = None
+_vae_extractor = None
+
+
+def clip_transfer_loss(clip_extractor, original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """Cosine similarity between x_adv's and the original's own CLIP
+    embedding -- minimizing this (i.e. maximizing embedding distance from
+    itself, untargeted, no decoy needed) is this project's best-effort
+    lever against inference-time editing by a closed commercial multimodal
+    AI (see Preset's clip_transfer_weight doc and model.py's
+    ConceptFeatureExtractor for the reasoning and honesty caveats).
+    original_embed is detached -- it's a fixed reference point, not
+    something we want gradients flowing back into.
+    """
+    with torch.no_grad():
+        original_embed = clip_extractor.embed(original)
+    return F.cosine_similarity(clip_extractor.embed(x_adv), original_embed).mean()
+
+
+def vae_transfer_loss(vae_extractor, original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """Negative MSE between x_adv's and the original's own Stable Diffusion
+    VAE latent -- minimizing this (maximizing latent-space distance)
+    directly attacks the encode step every diffusion-based image editor
+    depends on (PhotoGuard's own mechanism -- see model.py's
+    DiffusionVAEExtractor doc). original_latent is detached for the same
+    reason as clip_transfer_loss above.
+    """
+    with torch.no_grad():
+        original_latent = vae_extractor.encode_latent(original)
+    return -F.mse_loss(vae_extractor.encode_latent(x_adv), original_latent)
 
 
 def compute_perceptual_mask(original: torch.Tensor, low: float = 0.3, high: float = 1.7) -> torch.Tensor:
@@ -271,10 +382,45 @@ def cloak(
     eot_max_scale: float = 1.0,
     eot_scales: list[float] | None = None,
     perceptual_mask: bool = False,
+    mask_low: float | None = None,
+    mask_high: float | None = None,
+    use_amp: bool = False,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     preset = PRESETS[preset_name]
+    # None (the default) -> use this preset's own measured mask range;
+    # an explicit value (CLI/experiment override) takes precedence.
+    mask_low = preset.mask_low if mask_low is None else mask_low
+    mask_high = preset.mask_high if mask_high is None else mask_high
     extractor = StyleFeatureExtractor(device)
+
+    # Opt-in mixed precision (fp16 forward/backward through VGG, fp32 the
+    # optimized `delta` itself) -- roughly halves the VGG activation memory
+    # that dominates VRAM usage at real processing resolutions. Investigated
+    # because the GPU PC's card only has 8GB VRAM total (confirmed via
+    # nvidia-smi) and MAX_PROCESSING_SIZE is already capped at 1024 in
+    # orchestrate.py specifically because eot_samples=2 at that size pushed
+    # VRAM to ~96% and hung for 2+ hours -- this is the lever to raise that
+    # cap without hitting the same wall again, not a general speed
+    # optimization. GradScaler guards against the gradient-underflow risk
+    # fp16 introduces (this project's loss values run small, ~0.004-0.02).
+    amp_enabled = use_amp and device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+
+    # Lazily instantiated (module-level cache, mirrors _lpips_model) --
+    # only load CLIP/the SD VAE when a caller actually opts into the
+    # chat-AI-editing defense, not on every cloak() call.
+    global _clip_extractor, _vae_extractor
+    clip_extractor = None
+    if preset.clip_transfer_weight > 0:
+        if _clip_extractor is None:
+            _clip_extractor = ConceptFeatureExtractor(device)
+        clip_extractor = _clip_extractor
+    vae_extractor = None
+    if preset.vae_transfer_weight > 0:
+        if _vae_extractor is None:
+            _vae_extractor = DiffusionVAEExtractor(device)
+        vae_extractor = _vae_extractor
 
     original = load_image_tensor(original_path, size, device)
     style_target = load_image_tensor(style_target_path, size, device)
@@ -284,7 +430,7 @@ def cloak(
     # flipping the default): redistributes the same epsilon budget toward
     # already-textured regions and away from flat ones instead of a
     # uniform clamp everywhere -- see compute_perceptual_mask's doc.
-    epsilon_mask = compute_perceptual_mask(original) * preset.epsilon if perceptual_mask else preset.epsilon
+    epsilon_mask = compute_perceptual_mask(original, mask_low, mask_high) * preset.epsilon if perceptual_mask else preset.epsilon
 
     delta = torch.zeros_like(original, requires_grad=True)
     optimizer = torch.optim.Adam([delta], lr=preset.lr)
@@ -292,31 +438,47 @@ def cloak(
     scale_desc = f"discrete{eot_scales}" if eot_scales else f"[{eot_min_scale},{eot_max_scale}]"
     mode = f"EOT(resize, samples={eot_samples}, scale={scale_desc})" if eot else "no-EOT (clean image only)"
     mask_desc = " perceptual_mask=on" if perceptual_mask else ""
-    print(f"[cloak] preset={preset_name} epsilon={preset.epsilon} steps={preset.steps} mode={mode}{mask_desc}")
+    amp_desc = " amp=on" if amp_enabled else ""
+    print(f"[cloak] preset={preset_name} epsilon={preset.epsilon} steps={preset.steps} mode={mode}{mask_desc}{amp_desc}")
     for step in range(preset.steps):
         optimizer.zero_grad()
-        x_adv = (original + delta).clamp(0, 1)
 
-        if eot:
-            # Expectation over transformation: average the loss over several
-            # random resize round-trips (plus the clean image) instead of
-            # optimizing the clean image alone, so the perturbation survives
-            # in expectation across the transform distribution, not just at
-            # exact original resolution.
-            loss = style_loss(extractor.gram_matrices(x_adv), target_grams)
-            for _ in range(eot_samples):
-                transformed = random_resize_round_trip(x_adv, eot_min_scale, eot_max_scale, eot_scales)
-                loss = loss + style_loss(extractor.gram_matrices(transformed), target_grams)
-            loss = loss / (eot_samples + 1)
-        else:
-            loss = style_loss(extractor.gram_matrices(x_adv), target_grams)
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
+            x_adv = (original + delta).clamp(0, 1)
 
-        if preset.color_weight > 0:
-            color_loss = color_preservation_loss(original, x_adv)
-            loss = loss + preset.color_weight * color_loss
+            if eot:
+                # Expectation over transformation: average the loss over
+                # several random resize round-trips (plus the clean image)
+                # instead of optimizing the clean image alone, so the
+                # perturbation survives in expectation across the transform
+                # distribution, not just at exact original resolution.
+                loss = style_loss(extractor.gram_matrices(x_adv), target_grams)
+                for _ in range(eot_samples):
+                    transformed = random_resize_round_trip(x_adv, eot_min_scale, eot_max_scale, eot_scales)
+                    loss = loss + style_loss(extractor.gram_matrices(transformed), target_grams)
+                loss = loss / (eot_samples + 1)
+            else:
+                loss = style_loss(extractor.gram_matrices(x_adv), target_grams)
 
-        loss.backward()
-        optimizer.step()
+            if preset.color_weight > 0:
+                color_loss = color_preservation_loss(original, x_adv)
+                loss = loss + preset.color_weight * color_loss
+
+            if preset.tv_weight > 0:
+                loss = loss + preset.tv_weight * total_variation_loss(delta)
+
+            if preset.lpips_weight > 0:
+                loss = loss + preset.lpips_weight * lpips_loss(original, x_adv)
+
+            if clip_extractor is not None:
+                loss = loss + preset.clip_transfer_weight * clip_transfer_loss(clip_extractor, original, x_adv)
+
+            if vae_extractor is not None:
+                loss = loss + preset.vae_transfer_weight * vae_transfer_loss(vae_extractor, original, x_adv)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         with torch.no_grad():
             delta.clamp_(-epsilon_mask, epsilon_mask)
@@ -356,6 +518,15 @@ if __name__ == "__main__":
         "a uniform clamp -- see compute_perceptual_mask's doc. GPU-measured real win: +1.37dB PSNR "
         "for -1.9% styleDriftScore on a real high-res L3 upload.",
     )
+    parser.add_argument("--mask-low", type=float, default=None, help="defaults to the chosen preset's own measured value")
+    parser.add_argument("--mask-high", type=float, default=None, help="defaults to the chosen preset's own measured value")
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="mixed precision (fp16) forward/backward through VGG -- roughly halves VRAM usage, "
+        "the lever for raising MAX_PROCESSING_SIZE past 1024 on an 8GB GPU without hitting the "
+        "eot_samples=2-at-1024 VRAM wall documented in orchestrate.py's choose_eot_samples.",
+    )
     args = parser.parse_args()
 
     eot_scales = [float(s) for s in args.eot_scales.split(",")] if args.eot_scales else None
@@ -372,4 +543,7 @@ if __name__ == "__main__":
         eot_max_scale=args.eot_max_scale,
         eot_scales=eot_scales,
         perceptual_mask=args.perceptual_mask,
+        mask_low=args.mask_low,
+        mask_high=args.mask_high,
+        use_amp=args.amp,
     )

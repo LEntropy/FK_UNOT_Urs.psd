@@ -118,3 +118,59 @@ class ConceptFeatureExtractor(nn.Module):
         """Returns the (unnormalized -- concept_loss's cosine similarity
         handles that) CLIP image embedding for a 1x3xHxW [0,1] tensor."""
         return self.model.encode_image(self._normalize(x))
+
+
+class DiffusionVAEExtractor(nn.Module):
+    """Wraps Stable Diffusion's VAE encoder -- the same target PhotoGuard
+    (Salman et al., MIT, "Raising the Cost of Malicious AI-Powered Image
+    Editing", 2023) attacks to disrupt diffusion-based image *editing*
+    specifically, as opposed to style_cloak.py's VGG19 Gram-matrix loss
+    (which targets style-mimicry *training*) or ConceptFeatureExtractor's
+    CLIP embedding (which targets caption/visual-feature association during
+    training).
+
+    Rationale for this specific threat: a user pasting a protected image
+    into a commercial conversational AI (ChatGPT/Gemini/Grok) and asking it
+    to edit or redraw it is an *inference-time* request, not training --
+    none of this project's existing mechanisms were built to resist that.
+    Every diffusion-based image editor (open or closed) that does img2img/
+    inpainting-style editing has to first *encode* the input image into a
+    latent representation before it can generate from it; distorting that
+    encoding as much as possible directly attacks the step every such
+    pipeline shares, regardless of what happens downstream. We don't have
+    access to GPT-4o/Gemini/Grok's actual image encoder (closed, proprietary,
+    frequently updated) -- this uses Stable Diffusion's publicly available
+    VAE as the best open proxy, the same choice PhotoGuard's own published
+    method makes, on the premise (also PhotoGuard's) that adversarial
+    perturbations against one diffusion VAE encoder have shown real
+    transfer to other diffusion-based editing pipelines in published
+    evaluations. Whether it transfers to any *specific* closed commercial
+    system is unverified here -- same honesty standard as concept_misalign.py's
+    own module doc about untested threat models.
+    """
+
+    def __init__(self, device: torch.device):
+        super().__init__()
+        from diffusers import AutoencoderKL
+
+        # sd-vae-ft-mse: a widely-used, small (~330MB), well-documented
+        # standalone VAE checkpoint (fine-tuned by Stability AI for
+        # sharper reconstructions) -- doesn't require downloading a full
+        # Stable Diffusion pipeline (unet, text encoder, scheduler etc.)
+        # this module only needs the encoder.
+        vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device).eval()
+        for param in vae.parameters():
+            param.requires_grad_(False)
+        self.vae = vae
+        self.device = device
+
+    def encode_latent(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns the VAE encoder's latent distribution mean for a
+        1x3xHxW [0,1] tensor. Stable Diffusion's VAE expects [-1,1]-scaled
+        input (its own training convention, same reason lpips_loss in
+        style_cloak.py rescales) and works on any resolution divisible by
+        8 (its downsampling factor) -- callers already resize to this
+        project's own `size` (always a multiple of 8 in practice: 256,
+        1024, etc.), so no extra resize needed here.
+        """
+        return self.vae.encode(x * 2 - 1).latent_dist.mean

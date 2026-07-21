@@ -133,15 +133,19 @@ def choose_perceptual_mask(preset_name: str) -> bool:
     """Real GPU measurement on top of the now-fixed native-resolution
     pipeline (size=1024, eot_samples=1): redistributing the epsilon clamp
     toward already-textured regions (JND-style) instead of a uniform clamp
-    gave +1.37dB PSNR (27.53 -> 28.90) for only -1.9% styleDriftScore
-    (0.1645 -> 0.1614) on a real high-res L3 upload -- a real quality win
-    at a cost well inside the "same or negligible difference" bar this
-    project holds protection strength to. Only measured against
-    L3_ANTI_TRAIN so far (the tier the noise-visibility complaint was
-    actually about); L1/L2 have not been re-validated with this on, so
-    this stays scoped to L3 rather than assumed to generalize.
+    is a real quality win at a cost well inside the "same or negligible
+    difference" bar this project holds protection strength to, for both
+    presets it's been measured against:
+      L3_ANTI_TRAIN: +1.37dB PSNR (27.53 -> 28.90), -1.9% styleDriftScore
+                     (0.1645 -> 0.1614)
+      L2_PORTFOLIO:  +1.73dB PSNR (31.15 -> 32.88), -2.6% styleDriftScore
+                     (0.1567 -> 0.1526)
+    L1_PREVIEW has not been measured -- it's already the cheap/low-epsilon
+    tier (no EOT either), and the noise-visibility complaint this was
+    responding to was never about L1, so it stays off there rather than
+    assumed to generalize.
     """
-    return preset_name == "L3_ANTI_TRAIN"
+    return preset_name in ("L2_PORTFOLIO", "L3_ANTI_TRAIN")
 
 
 def compute_metadata_hash(metadata: dict) -> str:

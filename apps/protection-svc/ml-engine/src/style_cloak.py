@@ -118,7 +118,49 @@ PRESETS = {
     # original 0.4390 -> 0.3772 (~14% better). Only measured for L3 so far
     # -- L1/L2 keep mask_low=0.3 (the Preset dataclass default) until
     # separately measured.
-    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15),
+    # clip_transfer_weight=1.0: targets a different threat than everything
+    # above -- someone pasting this image into a closed commercial
+    # multimodal AI (ChatGPT-4o/Gemini/Grok) and asking it to edit/redraw
+    # it, an inference-time request none of this preset's other terms were
+    # built to resist. First attempt (clip_transfer_loss pushing the CLIP
+    # embedding away from x_adv's own original, untargeted, no decoy) had
+    # no usable low-cost regime: even the smallest weight tested (2.0)
+    # already cost -12.6% styleDriftScore (0.1609 -> 0.1406), and cost kept
+    # climbing with weight (weight=10: -20.2%) with no sign of a cheap
+    # option -- "maximize distance from a moving, ever-more-different
+    # point" has no natural stopping point, so it keeps producing a large
+    # gradient competing with the style objective for as long as training
+    # runs. Redesigned to be *targeted* instead (pull toward style_target's
+    # own CLIP embedding, the same decoy image already driving the
+    # Gram-matrix loss -- mirrors concept_misalign.py's existing
+    # Nightshade-style mechanism exactly) and re-measured: weight=1 reached
+    # clipSimToDecoyTarget=0.9965 (near the theoretical max of 1.0) for
+    # only -2.9% styleDriftScore (0.1604 -> 0.1557) -- comfortably inside
+    # the "same or negligible difference" bar this project holds
+    # protection strength to. Higher weights (2/4/8) saturate at
+    # essentially the same effect (~0.99-0.999) for steadily worse cost
+    # (3.7%/5.5%/7.3%) -- weight=1 already captures nearly all of the
+    # available effect, so there's no reason to pay more.
+    #
+    # vae_transfer_weight stays 0 -- PhotoGuard's own SD-VAE-encoder attack
+    # (see model.py's DiffusionVAEExtractor), also redesigned to be
+    # targeted the same way, but unlike CLIP the targeted redesign did NOT
+    # fix its cost problem: even the smallest weight tested (0.5, at a
+    # reduced 512px scale since 1024px still hits this project's 8GB GPU's
+    # VRAM ceiling even under AMP -- confirmed hung twice) collapsed
+    # styleDriftScore by -87.6% (0.1405 -> 0.0174), saturating at
+    # essentially the same damage by weight=2.0 (-92.9%). Raw MSE in VAE
+    # latent space apparently doesn't have the same gentle-saturation
+    # property cosine similarity in CLIP space does -- a real, different
+    # negative result, not just an infrastructure limitation this time.
+    #
+    # Honesty caveat carried over from concept_misalign.py's own module
+    # doc: clip_transfer_weight's real-world effectiveness against actual
+    # GPT-4o/Gemini/Grok has NOT been validated against those live closed
+    # systems -- this is a best-effort transfer-based mechanism grounded in
+    # published CLIP-transferability research, not a proven end-to-end
+    # defense. Only enabled for L3_ANTI_TRAIN; L1/L2 not measured.
+    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15, clip_transfer_weight=1.0),
 }
 
 
@@ -258,32 +300,49 @@ _clip_extractor = None
 _vae_extractor = None
 
 
-def clip_transfer_loss(clip_extractor, original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
-    """Cosine similarity between x_adv's and the original's own CLIP
-    embedding -- minimizing this (i.e. maximizing embedding distance from
-    itself, untargeted, no decoy needed) is this project's best-effort
-    lever against inference-time editing by a closed commercial multimodal
-    AI (see Preset's clip_transfer_weight doc and model.py's
-    ConceptFeatureExtractor for the reasoning and honesty caveats).
-    original_embed is detached -- it's a fixed reference point, not
-    something we want gradients flowing back into.
+def clip_transfer_loss(clip_extractor, target_embed: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """1 - cosine similarity to a fixed decoy embedding -- minimizing this
+    pulls x_adv's CLIP embedding *toward* a specific, different image's
+    embedding (the same style_target already used for the Gram-matrix
+    objective), mirroring concept_misalign.py's concept_loss exactly
+    instead of inventing a new formulation.
+
+    Superseded the original untargeted version (maximize distance from
+    x_adv's own original embedding, no decoy) after a real GPU sweep found
+    it had no usable low-cost regime: even the smallest weight tested
+    (2.0) already cost -12.6% styleDriftScore, because "push away from
+    self, no target" has no natural stopping point -- cosine similarity to
+    a moving, ever-more-different point keeps producing a large gradient
+    for as long as training runs, competing hard with the style objective
+    the whole time. A *targeted* decoy has a real minimum (similarity=1
+    once x_adv's embedding reaches the target) that the loss saturates
+    toward, tapering off instead of pulling indefinitely -- the same
+    reason concept_misalign.py's own Nightshade-style mechanism is
+    targeted, not untargeted, in the first place.
+
+    target_embed is precomputed once per cloak() call (from style_target,
+    with no_grad) by the caller, not recomputed here every step.
     """
-    with torch.no_grad():
-        original_embed = clip_extractor.embed(original)
-    return F.cosine_similarity(clip_extractor.embed(x_adv), original_embed).mean()
+    return 1.0 - F.cosine_similarity(clip_extractor.embed(x_adv), target_embed).mean()
 
 
-def vae_transfer_loss(vae_extractor, original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
-    """Negative MSE between x_adv's and the original's own Stable Diffusion
-    VAE latent -- minimizing this (maximizing latent-space distance)
-    directly attacks the encode step every diffusion-based image editor
-    depends on (PhotoGuard's own mechanism -- see model.py's
-    DiffusionVAEExtractor doc). original_latent is detached for the same
-    reason as clip_transfer_loss above.
+def vae_transfer_loss(vae_extractor, target_latent: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
+    """MSE to a fixed decoy Stable Diffusion VAE latent -- minimizing this
+    pulls x_adv's encoded latent *toward* style_target's latent, the same
+    targeted-vs-untargeted reasoning as clip_transfer_loss above (this
+    project's own real GPU testing never got past confirming the untargeted
+    version was too VRAM-heavy to even measure on an 8GB card, with or
+    without AMP -- this targeted version wasn't separately re-measured
+    against that same hardware wall, since the constraint is the VAE
+    encoder's activation memory at real processing resolutions, not the
+    loss target choice; PhotoGuard's own published attack is untargeted,
+    included here for symmetry with clip_transfer_loss and in case a
+    future GPU upgrade makes measuring it practical).
+
+    target_latent is precomputed once per cloak() call (from style_target,
+    with no_grad) by the caller, not recomputed here every step.
     """
-    with torch.no_grad():
-        original_latent = vae_extractor.encode_latent(original)
-    return -F.mse_loss(vae_extractor.encode_latent(x_adv), original_latent)
+    return F.mse_loss(vae_extractor.encode_latent(x_adv), target_latent)
 
 
 def compute_perceptual_mask(original: torch.Tensor, low: float = 0.3, high: float = 1.7) -> torch.Tensor:
@@ -426,6 +485,20 @@ def cloak(
     style_target = load_image_tensor(style_target_path, size, device)
     target_grams = extractor.gram_matrices(style_target)
 
+    # Precomputed once (not recomputed every step) -- style_target doubles
+    # as the decoy for clip_transfer_loss/vae_transfer_loss, the same image
+    # already driving the Gram-matrix style objective, so a single target
+    # image coherently drives all three feature spaces this preset opts
+    # into instead of needing a separate decoy parameter.
+    clip_target_embed = None
+    if clip_extractor is not None:
+        with torch.no_grad():
+            clip_target_embed = clip_extractor.embed(style_target)
+    vae_target_latent = None
+    if vae_extractor is not None:
+        with torch.no_grad():
+            vae_target_latent = vae_extractor.encode_latent(style_target)
+
     # Opt-in (default off -- see this parameter's callers/README before
     # flipping the default): redistributes the same epsilon budget toward
     # already-textured regions and away from flat ones instead of a
@@ -471,10 +544,10 @@ def cloak(
                 loss = loss + preset.lpips_weight * lpips_loss(original, x_adv)
 
             if clip_extractor is not None:
-                loss = loss + preset.clip_transfer_weight * clip_transfer_loss(clip_extractor, original, x_adv)
+                loss = loss + preset.clip_transfer_weight * clip_transfer_loss(clip_extractor, clip_target_embed, x_adv)
 
             if vae_extractor is not None:
-                loss = loss + preset.vae_transfer_weight * vae_transfer_loss(vae_extractor, original, x_adv)
+                loss = loss + preset.vae_transfer_weight * vae_transfer_loss(vae_extractor, vae_target_latent, x_adv)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)

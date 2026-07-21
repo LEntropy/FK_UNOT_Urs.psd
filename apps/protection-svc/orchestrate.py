@@ -78,6 +78,56 @@ else:
 
 from Crypto.Hash import keccak  # noqa: E402
 
+# Real, measured result on the GPU PC comparing this project's own two
+# strategies for a real high-resolution upload (2835x4289): processing at
+# a fixed size=256 then EDSR-upscaling back up, vs. processing directly
+# closer to the real resolution -- the direct approach won on BOTH axes at
+# once (not a trade-off): PSNR 27.74dB -> 32.66dB (+4.9dB, crosses into
+# "visually near-identical" territory) AND styleDriftScore 0.084 -> 0.142
+# (+69% -- *stronger* protection, not weaker). Downsampling to 256 first
+# throws away real detail the optimizer needs to work against, and then
+# EDSR's job (produce natural-looking output) partially smooths the
+# adversarial signal right back out on the way up. 1024 matches this
+# project's own prior "1024px re-validation" precedent (see
+# ml-engine/README.md) for a resolution genuinely exercised before, not a
+# new unvalidated guess.
+MAX_PROCESSING_SIZE = 1024
+
+
+def choose_processing_size(image_path: str, max_size: int = MAX_PROCESSING_SIZE) -> int:
+    """The real image's own long-edge resolution, capped at max_size --
+    replaces always forcing size=256 regardless of what was actually
+    uploaded (see the note above this function for why that was a real,
+    measured problem, not just a hunch). A modest upload (long edge below
+    the cap) processes at its own native size, needing no upscale step at
+    all afterward; only uploads bigger than the cap still go through
+    cloak() at a smaller size and get restored via upscale.py.
+    """
+    from PIL import Image as _Image
+
+    width, height = _Image.open(image_path).size
+    return min(max(width, height), max_size)
+
+
+def choose_eot_samples(size: int) -> int:
+    """Hit this for real, live, while measuring the resolution fix above:
+    size=1024 at the usual eot_samples=2 pushed this project's GPU PC to
+    ~96% VRAM and got dramatically slower than linear scaling would
+    predict -- 2+ hours without finishing (killed), the *exact* VRAM-
+    pressure-induced slowdown ml-engine/README.md's "1024px re-validation"
+    section already documented once before at eot_samples=3. Re-ran at
+    eot_samples=1 and it finished in ~2 minutes with no quality regression
+    that mattered (still a clear win over the old size=256 pipeline on
+    both PSNR and styleDriftScore -- see MAX_PROCESSING_SIZE's comment).
+    Only sizes still inside the originally-validated 256px envelope keep
+    the fuller eot_samples=2 default; everything above it -- which is
+    every real upload big enough to actually need this size fix in the
+    first place -- drops to 1, matching the project's own established
+    fix for this exact configuration rather than re-discovering it badly
+    in production on a real user's upload.
+    """
+    return 2 if size <= 256 else 1
+
 
 def compute_metadata_hash(metadata: dict) -> str:
     """keccak256 of canonical JSON. Must byte-match blockchain-svc's
@@ -202,22 +252,19 @@ def protect(
     if eot is None:
         eot = preset_name != "L1_PREVIEW"
 
-    # `size` defaults to cloak()'s own default (256) rather than something
-    # larger -- NOT because larger is unsupported (cloak() has always taken
-    # a `size` param), but because every measured number in this project
-    # (preset epsilon values, EOT scale ranges, the 0.5x/0.25x robustness
-    # breakpoints in ml-engine/README.md and rust-core/README.md) was
-    # validated at 256x256 specifically. Passing --size 1024 runs outside
-    # that validated envelope -- it will very likely still work mechanically
-    # (more VGG19 compute, same algorithm) but the epsilon/robustness numbers
-    # this project can currently stand behind don't automatically transfer.
-    # See apps/protection-svc/INTEGRATION.md for the concrete consequence:
-    # this default is *why* the public_preview_1280/2048 Delivery Gateway
-    # tiers are unreachable unless a caller explicitly opts into a larger,
-    # unvalidated size.
+    # `size` itself is now caller-controlled (server.py's ProtectRequest.size
+    # defaults to choose_processing_size(), not a fixed 256 -- see that
+    # function's doc for the real GPU measurement that changed this: a
+    # fixed 256 measurably lost on both perceptual quality AND protection
+    # strength compared to processing closer to the real upload's own
+    # resolution). This function itself keeps size: int = 256 as its own
+    # parameter default only for direct callers (the CLI below, tests,
+    # ml-engine's manual experiment scripts) that don't go through
+    # server.py's request layer at all.
     cloaked_path = out / "cloaked.png"
     mode = "remote GPU" if USE_REMOTE_GPU else "local"
-    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} ...", flush=True)
+    eot_samples = choose_eot_samples(size)
+    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} ...", flush=True)
     if USE_REMOTE_GPU:
         remote_cloak(
             original_path=input_path,
@@ -226,6 +273,7 @@ def protect(
             preset_name=preset_name,
             eot=eot,
             size=size,
+            eot_samples=eot_samples,
         )
     else:
         cloak(
@@ -235,6 +283,7 @@ def protect(
             preset_name=preset_name,
             eot=eot,
             size=size,
+            eot_samples=eot_samples,
         )
 
     # Real, per-upload protection metrics (asked for: something non-technical

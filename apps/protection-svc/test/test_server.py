@@ -33,8 +33,15 @@ def client():
 
 @pytest.fixture
 def real_image(tmp_path):
+    # A real, small, valid PNG -- not just a file that exists. _run_job now
+    # calls choose_processing_size() (a real PIL.Image.open()) before ever
+    # reaching the mocked-out `protect()` below, so this needs to be a real
+    # decodable image, not a placeholder that only satisfies the route
+    # handler's Path.exists() check.
+    from PIL import Image
+
     p = tmp_path / "source.png"
-    p.write_bytes(b"not a real png, just needs to exist for the Path.exists() check")
+    Image.new("RGB", (64, 48), (200, 50, 50)).save(p)
     return str(p)
 
 

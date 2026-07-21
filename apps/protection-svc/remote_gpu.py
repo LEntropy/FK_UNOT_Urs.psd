@@ -33,6 +33,7 @@ def remote_cloak(
     preset_name: str,
     eot: bool,
     size: int = 256,
+    eot_samples: int = 2,
 ) -> None:
     """Runs style_cloak.py on the GPU PC and copies the result back to
     `output_path` (a local path on whatever machine calls this).
@@ -64,7 +65,8 @@ def remote_cloak(
         f"cd '{gpu_remote_dir}'; "
         f".\\.venv\\Scripts\\python.exe src/style_cloak.py "
         f"--original '{remote_input}' --style-target '{remote_style}' "
-        f"--output '{remote_output}' --preset {preset_name} --size {size} {eot_flag}"
+        f"--output '{remote_output}' --preset {preset_name} --size {size} "
+        f"--eot-samples {eot_samples} {eot_flag}"
     )
     run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
 

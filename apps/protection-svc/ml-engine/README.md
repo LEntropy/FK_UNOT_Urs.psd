@@ -232,6 +232,55 @@ epsilon stopped being the *largest* budget in the three-preset lineup and
 started being the thing making L2's own output visibly noisier than it
 needed to be for a "portfolio" tier.
 
+## Follow-up: the 256px processing cap itself was the bigger problem
+
+Real user report after the fixes above shipped: L3's noise was *still*
+too visible, and a high-resolution upload came back looking "뭉개져서"
+(mushy/blocky). Root cause: the letterbox fix above stopped the *stretch*
+distortion, but `cloak()` was still always processing at a fixed
+`size=256` regardless of the real upload's resolution, then relying on
+`upscale.py`'s EDSR pass to reconstruct the rest -- for a real 2835x4289
+upload, that's an ~11x upscale of a 256px result. EDSR can't recover
+detail that never reached the optimizer in the first place, and its job
+(produce natural-looking output) partially smooths the adversarial
+signal back out on the way up.
+
+Measured directly on the GPU PC against the same real 2835x4289 image
+(both compared to a real 1024px-long-edge LANCZOS downsample of the true
+original, at `L3_ANTI_TRAIN`'s tuned settings):
+
+| Strategy | styleDriftScore | PSNR | Time |
+|---|---|---|---|
+| cloak@256 + EDSR upscale to 1024 (the old pipeline) | 0.084 | 27.7 dB | 16 s |
+| **cloak directly@1024 (native-ish resolution)** | **0.142** | **32.7 dB** | 129 s |
+
+Not a trade-off -- native-resolution processing won on *both* axes at
+once: PSNR crosses into "visually near-identical" territory (+4.9 dB),
+**and** styleDriftScore is 69% *higher* (stronger protection, not
+weaker), for about 8x more compute. Downsampling to 256 first was
+throwing away real image structure the optimizer needed to work against.
+
+Fixed: `server.py`'s `ProtectRequest.size` now defaults to
+`orchestrate.py`'s `choose_processing_size()` (the real upload's own long
+edge, capped at `MAX_PROCESSING_SIZE = 1024`, matching this project's
+own prior "1024px re-validation" precedent) instead of a fixed 256 --
+most uploads now need no upscale step at all.
+
+**A second real problem surfaced live while measuring this**: `size=1024`
+at the usual `eot_samples=2` pushed the GPU PC to ~96% VRAM and got
+dramatically slower than linear scaling predicted -- 2+ hours without
+finishing (killed mid-run), the *exact* VRAM-pressure slowdown this
+file's own "1024px re-validation" section already documented once before
+at `eot_samples=3`. The table above is the *re-run* at `eot_samples=1`,
+which is what actually finished in 129s with no quality regression that
+mattered. `orchestrate.py`'s new `choose_eot_samples()` applies this
+automatically: `eot_samples=2` only for sizes still inside the originally
+-validated 256px envelope, `1` for anything above it -- every real upload
+big enough to need this size fix in the first place. Both `remote_gpu.py`
+(the Pi's actual production path -- `USE_REMOTE_GPU=1`) and the local
+`cloak()` call now receive this instead of silently defaulting to 2
+regardless of size.
+
 ## Robustness to real-world re-encoding
 
 A cloak that only works on the exact original file isn't worth much — most

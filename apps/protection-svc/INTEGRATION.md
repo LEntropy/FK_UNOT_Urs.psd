@@ -49,6 +49,19 @@ just unverified.
 
 ### 256px processing size blocks the 1280/2048 variant tiers entirely
 
+**Update: fixed.** `server.py`'s `ProtectRequest.size` now defaults to
+`orchestrate.py`'s `choose_processing_size()` (the real upload's own
+resolution, capped at 1024) instead of a fixed 256 -- see that function's
+doc comment for the real GPU measurement (a live user report of visibly
+excessive noise plus mushy upscaling) that forced this: processing at a
+fixed 256 and upscaling back up measurably lost on *both* perceptual
+quality (PSNR) and protection strength (styleDriftScore) compared to
+processing closer to the real resolution, on the same real test image.
+`public_preview_1280`/`2048` are reachable now for any upload whose own
+resolution supports them. The rest of this section is kept for the
+historical reasoning (why 256 was chosen in the first place, and the
+resize-robustness data below, which is unaffected by this change).
+
 This wasn't visible from testing `ml-engine` and `rust-core` in isolation —
 it only showed up once `orchestrate.py` actually ran the full chain.
 `ml-engine`'s `cloak()` defaults to processing at 256x256 (`size` param,

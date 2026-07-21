@@ -45,7 +45,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
-from orchestrate import ML_ENGINE_DIR, PRESETS, protect  # noqa: E402
+from orchestrate import ML_ENGINE_DIR, PRESETS, choose_processing_size, protect  # noqa: E402
 import jobs_db  # noqa: E402
 
 app = FastAPI(title="protection-svc", version="0.1.0")
@@ -68,7 +68,13 @@ class ProtectRequest(BaseModel):
     creatorId: str = "creator_unknown"
     allowAiTraining: bool = False
     watermarkPayloadHex: str = "deadbeefcafef00d"
-    size: int = 256
+    # None (the only caller today, asset-service, never sets this) means
+    # "pick from the real upload's own resolution" -- see orchestrate.py's
+    # choose_processing_size for why that beat a fixed 256 on both quality
+    # and protection strength, measured for real. An explicit value here
+    # still overrides it, for callers (tests, the CLI, future experiments)
+    # that want a specific processing size on purpose.
+    size: Optional[int] = None
 
 
 def _run_job(job_id: str, req: ProtectRequest) -> None:
@@ -77,6 +83,7 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
     try:
         out_dir = str(Path(ML_ENGINE_DIR).parent / "out" / job_id)
         style_target = req.styleTargetUri or str(ML_ENGINE_DIR / "out" / "style_target.png")
+        size = req.size if req.size is not None else choose_processing_size(req.imageUri)
 
         result = protect(
             input_path=req.imageUri,
@@ -87,7 +94,7 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
             creator_id=req.creatorId,
             allow_ai_training=req.allowAiTraining,
             watermark_payload_hex=req.watermarkPayloadHex,
-            size=req.size,
+            size=size,
             eot=req.eot,
         )
         jobs_db.set_completed(_jobs_conn, job_id, result)  # result already has "status": "completed"

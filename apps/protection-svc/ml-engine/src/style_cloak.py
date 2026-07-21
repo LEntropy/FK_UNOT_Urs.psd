@@ -88,7 +88,18 @@ PRESETS = {
     # (down from 0.04) crosses to 30.88dB while styleDriftScore stays 0.199
     # (comparable to L1's own 0.19, but L2 still trains 2x the steps, so
     # this isn't just "L2 became L1").
-    "L2_PORTFOLIO": Preset(epsilon=0.03, steps=300, lr=0.01, color_weight=8.0),
+    # clip_transfer_weight=0.5: same targeted chat-AI-editing defense as
+    # L3_ANTI_TRAIN (see that entry's comment for the full mechanism
+    # rationale -- pulls toward style_target's CLIP embedding instead of
+    # pushing away from x_adv's own original), separately measured for L2
+    # since it has a smaller epsilon budget (0.03 vs L3's 0.05) and fewer
+    # steps (300 vs 500). weight=0.5 reached clipSimToDecoyTarget=0.9969
+    # (near the 1.0 max, on par with L3's own saturated result) for only
+    # -3.4% styleDriftScore (0.1513 -> 0.1462) -- inside the tolerance bar.
+    # weight=1 already crosses it (-5.0%) for slightly *worse* effect
+    # (0.9883, EOT-sampling noise) and weight=2 costs more (-6.8%) for a
+    # marginal effect gain (0.9986) -- weight=0.5 is the clean pick.
+    "L2_PORTFOLIO": Preset(epsilon=0.03, steps=300, lr=0.01, color_weight=8.0, clip_transfer_weight=0.5),
     # epsilon and color_weight both tuned empirically against a real test
     # image on real GPU hardware, with EOT on (matching orchestrate.py's
     # actual production default for this preset) -- see ml-engine/README.md's

@@ -527,12 +527,111 @@ and see the next two points).
    measured under two different training regimes, not just because it
    wasn't checked.
 
+## CLIP-transfer chat-AI-editing defense — real-world test, negative result
+
+`style_cloak.py`'s `clip_transfer_weight` (see `PRESETS`' `L1_PREVIEW`/
+`L2_PORTFOLIO`/`L3_ANTI_TRAIN` entries) targets a different threat than
+everything else in this file: someone pasting a protected image into a
+closed commercial multimodal AI (ChatGPT-4o, Gemini, Grok) and asking it
+to edit/redraw it, an inference-time request none of the training-defense
+mechanisms above were built to resist. It pulls the image's CLIP
+embedding toward a decoy target (mirroring `concept_misalign.py`'s own
+targeted mechanism, see above) using this project's own small open CLIP
+checkpoint (`ViT-B-32/openai`) as a white-box surrogate, on the premise
+(also PhotoGuard's) that adversarial perturbations against one open model
+sometimes transfer to other, different, unseen models.
+
+**Real-world test (2026-07-22): the transfer did not work, and arguably
+backfired.** A real image was cloaked with `L3_ANTI_TRAIN` (`clip_transfer_
+weight=1.0`), then uploaded to actual ChatGPT (GPT-4o image edit) and
+actual Gemini through their real consumer web UIs, asked to redraw it in
+a different style, and compared side by side against the same request
+against the unprotected original:
+
+- **ChatGPT**: barely touched the original at all (near-identical
+  output), but substantially redrew the *protected* version.
+- **Gemini**: redrew both, but added more new elements to the *protected*
+  version's redraw than to the original's.
+
+Both platforms produced a *more* different re-render for the protected
+image than for the original — the opposite of the intended effect. Not
+"the edit is blocked/degraded," but "the edit happens more freely."
+
+**Working theory, not confirmed**: single-surrogate adversarial
+perturbations (this project used exactly one open CLIP checkpoint) are
+well documented in the adversarial-ML literature to transfer weakly to
+different, larger, differently-trained vision encoders — almost
+certainly what GPT-4o/Gemini actually run internally, not this project's
+small open CLIP model. The perturbation may still be doing *something*
+to those models' image understanding (one plausible explanation for
+"edited more, not less": whatever recognition/caution behavior kept the
+original edit conservative didn't fire on the perturbed version) without
+doing the intended thing.
+
+**Bottom line**: `clip_transfer_weight` stays enabled (it's real, cheap,
+measured protection-preservation against this project's own metrics —
+see the numbers in each preset's comment) but should not be represented
+to end users as an effective defense against real GPT-4o/Gemini/Grok
+editing. The "unvalidated against actual closed systems" caveat this
+mechanism has carried since its first draft turned out to matter in
+practice, not just as a disclaimer.
+
+### Ensemble follow-up and its own VRAM ceiling (2026-07-22)
+
+The most plausible fix for weak single-surrogate transfer is the standard
+adversarial-ML lever: attack several architecturally/training-data-diverse
+CLIP checkpoints at once (`CLIP_ENSEMBLE_CHECKPOINTS` in `style_cloak.py`),
+on the premise that a perturbation fooling multiple different models is
+less likely to be exploiting just one model's own idiosyncratic decision
+boundary. `L3_ANTI_TRAIN` now attacks 2 models (`ViT-B-32/openai` +
+`ViT-B-32/laion2b_s34b_b79k`, same architecture, different training data)
+at `clip_transfer_weight=0.5` — real GPU sweep: -2.2% styleDriftScore
+(0.1608 → 0.1573) for near-saturated similarity to the decoy target on
+both models (0.9992, 0.9991), completing in minutes like every other
+preset. Whether this ensemble actually improves real-world transfer to
+ChatGPT/Gemini is **not yet re-tested** — the negative result above was
+found with the single-model version; confirming or refuting the ensemble
+needs a repeat of the same manual live-upload test.
+
+A 3rd checkpoint (`ViT-L-14/openai`, real depth/width diversity) was also
+tried, twice. The first attempt combined all 3 models' losses into one
+scalar before a single `.backward()` call, which required every model's
+activation graph to stay resident in VRAM simultaneously — this hung the
+project's 8GB GPU PC at ~96% VRAM for 24+ minutes with no progress
+(killed). `cloak()`'s training loop was then restructured to call
+`.backward()` separately per ensemble member right after that member's own
+forward pass (gradients still accumulate correctly into the same `delta`
+tensor — that's `.backward()`'s default behavior), bounding activation-
+graph memory to whichever single model is largest instead of the sum of
+all three. The second attempt with this fix **did stop hanging** — the
+sweep completed instead of stalling forever — but real numbers show it's
+still not practical: torch's own peak-allocated counter hit 8672MB,
+*exceeding* the card's 8151MB physical VRAM, meaning the frozen models'
+static weights (unrelated to the activation-graph problem the backward
+restructuring fixed) pushed it into Windows/NVIDIA's slow system-RAM-
+backed "shared GPU memory" fallback. Consequence: the full 4-config sweep
+took 7h24m wall-clock instead of the few minutes every other preset
+measurement in this file takes — a different, still-impractical failure
+mode (technically completes, unusable for any real upload pipeline) rather
+than a real fix. Local quality was comparable to the 2-model result
+(weight=0.5: styleDriftScore=0.1562, -2.1%, clipSim=[0.997, 0.9952,
+0.9975]), so the 3rd model isn't excluded for a quality reason — its
+frozen weights simply don't leave enough headroom on 8GB hardware.
+fp16-casting the frozen CLIP/VGG models' weights (halving their static
+footprint — distinct from `torch.autocast`'s op-level-only mixed
+precision, which doesn't change static storage dtype) is the next attempt
+at making a 3rd model fit for real; not yet implemented.
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
 - Concept-misalignment exists as opt-in code (`concept_misalign.py`,
   above) — a real GPU LoRA-training validation found no measurable
   protection effect, not just "not proven yet." Not on by default
   anywhere.
+- `clip_transfer_weight`'s chat-AI-editing defense (see the section
+  above) is enabled by default for all three presets but a real test
+  against actual ChatGPT/Gemini found it does not block editing, and may
+  make the AI's redraw *more* different from the original, not less.
 - EOT here only covers resize; JPEG recompression isn't part of the training
   loop (real JPEG encoding isn't differentiable — would need a differentiable
   JPEG approximation to include it in EOT, not implemented here).

@@ -94,13 +94,26 @@ class ConceptFeatureExtractor(nn.Module):
     not for best embedding quality. Requires network access to fetch the
     pretrained checkpoint on first use (same one-time cost as
     torchvision's VGG19_Weights.DEFAULT above).
+
+    model_name/pretrained are parameterized (not hardcoded) so
+    style_cloak.py's ensemble CLIP-transfer attack (see
+    clip_transfer_loss's doc) can instantiate several *different*
+    checkpoints -- a real single-checkpoint (this class's own default)
+    attack was tested against actual ChatGPT/Gemini and found not to
+    transfer (see ml-engine/README.md's "CLIP-transfer chat-AI-editing
+    defense" section); using an architecturally/training-data-diverse
+    ensemble as the white-box surrogate is the standard adversarial-ML
+    lever for improving black-box transfer to an unseen model, since a
+    perturbation that fools several different models at once is less
+    likely to be exploiting one model's own idiosyncratic decision
+    boundary.
     """
 
-    def __init__(self, device: torch.device):
+    def __init__(self, device: torch.device, model_name: str = "ViT-B-32", pretrained: str = "openai"):
         super().__init__()
         import open_clip
 
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
         model = model.to(device).eval()
         for param in model.parameters():
             param.requires_grad_(False)

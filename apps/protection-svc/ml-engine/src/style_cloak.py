@@ -178,13 +178,77 @@ PRESETS = {
     # property cosine similarity in CLIP space does -- a real, different
     # negative result, not just an infrastructure limitation this time.
     #
-    # Honesty caveat carried over from concept_misalign.py's own module
-    # doc: clip_transfer_weight's real-world effectiveness against actual
-    # GPT-4o/Gemini/Grok has NOT been validated against those live closed
-    # systems -- this is a best-effort transfer-based mechanism grounded in
-    # published CLIP-transferability research, not a proven end-to-end
-    # defense. Only enabled for L3_ANTI_TRAIN; L1/L2 not measured.
-    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15, clip_transfer_weight=1.0),
+    # REAL-WORLD TEST, NEGATIVE RESULT (2026-07-22): the "unvalidated
+    # against actual closed systems" caveat below stopped being a
+    # hypothetical. A real image was cloaked with this exact preset,
+    # uploaded to actual ChatGPT (GPT-4o image edit) and actual Gemini
+    # through their real consumer web UIs, and asked to redraw it in a
+    # different style -- compared side by side against the same request
+    # against the unprotected original. Both platforms produced a
+    # noticeably MORE different re-render for the *protected* image than
+    # for the original (ChatGPT barely touched the original at all but
+    # substantially redrew the protected version; Gemini's redraw of the
+    # protected version added more new elements than its redraw of the
+    # original). This is the opposite of the intended effect -- not "the
+    # edit is blocked/degraded" but "the edit happens more freely."
+    #
+    # Working theory, not confirmed: clip_transfer_weight was tuned as a
+    # white-box attack against this project's own small open CLIP
+    # checkpoint (ViT-B-32/openai, single model) -- single-surrogate
+    # adversarial perturbations are well documented in the literature to
+    # transfer weakly to different, larger, differently-trained vision
+    # encoders, which is almost certainly what GPT-4o/Gemini actually run
+    # internally. The perturbation may still be doing *something* to
+    # those models' image understanding (plausible explanation for the
+    # "edited more, not less" result: whatever recognition/caution
+    # mechanism kept the original edit conservative didn't fire on the
+    # perturbed version) without doing the intended thing.
+    #
+    # Bottom line: do not represent clip_transfer_weight as an effective
+    # defense against real GPT-4o/Gemini/Grok editing to end users. It
+    # remains enabled here as a measured, low-cost (see numbers above)
+    # experimental mechanism grounded in published research, not a proven
+    # one -- the honesty caveat this project has carried since this
+    # mechanism's first draft turned out to matter in practice, not just
+    # as a disclaimer.
+    #
+    # ENSEMBLE ADOPTION (2026-07-22): switched from the single-model
+    # measurement above to CLIP_ENSEMBLE_CHECKPOINTS' 2-model ensemble
+    # (ViT-B-32/openai + ViT-B-32/laion2b_s34b_b79k), the standard
+    # adversarial-ML lever for better black-box transfer -- a perturbation
+    # fooling two differently-trained models at once is less likely to be
+    # exploiting one model's own idiosyncratic decision boundary, which is
+    # the most plausible fix for the real-world negative result above.
+    # Real GPU sweep at 2 models: weight=0.5 reached
+    # clipSimToDecoyTarget=[0.9992, 0.9991] (both near-saturated) for only
+    # -2.2% styleDriftScore (0.1608 -> 0.1573); weight=1/2 cost more
+    # (-3.4%/-4.5%) for no meaningful similarity gain -- weight=0.5 is the
+    # clean pick, same saturating-cost pattern as every other targeted-decoy
+    # measurement in this file. peakVramMB=5751, well inside this project's
+    # 8GB GPU PC's budget, completes in minutes like every other preset.
+    #
+    # A 3rd checkpoint (ViT-L-14/openai, real depth/width diversity, not
+    # just training-data diversity) was also tried, using cloak()'s
+    # sequential-per-model-backward training loop (see that function's
+    # comment) specifically built to keep this from recreating the VRAM
+    # hang the first 3-model attempt hit. It did stop hanging -- the sweep
+    # completed instead of stalling forever -- but real numbers show why
+    # it's not adopted: torch's own peak-allocated counter hit 8672MB,
+    # *exceeding* this GPU's 8151MB physical VRAM, meaning it was spilling
+    # into Windows/NVIDIA's slow system-RAM-backed "shared GPU memory"
+    # fallback rather than genuinely fitting. Consequence: the full 4-config
+    # sweep (500 steps each) took 7h24m wall-clock, vs. minutes for the
+    # 2-model version -- the hang became a different, still-impractical
+    # failure mode (technically completes, too slow for any real upload
+    # pipeline) rather than a real fix. Local quality numbers were
+    # comparable to the 2-model result (weight=0.5: styleDriftScore=0.1562,
+    # -2.1%, clipSim=[0.997, 0.9952, 0.9975]), so the 3rd model isn't being
+    # left out for a quality reason -- it's purely that its frozen weights'
+    # static VRAM footprint doesn't leave enough headroom on 8GB hardware.
+    # fp16-casting the frozen CLIP/VGG models (halving their static
+    # footprint, distinct from autocast's op-level-only mixed precision) is
+    # the next attempt at making 3 models fit for real, not yet done.
+    "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15, clip_transfer_weight=0.5),
 }
 
 
@@ -320,34 +384,93 @@ def lpips_loss(original: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
     return _lpips_model(original * 2 - 1, x_adv * 2 - 1).mean()
 
 
-_clip_extractor = None
+_clip_ensemble: list | None = None
 _vae_extractor = None
 
+# Real-world negative result (see ml-engine/README.md's "CLIP-transfer
+# chat-AI-editing defense" section): a single-checkpoint white-box attack
+# (ViT-B-32/openai alone) did not transfer to actual ChatGPT/Gemini in a
+# live test -- both re-rendered the *protected* image MORE differently
+# than the original, the opposite of the intended effect. Attacking
+# several architecturally/training-data-diverse checkpoints at once (the
+# standard adversarial-ML lever for improving black-box transfer -- a
+# perturbation fooling multiple different models simultaneously is less
+# likely to be exploiting one model's own idiosyncratic decision boundary)
+# is the follow-up this constant enables. Picked for diversity, not just
+# more of the same: ViT-B-32/openai (the original, already-measured
+# checkpoint), ViT-B-32/laion2b_s34b_b79k (same architecture, completely
+# different training data/procedure -- LAION vs OpenAI's own proprietary
+# dataset).
+#
+# A third checkpoint (ViT-L-14/openai, same training data as the first but
+# deeper/wider -- real depth/width diversity, not just training-data
+# diversity) was tried twice and dropped both times, for two different
+# reasons. First attempt: with all 3 models' losses combined into one
+# scalar and backprop'd in a single .backward() call, every ensemble
+# member's activation graph had to stay alive at once, which pushed the
+# project's 8GB GPU PC to ~96% VRAM and hung for 24+ min with no progress
+# (same allocator-thrashing pattern this project has hit before with
+# VAE-transfer and size=1536 -- see choose_use_amp's doc), killed. Second
+# attempt, after cloak()'s training loop was restructured to call
+# .backward() separately per ensemble member right after that member's own
+# forward pass (bounding activation-graph memory to whichever single model
+# is largest, not the sum of all three): the hang was gone, but the 3
+# models' frozen *weights* (always resident, unrelated to the activation
+# graph the backward restructuring fixed) still didn't leave enough
+# headroom -- torch's own peak-allocated counter hit 8672MB, exceeding this
+# card's 8151MB physical VRAM, meaning it was spilling into Windows/
+# NVIDIA's slow system-RAM-backed "shared GPU memory" fallback rather than
+# genuinely fitting. Real cost: a 4-config sweep that normally takes
+# minutes took 7h24m wall-clock (see PRESETS' L3_ANTI_TRAIN comment for the
+# full writeup) -- technically completes, not practical for any real
+# upload pipeline. 2 models (same architecture, different training data --
+# still real diversity, just not also varying depth/width) is what
+# actually fits comfortably in real VRAM on this hardware; fp16-casting the
+# frozen models' weights (halving their static footprint) is the next
+# attempt at making a 3rd model fit for real, not yet done.
+CLIP_ENSEMBLE_CHECKPOINTS: list[tuple[str, str]] = [
+    ("ViT-B-32", "openai"),
+    ("ViT-B-32", "laion2b_s34b_b79k"),
+]
 
-def clip_transfer_loss(clip_extractor, target_embed: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
-    """1 - cosine similarity to a fixed decoy embedding -- minimizing this
-    pulls x_adv's CLIP embedding *toward* a specific, different image's
+
+def get_clip_ensemble(device: torch.device) -> list:
+    global _clip_ensemble
+    if _clip_ensemble is None:
+        _clip_ensemble = [ConceptFeatureExtractor(device, model_name, pretrained) for model_name, pretrained in CLIP_ENSEMBLE_CHECKPOINTS]
+    return _clip_ensemble
+
+
+def clip_transfer_loss(clip_ensemble: list, target_embeds: list[torch.Tensor], x_adv: torch.Tensor) -> torch.Tensor:
+    """Mean, across every model in the ensemble, of (1 - cosine similarity
+    to that model's own embedding of the fixed decoy) -- minimizing this
+    pulls x_adv's embedding *toward* a specific, different image's
     embedding (the same style_target already used for the Gram-matrix
-    objective), mirroring concept_misalign.py's concept_loss exactly
-    instead of inventing a new formulation.
+    objective) simultaneously in every ensemble member's own embedding
+    space, mirroring concept_misalign.py's concept_loss exactly instead of
+    inventing a new formulation, just summed over several surrogate models
+    instead of one.
 
-    Superseded the original untargeted version (maximize distance from
-    x_adv's own original embedding, no decoy) after a real GPU sweep found
-    it had no usable low-cost regime: even the smallest weight tested
-    (2.0) already cost -12.6% styleDriftScore, because "push away from
-    self, no target" has no natural stopping point -- cosine similarity to
-    a moving, ever-more-different point keeps producing a large gradient
-    for as long as training runs, competing hard with the style objective
-    the whole time. A *targeted* decoy has a real minimum (similarity=1
-    once x_adv's embedding reaches the target) that the loss saturates
-    toward, tapering off instead of pulling indefinitely -- the same
-    reason concept_misalign.py's own Nightshade-style mechanism is
-    targeted, not untargeted, in the first place.
+    Superseded the original untargeted single-model version (maximize
+    distance from x_adv's own original embedding, no decoy) after a real
+    GPU sweep found it had no usable low-cost regime -- see PRESETS'
+    L3_ANTI_TRAIN comment for that history. The targeted single-model
+    version that replaced it was then real-world-tested against actual
+    ChatGPT/Gemini and found not to transfer (ml-engine/README.md) --
+    this ensemble version is the follow-up attempt at better black-box
+    transfer, itself not yet re-validated against real closed systems
+    (see CLIP_ENSEMBLE_CHECKPOINTS' doc).
 
-    target_embed is precomputed once per cloak() call (from style_target,
-    with no_grad) by the caller, not recomputed here every step.
+    target_embeds is a list precomputed once per cloak() call (one
+    embedding per ensemble member, from style_target, with no_grad) by
+    the caller, not recomputed here every step -- same list order and
+    length as clip_ensemble.
     """
-    return 1.0 - F.cosine_similarity(clip_extractor.embed(x_adv), target_embed).mean()
+    losses = [
+        1.0 - F.cosine_similarity(clip_ext.embed(x_adv), target_embed).mean()
+        for clip_ext, target_embed in zip(clip_ensemble, target_embeds)
+    ]
+    return torch.stack(losses).mean()
 
 
 def vae_transfer_loss(vae_extractor, target_latent: torch.Tensor, x_adv: torch.Tensor) -> torch.Tensor:
@@ -491,14 +614,12 @@ def cloak(
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     # Lazily instantiated (module-level cache, mirrors _lpips_model) --
-    # only load CLIP/the SD VAE when a caller actually opts into the
-    # chat-AI-editing defense, not on every cloak() call.
-    global _clip_extractor, _vae_extractor
-    clip_extractor = None
+    # only load the CLIP ensemble/the SD VAE when a caller actually opts
+    # into the chat-AI-editing defense, not on every cloak() call.
+    global _vae_extractor
+    clip_ensemble = None
     if preset.clip_transfer_weight > 0:
-        if _clip_extractor is None:
-            _clip_extractor = ConceptFeatureExtractor(device)
-        clip_extractor = _clip_extractor
+        clip_ensemble = get_clip_ensemble(device)
     vae_extractor = None
     if preset.vae_transfer_weight > 0:
         if _vae_extractor is None:
@@ -514,10 +635,10 @@ def cloak(
     # already driving the Gram-matrix style objective, so a single target
     # image coherently drives all three feature spaces this preset opts
     # into instead of needing a separate decoy parameter.
-    clip_target_embed = None
-    if clip_extractor is not None:
+    clip_target_embeds = None
+    if clip_ensemble is not None:
         with torch.no_grad():
-            clip_target_embed = clip_extractor.embed(style_target)
+            clip_target_embeds = [clip_ext.embed(style_target) for clip_ext in clip_ensemble]
     vae_target_latent = None
     if vae_extractor is not None:
         with torch.no_grad():
@@ -540,6 +661,10 @@ def cloak(
     for step in range(preset.steps):
         optimizer.zero_grad()
 
+        # Core objective (VGG style loss + EOT + color/TV/LPIPS regularizers)
+        # stays one combined forward+backward, same as always -- this group
+        # has never been the VRAM problem (measured fine at 1024px+AMP long
+        # before any of the chat-AI-defense terms existed).
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
             x_adv = (original + delta).clamp(0, 1)
 
@@ -567,13 +692,37 @@ def cloak(
             if preset.lpips_weight > 0:
                 loss = loss + preset.lpips_weight * lpips_loss(original, x_adv)
 
-            if clip_extractor is not None:
-                loss = loss + preset.clip_transfer_weight * clip_transfer_loss(clip_extractor, clip_target_embed, x_adv)
-
-            if vae_extractor is not None:
-                loss = loss + preset.vae_transfer_weight * vae_transfer_loss(vae_extractor, vae_target_latent, x_adv)
-
         scaler.scale(loss).backward()
+
+        # Chat-AI-defense terms: each surrogate model gets its own fresh
+        # x_adv, forward pass, and backward() call instead of joining one
+        # combined graph -- real GPU measurement found the combined-graph
+        # version needed every ensemble member's activations alive
+        # simultaneously (VRAM scales with model count), which hung a
+        # 3-model CLIP ensemble at ~96% VRAM for 24+ min on this project's
+        # 8GB GPU PC. backward() accumulates into delta.grad by default (it
+        # doesn't overwrite), and PyTorch frees a call's own activation
+        # graph once that call returns -- so peak memory for this whole
+        # block is bounded by whichever single surrogate is largest, not
+        # the sum of all of them, regardless of how many are in the
+        # ensemble. Weighted so the accumulated gradient exactly matches
+        # what the old combined-mean-then-one-backward version would have
+        # produced (weight/N per model, summed over N models, equals
+        # weight * mean(N models)).
+        if clip_ensemble is not None:
+            per_model_weight = preset.clip_transfer_weight / len(clip_ensemble)
+            for clip_ext, target_embed in zip(clip_ensemble, clip_target_embeds):
+                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
+                    x_adv_clip = (original + delta).clamp(0, 1)
+                    clip_loss = per_model_weight * clip_transfer_loss([clip_ext], [target_embed], x_adv_clip)
+                scaler.scale(clip_loss).backward()
+
+        if vae_extractor is not None:
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
+                x_adv_vae = (original + delta).clamp(0, 1)
+                vae_loss = preset.vae_transfer_weight * vae_transfer_loss(vae_extractor, vae_target_latent, x_adv_vae)
+            scaler.scale(vae_loss).backward()
+
         scaler.step(optimizer)
         scaler.update()
 

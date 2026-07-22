@@ -30,17 +30,31 @@ async function resolveRelayerPrivateKey(): Promise<string> {
 
 // Human-readable ABI — kept in sync manually with contracts/src/OwnershipRegistry.sol.
 // Only the functions/events this service actually calls are listed.
+//
+// register/registerFor take a nonce now (commit-reveal front-running guard
+// added after a security review found contentHash was visible in plaintext
+// in the mempool before confirmation, letting a copy-cat resubmit the same
+// hash at a higher gas price and become the recorded "first registrant"
+// instead of the real caller -- see OwnershipRegistry.sol's own doc
+// comment on commitBlock/MIN_COMMIT_AGE for the full attack/defense
+// analysis. src/routes/register.ts is the caller that actually drives the
+// two-step commit-then-wait-then-reveal flow this ABI now requires.
 const REGISTRY_ABI = [
-  "function register(bytes32 contentHash, bool doNotTrain) returns (uint256 id)",
-  "function registerFor(address owner, bytes32 contentHash, bool doNotTrain) returns (uint256 id)",
+  "function commit(bytes32 commitHash)",
+  "function register(bytes32 contentHash, bool doNotTrain, bytes32 nonce) returns (uint256 id)",
+  "function registerFor(address owner, bytes32 contentHash, bool doNotTrain, bytes32 nonce) returns (uint256 id)",
   "function verify(bytes32 contentHash) view returns (bool exists, address owner, uint64 timestamp, bool doNotTrain)",
   "function relayers(address) view returns (bool)",
+  "function MIN_COMMIT_AGE() view returns (uint256)",
   "event Registered(uint256 indexed id, address indexed owner, bytes32 contentHash, bool doNotTrain)",
+  "event Committed(bytes32 indexed commitHash, address indexed committer)",
   "error AlreadyRegistered(bytes32 contentHash)",
   "error NotFound(uint256 id)",
   "error NotOwner(uint256 id, address caller)",
   "error NotRelayer(address caller)",
   "error ZeroAddress()",
+  "error CommitNotFound(bytes32 commitHash)",
+  "error CommitTooRecent(bytes32 commitHash, uint256 readyAtBlock)",
 ];
 
 // cacheTimeout: -1 disables ethers' short-lived read cache (default ~250ms).

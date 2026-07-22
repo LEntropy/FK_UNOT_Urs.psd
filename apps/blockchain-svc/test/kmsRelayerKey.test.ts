@@ -1,4 +1,4 @@
-import { Wallet } from "ethers";
+import { AbiCoder, keccak256, randomBytes, Wallet } from "ethers";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { startTestChain } from "./anvil.js";
 
@@ -55,10 +55,29 @@ describe("relayer key resolution via KMS", () => {
   });
 
   it("the resolved wallet can actually sign a real transaction on the test chain", async () => {
-    const { registry } = await import("../src/contract.js");
+    const { provider, registry, relayerWallet } = await import("../src/contract.js");
     const contentHash = `0x${"11".repeat(32)}`;
+    const doNotTrain = true;
+    const nonce = `0x${Buffer.from(randomBytes(32)).toString("hex")}`;
 
-    const tx = await (registry as any).register(contentHash, true);
+    // Same commit-reveal formula as src/routes/register.ts's self-service
+    // path (register(), not registerFor() -- this test signs directly with
+    // relayerWallet as the registrant itself, not sponsoring someone else).
+    const commitHash = keccak256(
+      AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bool", "address", "bytes32"],
+        [contentHash, doNotTrain, relayerWallet.address, nonce],
+      ),
+    );
+    const commitTx = await registry.commit(commitHash);
+    const commitReceipt = await commitTx.wait();
+
+    const minCommitAge = Number(await registry.MIN_COMMIT_AGE());
+    while ((await provider.getBlockNumber()) < commitReceipt.blockNumber + minCommitAge) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    const tx = await (registry as any).register(contentHash, doNotTrain, nonce);
     const receipt = await tx.wait();
 
     expect(receipt.status).toBe(1);

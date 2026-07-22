@@ -58,7 +58,15 @@ function spawnAnvil(): Promise<{ process: ChildProcess; deployerKey: string; rpc
   const port = 20000 + Math.floor(Math.random() * 20000);
 
   return new Promise((resolve, reject) => {
-    const anvilProcess = spawn("anvil", ["--port", String(port)], {
+    // --block-time 1: real chains (including the actual Amoy testnet this
+    // mirrors) keep producing blocks over time on their own; anvil's own
+    // default only mines when a transaction arrives. Without this, the
+    // commit-reveal flow's wait-for-MIN_COMMIT_AGE-more-blocks step (see
+    // src/routes/register.ts's waitForCommitToMature) polls a block number
+    // that never advances on its own and hangs until the test times out --
+    // this makes the test chain behave like a real one instead of needing
+    // register.ts to know it's talking to anvil specifically.
+    const anvilProcess = spawn("anvil", ["--port", String(port), "--block-time", "1"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 

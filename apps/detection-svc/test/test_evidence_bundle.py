@@ -41,7 +41,9 @@ def test_build_bundle_has_project_design_fields():
     assert bundle["httpHeaders"] == {"content-type": "image/png"}
     assert bundle["onchainTransaction"]["txHash"] == "0xtxhash"
     assert bundle["onchainTransaction"]["blockNumber"] == 42
-    # Signing is explicitly not implemented yet -- see module docstring.
+    # build_bundle itself never signs -- that's a separate step the caller
+    # does afterward via evidence_signing.sign_bundle() (see server.py and
+    # test_evidence_signing.py). Always None straight out of this function.
     assert bundle["signature"] is None
 
 

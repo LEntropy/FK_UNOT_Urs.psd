@@ -25,6 +25,7 @@ from asset_client import ArtworkNotFoundError, get_artwork  # noqa: E402
 from db import add_evidence, connect, create_case, get_case, set_case_status  # noqa: E402
 from evidence_bundle import build_bundle, write_json, write_pdf_best_effort  # noqa: E402
 from evidence_capture import capture  # noqa: E402
+from evidence_signing import sign_bundle  # noqa: E402
 from phash_match import is_likely_match  # noqa: E402
 from rust_watermark import detect_watermark  # noqa: E402
 from vision import vision_configured, web_detect_matching_urls  # noqa: E402
@@ -114,6 +115,10 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
                 headers=captured.headers,
                 screenshot_path=captured.screenshot_path,
             )
+            # Best-effort, like the screenshot/PDF steps around it -- a
+            # signing failure (api-gateway down, KMS unreachable) degrades
+            # to an unsigned bundle rather than losing the whole case.
+            bundle["signature"] = sign_bundle({k: v for k, v in bundle.items() if k != "signature"})
             write_json(bundle, case_out_dir / "bundle.json")
             write_pdf_best_effort(bundle, case_out_dir / "bundle.pdf")
 

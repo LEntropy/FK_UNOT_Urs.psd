@@ -59,6 +59,22 @@ const envSchema = z.object({
   // Where to send the browser after a successful OAuth login, with the
   // token pair attached -- apps/web's OAuthCallbackPage reads it from there.
   WEB_URL: z.string().url().default("http://localhost:5173"),
+
+  // Evidence-bundle signing (PROJECT_DESIGN.md §3-7's "내부 서명" field,
+  // §6-1's "KMS is the signing authority") -- same envelope-encryption
+  // pattern as RELAYER_ENCRYPTED_KEY (see blockchain-svc/src/contract.ts's
+  // doc): the real KMS C server only implements envelope-key decrypt, no
+  // Sign() RPC, so a dedicated Ed25519 keypair is generated once, its
+  // private key RSA-wrapped for KMS_ORG/KMS_KEY_ID (same keys already
+  // configured above for custodial wallets), and only the ciphertext is
+  // deployed. See src/evidenceSigning.ts. Local dev/tests use the
+  // plaintext EVIDENCE_SIGNING_PRIVATE_KEY path instead.
+  EVIDENCE_SIGNING_ENCRYPTED_KEY: z.string().optional(), // base64 RSA-PKCS1 ciphertext
+  EVIDENCE_SIGNING_PRIVATE_KEY: z.string().optional(), // PEM, dev/test only
 });
 
-export const env = envSchema.parse(process.env);
+export const env = envSchema
+  .refine((v) => v.EVIDENCE_SIGNING_PRIVATE_KEY || v.EVIDENCE_SIGNING_ENCRYPTED_KEY, {
+    message: "one of EVIDENCE_SIGNING_PRIVATE_KEY or EVIDENCE_SIGNING_ENCRYPTED_KEY is required",
+  })
+  .parse(process.env);

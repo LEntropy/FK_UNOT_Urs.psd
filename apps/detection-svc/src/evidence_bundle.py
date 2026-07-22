@@ -2,12 +2,13 @@
 list: 원본해시, 보호본해시, 등록시각, 권리자, 워터마크검출, 발견URL, 발견시각,
 스크린샷, HTTP헤더, 온체인 트랜잭션, 내부 서명 -> JSON (always) + best-effort PDF.
 
-`signature` is deliberately always null. KMS (the signing authority per
-§6-1) is a separate, in-progress workstream owned by another teammate --
-inventing a placeholder signing scheme here would just create a second
-thing to reconcile later instead of one clean integration point. Same
-treatment as the documented C2PA claim-signature gap in
-apps/protection-svc/rust-core/README.md: flag the gap, don't fake it.
+`signature` starts null here and is filled in by the caller (server.py) via
+evidence_signing.py's sign_bundle(), which calls api-gateway's real Ed25519
+signing endpoint (KMS envelope-encrypted key -- the KMS C server itself has
+no Sign() RPC, see api-gateway/src/evidenceSigning.ts's doc). Kept as a
+separate step here rather than signed inline because build_bundle stays a
+pure, synchronous, easily-testable function; the signing step is the one
+part of this module that does real network I/O and can fail independently.
 """
 
 import json
@@ -47,7 +48,7 @@ def build_bundle(
         }
         if onchain
         else None,
-        "signature": None,  # see module docstring: KMS signing not wired up yet
+        "signature": None,  # filled in by the caller via evidence_signing.sign_bundle()
     }
 
 

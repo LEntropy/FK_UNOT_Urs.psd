@@ -26,10 +26,13 @@ instead of tracking it outside the system entirely.
 
 ## What this does not do
 
-- **No signing.** The evidence bundle's `signature` field is always `null`.
-  KMS (the signing authority per §6-1) is a separate, in-progress
-  workstream — this service flags the gap rather than inventing a
-  placeholder crypto scheme that would need reconciling later.
+- **Evidence signing is best-effort, not guaranteed.** `src/evidence_signing.py`
+  calls api-gateway's `POST /internal/sign-evidence` (Ed25519, KMS
+  envelope-encrypted key — see `apps/api-gateway/src/evidenceSigning.ts`)
+  to fill in the bundle's `signature` field; verified end-to-end against
+  the real production KMS server. If api-gateway or KMS is unreachable at
+  bundle-build time, `signature` falls back to `null` rather than failing
+  the whole case (same best-effort treatment as the screenshot/PDF steps).
 - **Watermark attribution: now per-artwork.** `asset-service` generates a
   random `watermarkPayloadHex` per artwork at creation
   (`routes/artworks.ts`), passes it through to protection-svc's `/protect`

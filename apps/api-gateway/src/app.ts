@@ -6,6 +6,7 @@ import { oauthRouter } from "./routes/oauth.js";
 import { meRouter } from "./routes/me.js";
 import { artworksRouter } from "./routes/artworks.js";
 import { communityRouter } from "./routes/community.js";
+import { internalRouter } from "./routes/internal.js";
 
 export function createApp(db: Db) {
   const app = express();
@@ -24,6 +25,11 @@ export function createApp(db: Db) {
   // /feed, /me/..., /collections, /moderation sub-paths -- mounted at root
   // since it owns multiple top-level prefixes, not just one (same reason as
   // asset-service's own community router).
+  // Registered before communityRouter, which mounts its own requireAuth
+  // via router.use() with no path prefix -- that runs unconditionally for
+  // any request still unmatched by an earlier route, so a router mounted
+  // after it would otherwise 401 before ever reaching its own handlers.
+  app.use(internalRouter());
   app.use(communityRouter());
 
   return app;

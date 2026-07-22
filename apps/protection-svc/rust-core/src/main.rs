@@ -239,16 +239,30 @@ fn main() {
         }
 
         Commands::C2paVerify { input, format } => {
-            let bytes = std::fs::read(&input).expect("failed to read input file");
-            let result = rust_core::c2pa_manifest::verify(&bytes, &format).expect("failed to read C2PA manifest");
+            use rust_core::c2pa_manifest::VerifyOutcome;
 
-            println!("[c2pa-verify] manifest:\n{}", result.manifest_json);
-            match result.validation_issues {
-                None => println!("[c2pa-verify] validation: OK, no issues reported"),
-                Some(issues) => {
-                    println!("[c2pa-verify] validation reported {} issue(s):", issues.len());
-                    for issue in issues {
-                        println!("  - {issue}");
+            let bytes = std::fs::read(&input).expect("failed to read input file");
+            match rust_core::c2pa_manifest::verify(&bytes, &format).expect("failed to read C2PA manifest") {
+                VerifyOutcome::NoManifest => {
+                    // Deliberately not a panic (see VerifyOutcome's doc) --
+                    // "no manifest embedded" is the ordinary, expected
+                    // result for the vast majority of real-world images, not
+                    // a failure. Exit 0, distinguishable stdout marker
+                    // instead of a stack trace so callers (detection-svc's
+                    // rust_c2pa.py) can tell "no manifest" apart from a real
+                    // error without parsing panic messages.
+                    println!("[c2pa-verify] no manifest found");
+                }
+                VerifyOutcome::Found(result) => {
+                    println!("[c2pa-verify] manifest:\n{}", result.manifest_json);
+                    match result.validation_issues {
+                        None => println!("[c2pa-verify] validation: OK, no issues reported"),
+                        Some(issues) => {
+                            println!("[c2pa-verify] validation reported {} issue(s):", issues.len());
+                            for issue in issues {
+                                println!("  - {issue}");
+                            }
+                        }
                     }
                 }
             }

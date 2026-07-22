@@ -22,6 +22,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from asset_client import ArtworkNotFoundError, get_artwork  # noqa: E402
+from c2pa_verify import verify_c2pa  # noqa: E402
 from db import add_evidence, connect, create_case, get_case, set_case_status  # noqa: E402
 from evidence_bundle import build_bundle, write_json, write_pdf_best_effort  # noqa: E402
 from evidence_capture import capture  # noqa: E402
@@ -102,6 +103,27 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
                 except (FileNotFoundError, RuntimeError):
                     watermark_result = None
 
+            # Second, independent provenance signal alongside pHash/watermark
+            # -- but only supplementary evidence, never its own trigger for
+            # is_match. A C2PA manifest is far easier for a redistribution to
+            # strip than the invisible watermark is to defeat, so "no
+            # manifest" proves nothing either way, and even a present,
+            # DONTAI-signed manifest is corroboration, not independently
+            # sufficient (see c2pa_verify.py's module doc).
+            c2pa_result = None
+            if captured.image_path:
+                try:
+                    image_format = Path(captured.image_path).suffix.lstrip(".")
+                    c2pa = verify_c2pa(captured.image_path, image_format)
+                    c2pa_result = {
+                        "hasManifest": c2pa.has_manifest,
+                        "signedByDontai": c2pa.signed_by_dontai,
+                        "ownership": c2pa.ownership,
+                        "validationIssues": c2pa.validation_issues,
+                    }
+                except (FileNotFoundError, RuntimeError):
+                    c2pa_result = None
+
             if not is_match:
                 continue
 
@@ -112,6 +134,7 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
                 detected_at=captured.captured_at,
                 phash_distance=phash_distance,
                 watermark_result=watermark_result,
+                c2pa_result=c2pa_result,
                 headers=captured.headers,
                 screenshot_path=captured.screenshot_path,
             )

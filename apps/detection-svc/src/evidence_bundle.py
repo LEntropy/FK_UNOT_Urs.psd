@@ -23,6 +23,7 @@ def build_bundle(
     detected_at: float,
     phash_distance: int | None,
     watermark_result: dict | None,
+    c2pa_result: dict | None = None,
     headers: dict | None,
     screenshot_path: str | None,
 ) -> dict[str, Any]:
@@ -35,6 +36,16 @@ def build_bundle(
         "registeredAt": onchain.get("registeredAt") if onchain else None,
         "rightsHolder": artwork.get("ownerWalletAddress"),
         "watermarkDetection": watermark_result,
+        # Supplementary provenance signal, not part of PROJECT_DESIGN.md
+        # §3-7's original field list (predates C2PA being wired into the
+        # protect() pipeline) -- included when present, never the deciding
+        # factor for whether a case even reaches this bundle-building step
+        # (see server.py's _run_case_for_urls: computed but not consulted
+        # for is_match). None if C2PA verification itself failed to run
+        # (rust-core unreachable etc.), distinct from a real
+        # {"hasManifest": False, ...} result meaning verification *did* run
+        # and genuinely found no manifest.
+        "c2paDetection": c2pa_result,
         "discoveredUrl": source_url,
         "discoveredAt": detected_at,
         "phashDistance": phash_distance,

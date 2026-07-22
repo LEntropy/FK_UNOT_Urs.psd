@@ -62,6 +62,37 @@ def test_build_bundle_handles_no_onchain_record():
     assert bundle["registeredAt"] is None
 
 
+def test_build_bundle_includes_c2pa_detection_when_given():
+    bundle = build_bundle(
+        artwork=FAKE_ARTWORK,
+        source_url="https://example.com/found.png",
+        detected_at=1_700_000_100.0,
+        phash_distance=3,
+        watermark_result={"isMatch": True},
+        c2pa_result={"hasManifest": True, "signedByDontai": True, "ownership": {"title": "t"}, "validationIssues": None},
+        headers=None,
+        screenshot_path=None,
+    )
+    assert bundle["c2paDetection"]["hasManifest"] is True
+    assert bundle["c2paDetection"]["signedByDontai"] is True
+
+
+def test_build_bundle_defaults_c2pa_detection_to_none():
+    """c2pa_result is optional -- older call sites (or a C2PA-verification
+    failure server.py caught and passed through as None) shouldn't need to
+    change or crash."""
+    bundle = build_bundle(
+        artwork=FAKE_ARTWORK,
+        source_url="https://example.com/found.png",
+        detected_at=1_700_000_100.0,
+        phash_distance=3,
+        watermark_result=None,
+        headers=None,
+        screenshot_path=None,
+    )
+    assert bundle["c2paDetection"] is None
+
+
 def test_write_json_roundtrip(tmp_path):
     bundle = build_bundle(
         artwork=FAKE_ARTWORK,

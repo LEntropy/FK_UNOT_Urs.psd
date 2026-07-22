@@ -6,7 +6,7 @@
 //! expected, honest result of using a self-signed identity that isn't in
 //! any trust list (see `LocalSigner`/`verify()` docs) -- not a bug.
 
-use rust_core::c2pa_manifest::{sign_and_embed, verify, LocalSigner};
+use rust_core::c2pa_manifest::{sign_and_embed, verify, LocalSigner, VerifyOutcome};
 
 fn synthetic_png() -> Vec<u8> {
     let img = image::ImageBuffer::from_fn(64, 64, |x, y| {
@@ -29,7 +29,9 @@ fn sign_embeds_a_readable_manifest_with_correct_assertions() {
         .expect("sign_and_embed should succeed and produce embeddable bytes");
     assert!(signed.len() > input.len(), "signed output should be larger (manifest embedded)");
 
-    let result = verify(&signed, "png").expect("verify should be able to read back the embedded manifest");
+    let VerifyOutcome::Found(result) = verify(&signed, "png").expect("verify should be able to read back the embedded manifest") else {
+        panic!("expected a manifest to be found");
+    };
 
     assert!(result.manifest_json.contains("test artwork"));
     assert!(result.manifest_json.contains("com.dontai.ownership"));
@@ -47,7 +49,9 @@ fn claim_signature_validates_correctly_self_signed_cert_flagged_as_untrusted() {
     let signed = sign_and_embed(&input, "png", "t", "com.dontai.ownership", &serde_json::json!({}), &key_path)
         .expect("sign_and_embed should succeed");
 
-    let result = verify(&signed, "png").expect("verify should read back the manifest");
+    let VerifyOutcome::Found(result) = verify(&signed, "png").expect("verify should read back the manifest") else {
+        panic!("expected a manifest to be found");
+    };
     let issues = result.validation_issues.expect("expected validation issues to be present");
 
     assert!(
@@ -82,6 +86,20 @@ fn load_or_generate_reuses_the_same_identity_across_calls() {
     );
 
     let _ = std::fs::remove_file(&key_path); // don't leave test key material behind
+}
+
+#[test]
+fn verify_reports_no_manifest_instead_of_panicking_on_a_plain_image() {
+    // Real bug found live: the CLI used to `.expect()` this straight into a
+    // panic (JumbfNotFound) for the ordinary case of scanning an image that
+    // never had a C2PA manifest embedded at all -- the *common* case for
+    // arbitrary images found in the wild (detection-svc's actual use case),
+    // not an exceptional error that should look like one.
+    let plain_image = synthetic_png(); // never passed through sign_and_embed
+
+    let outcome = verify(&plain_image, "png").expect("verify itself should not error for a plain image");
+
+    assert!(matches!(outcome, VerifyOutcome::NoManifest));
 }
 
 #[test]

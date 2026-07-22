@@ -236,15 +236,35 @@ pub struct VerifyResult {
     pub validation_issues: Option<Vec<String>>,
 }
 
+/// Distinguishes "there's genuinely no C2PA manifest embedded in this file"
+/// (`c2pa::Error::JumbfNotFound`) from every other, real failure (corrupt
+/// stream, unsupported format, etc.). Matters a lot for a caller like
+/// detection-svc scanning arbitrary URLs found in the wild: the *expected,
+/// common* case is "no manifest at all" (never had one, or a
+/// redistribution stripped it) -- not an error condition that should look
+/// the same as "something is actually broken." Real bug found live: the
+/// CLI used to `.expect()` this straight into a panic (exit code 101, a
+/// stack trace on stderr) for the ordinary "no manifest" case, making
+/// detection-svc's own scan indistinguishable from a real crash without
+/// fragile stderr-string-matching.
+pub enum VerifyOutcome {
+    Found(VerifyResult),
+    NoManifest,
+}
+
 /// Reads back an embedded manifest and reports its contents + validation
 /// status. A self-signed identity (see `LocalSigner`) is expected to
 /// produce at least one validation status entry about the signing
 /// certificate not being in a trust list -- that's not a bug, it's what
 /// "self-signed, not from a real CA" means. Reported here rather than
 /// hidden so this PoC doesn't overstate what it actually proves.
-pub fn verify(bytes: &[u8], format: &str) -> c2pa::Result<VerifyResult> {
+pub fn verify(bytes: &[u8], format: &str) -> c2pa::Result<VerifyOutcome> {
     let mut stream = Cursor::new(bytes);
-    let reader = Reader::from_stream(format, &mut stream)?;
+    let reader = match Reader::from_stream(format, &mut stream) {
+        Ok(reader) => reader,
+        Err(c2pa::Error::JumbfNotFound) => return Ok(VerifyOutcome::NoManifest),
+        Err(err) => return Err(err),
+    };
 
     let validation_issues = reader.validation_status().map(|statuses| {
         statuses
@@ -253,8 +273,8 @@ pub fn verify(bytes: &[u8], format: &str) -> c2pa::Result<VerifyResult> {
             .collect::<Vec<_>>()
     });
 
-    Ok(VerifyResult {
+    Ok(VerifyOutcome::Found(VerifyResult {
         manifest_json: reader.json(),
         validation_issues: validation_issues.filter(|v| !v.is_empty()),
-    })
+    }))
 }

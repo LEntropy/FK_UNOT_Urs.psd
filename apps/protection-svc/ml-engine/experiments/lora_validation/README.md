@@ -68,3 +68,56 @@ for what it assumes already exists, e.g. an existing baseline LoRA).
   saturated — `score_sdxl.py` defaults to fewer samples/steps than the
   SD1.5 scripts specifically because of this, not for consistency with
   them.
+
+## Results: 2026-07-23 re-validation against current `main` preset config
+
+The n=30 result this experiment originally produced (+0.0130 mean delta,
+cited in `PHASE4_SCOPING.md`) was measured on the `ai-engine` branch
+against a preset config that no longer matches `main`: `style_cloak.py`
+picked up 11 commits changing L2/L3's epsilon (roughly halved), plus
+`color_weight`, `perceptual_mask`, `clip_transfer_weight`, and AMP, none
+of which the original validation ever saw. This re-run answers "does the
+*current* preset still degrade real LoRA training" -- reduced to 5 images
+x 2 seeds (n=10, GPU-time feasibility) from the original 10 x 3, using the
+first 5 images in `prepare_dataset.py`'s own list order (not cherry-picked
+for a favorable result -- includes both the two strongest original
+positive-delta images and the one image whose effect was inconsistent/
+negative before).
+
+```
+image           seed   baseline    cloaked    delta
+starry_night       1     0.8687     0.8300  +0.0387
+starry_night       2     0.8852     0.8350  +0.0503
+great_wave         1     0.9089     0.8983  +0.0106
+great_wave         2     0.9180     0.8945  +0.0235
+mona_lisa          1     0.7527     0.7465  +0.0062
+mona_lisa          2     0.7472     0.7455  +0.0017
+the_scream         1     0.8030     0.7850  +0.0180
+the_scream         2     0.7693     0.8168  -0.0475
+composition_vii     1     0.8365     0.8366  -0.0001
+composition_vii     2     0.8511     0.8290  +0.0221
+
+n = 10, mean delta = +0.0123, stdev = 0.0264
+95% CI (t-approx): [-0.0066, +0.0312]
+Verdict (script's own conservative bar, mean > 0.03 AND CI excludes zero): WEAK/FAIL
+```
+
+**Reading this honestly**: the mean delta (+0.0123) lands almost exactly
+on the original n=30 measurement (+0.0130) despite the preset's epsilon
+being roughly halved and three new competing loss terms added on top --
+the real, actual evidence is that the preset drift did **not** measurably
+degrade this defense. But the 95% CI includes zero at this reduced sample
+size (n=10 vs. the original's n=30, which itself needed the full 30 to
+get a CI excluding zero) and `the_scream`'s second seed flips sign
+entirely (-0.0475) -- the same "small, real, but inconsistent and
+image-dependent" effect this experiment already found the first time, not
+a stronger or weaker one. Neither the original nor this re-run supports
+representing style-cloak's LoRA-training defense as a strong or reliable
+guarantee; both support "a small, real, measured effect that sometimes
+doesn't show up for a given image."
+
+Raw training/generation logs and the full `generate_and_score.py` report
+are on the GPU PC at `C:\dontai-protection-svc\ml-engine\experiments\
+lora_validation\out\` (not copied into this repo -- large, low-level logs,
+same treatment as every other GPU-experiment run this project keeps out
+of version control).

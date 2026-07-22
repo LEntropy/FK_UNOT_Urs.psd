@@ -20,7 +20,19 @@ target different failure modes in a downstream model:
   a style-LoRA trained on it learns the wrong *style* -- validated for
   real against actual SD1.5/SDXL LoRA training runs
   (`ml-engine/README.md`'s LoRA-validation experiment, +0.0130 mean
-  CLIP-similarity-to-true-image degradation, n=30).
+  CLIP-similarity-to-true-image degradation, n=30). **That number is from
+  an older preset config** (epsilon roughly double today's L2/L3 values,
+  no color_weight/perceptual_mask/clip_transfer_weight/AMP) that only ever
+  existed on a since-abandoned branch -- re-validated against the actual
+  current `main` preset config on 2026-07-23 (n=10, reduced sample):
+  +0.0123 mean delta, 95% CI [-0.0066, +0.0312] (includes zero at this
+  sample size, same as small subsamples of the original n=30 would show).
+  The effect size held up close to the original measurement despite the
+  preset changes -- no evidence the changes degraded LoRA-training
+  protection -- but it remains a weak, image-dependent effect either way
+  (one image/seed combination even flipped sign, -0.0475), not a strong
+  guarantee then or now. See `ml-engine/experiments/lora_validation/`'s
+  own README/results for the full re-validation writeup.
 - **Concept Misalignment** (Nightshade's actual mechanism) perturbs the
   image so that the *(image, caption)* pairing a model learns during
   fine-tuning is wrong -- e.g. an image captioned "a photo of a dog" is

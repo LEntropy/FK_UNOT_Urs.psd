@@ -8,6 +8,7 @@ vi.mock("../src/clients/assetService.js", () => ({
   createArtworkWithFile: vi.fn(),
   listArtworks: vi.fn(),
   getArtwork: vi.fn(),
+  suggestTags: vi.fn(),
   AssetServiceError: class AssetServiceError extends Error {
     constructor(public status: number, public body: unknown) {
       super("asset-service request failed");
@@ -16,7 +17,7 @@ vi.mock("../src/clients/assetService.js", () => ({
 }));
 vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }));
 
-const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
+const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, suggestTags, AssetServiceError } = await import("../src/clients/assetService.js");
 const { signRenderUrl } = await import("../src/clients/deliveryGateway.js");
 
 beforeEach(() => {
@@ -80,6 +81,26 @@ describe("artworks proxy", () => {
       }),
       userId,
       walletAddress,
+    );
+  });
+
+  it("passes a JSON-encoded tags field through to createArtworkWithFile as a real array", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(createArtworkWithFile).mockResolvedValue({ id: "ast_3", status: "UPLOADED" });
+
+    const res = await request(app)
+      .post("/artworks")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .field("title", "Tagged")
+      .field("tags", JSON.stringify(["oil painting", "portrait"]))
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(202);
+    expect(createArtworkWithFile).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: ["oil painting", "portrait"] }),
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -158,6 +179,50 @@ describe("GET /artworks/:id/render-url", () => {
     vi.mocked(signRenderUrl).mockRejectedValue(new Error("connect ECONNREFUSED"));
 
     const res = await request(app).get("/artworks/ast_1/render-url").set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /artworks/suggest-tags", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).post("/artworks/suggest-tags").attach("image", Buffer.from("bytes"), "x.jpg");
+    expect(res.status).toBe(401);
+    expect(suggestTags).not.toHaveBeenCalled();
+  });
+
+  it("400s without an image file", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    const res = await request(app).post("/artworks/suggest-tags").set("Authorization", `Bearer ${accessToken}`).send();
+    expect(res.status).toBe(400);
+  });
+
+  it("forwards the file to asset-service and returns its suggested tags", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(suggestTags).mockResolvedValue([{ tag: "oil painting", score: 0.31 }]);
+
+    const res = await request(app)
+      .post("/artworks/suggest-tags")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("image", Buffer.from("bytes"), "preview.jpg");
+
+    expect(res.status).toBe(200);
+    expect(res.body.tags).toEqual([{ tag: "oil painting", score: 0.31 }]);
+    expect(suggestTags).toHaveBeenCalledWith(expect.objectContaining({ originalname: "preview.jpg" }));
+  });
+
+  it("forwards asset-service errors with the same status code", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(suggestTags).mockRejectedValue(new AssetServiceError(502, { error: "protection-svc unreachable" }));
+
+    const res = await request(app)
+      .post("/artworks/suggest-tags")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
     expect(res.status).toBe(502);
   });
 });

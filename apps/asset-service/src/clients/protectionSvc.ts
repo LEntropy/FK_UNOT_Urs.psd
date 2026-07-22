@@ -44,6 +44,34 @@ export interface ProtectJob {
   perceptualPsnrDb?: number | null;
 }
 
+export interface SuggestedTag {
+  tag: string;
+  score: number;
+}
+
+/**
+ * Fast, synchronous unlike createProtectJob/pollProtectJob -- a single CLIP
+ * forward pass (see protection-svc/server.py's /suggest-tags and
+ * ml-engine/src/tag_suggest.py), meant to be called directly from an HTTP
+ * request handler (routes/artworks.ts's own suggest-tags proxy) while the
+ * user is still on the upload-preview screen, not from background
+ * orchestration.
+ */
+export async function suggestTags(imageUri: string, topK = 10): Promise<SuggestedTag[]> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/suggest-tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUri, topK }),
+    });
+    if (!res.ok) {
+      throw new Error(`protection-svc POST /suggest-tags failed: ${res.status} ${await res.text()}`);
+    }
+    const body = (await res.json()) as { tags: SuggestedTag[] };
+    return body.tags;
+  });
+}
+
 export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: string; status: string }> {
   return withRetry(async () => {
     const res = await fetch(`${env.PROTECTION_SVC_URL}/protect`, {

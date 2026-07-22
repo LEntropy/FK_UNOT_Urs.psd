@@ -43,6 +43,18 @@ export const artworks = sqliteTable("artworks", {
   // currently change response behavior.
   visibility: text("visibility").notNull().default("public"),
 
+  // JSON array of strings, user-confirmed at upload time (routes/artworks.ts).
+  // Seeded from protection-svc's /suggest-tags (ml-engine/src/tag_suggest.py --
+  // CLIP zero-shot ranking against a fixed tag vocabulary, PixAI-style
+  // image-to-tag preview), but the frontend lets the user edit/remove/add
+  // before submitting, so this column is the *confirmed* list, not raw
+  // model output -- there's no separate "suggestedTags" column because
+  // nothing downstream needs the unconfirmed suggestions once upload
+  // completes. Not nullable: "never called suggest-tags" and "confirmed
+  // zero tags" both just mean "no tags" to every reader, so default to an
+  // empty JSON array string rather than distinguishing null from "[]".
+  tags: text("tags").notNull().default("[]"),
+
   // Orchestration state machine: UPLOADED -> PROTECTING -> REGISTERING -> PUBLISHED
   //                                                     \-> FAILED (from any step)
   status: text("status").notNull().default("UPLOADED"),

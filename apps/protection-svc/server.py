@@ -48,6 +48,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from orchestrate import ML_ENGINE_DIR, PRESETS, choose_processing_size, protect  # noqa: E402
 import jobs_db  # noqa: E402
 
+sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
+from tag_suggest import suggest_tags  # noqa: E402
+
 app = FastAPI(title="protection-svc", version="0.1.0")
 
 _executor = ThreadPoolExecutor(max_workers=1)  # see module docstring for why
@@ -102,9 +105,27 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
         jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
 
 
+class SuggestTagsRequest(BaseModel):
+    imageUri: str
+    topK: int = 10
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/suggest-tags")
+def suggest_tags_endpoint(req: SuggestTagsRequest):
+    """Fast, synchronous (unlike /protect) -- a single CLIP forward pass
+    against a precomputed tag-embedding matrix, meant to run in the
+    upload-preview UI before the user commits to the slow /protect job.
+    See ml-engine/src/tag_suggest.py's module doc for the mechanism."""
+    if not Path(req.imageUri).exists():
+        raise HTTPException(400, f"imageUri {req.imageUri!r} not found (local file path in this PoC, see module docstring)")
+
+    tags = suggest_tags(req.imageUri, top_k=req.topK)
+    return {"tags": tags}
 
 
 @app.post("/protect", status_code=202)

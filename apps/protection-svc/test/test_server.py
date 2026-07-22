@@ -196,3 +196,35 @@ def test_style_target_uses_request_override(client, real_image, monkeypatch):
     wait_for_terminal_status(client, create.json()["jobId"])
 
     assert captured["style_target_path"] == "/custom/target.png"
+
+
+def test_suggest_tags_rejects_missing_image(client):
+    res = client.post("/suggest-tags", json={"imageUri": "C:/definitely/not/a/real/path.png"})
+    assert res.status_code == 400
+    assert "not found" in res.json()["detail"]
+
+
+def test_suggest_tags_returns_ranked_tags(client, real_image, monkeypatch):
+    def fake_suggest_tags(image_path, top_k=10):
+        assert image_path == real_image
+        assert top_k == 5
+        return [{"tag": "oil painting", "score": 0.31}, {"tag": "portrait", "score": 0.28}]
+
+    monkeypatch.setattr(server, "suggest_tags", fake_suggest_tags)
+
+    res = client.post("/suggest-tags", json={"imageUri": real_image, "topK": 5})
+    assert res.status_code == 200
+    assert res.json() == {"tags": [{"tag": "oil painting", "score": 0.31}, {"tag": "portrait", "score": 0.28}]}
+
+
+def test_suggest_tags_defaults_top_k_to_ten(client, real_image, monkeypatch):
+    captured = {}
+
+    def fake_suggest_tags(image_path, top_k=10):
+        captured["top_k"] = top_k
+        return []
+
+    monkeypatch.setattr(server, "suggest_tags", fake_suggest_tags)
+
+    client.post("/suggest-tags", json={"imageUri": real_image})
+    assert captured["top_k"] == 10

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { Router } from "express";
 import multer from "multer";
@@ -9,6 +9,7 @@ import type { Db } from "../db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "../db/schema.js";
 import { runUploadPipeline } from "../orchestration.js";
 import { encryptImageAtRest } from "../crypto/imageEncryption.js";
+import { suggestTags } from "../clients/protectionSvc.js";
 import { env } from "../env.js";
 import { attachAssetVersions } from "../lib/attachAssetVersions.js";
 
@@ -35,6 +36,25 @@ const createArtworkSchema = z.object({
     .union([z.boolean(), z.enum(["true", "false"])])
     .default(false)
     .transform((v) => v === true || v === "true"),
+  // User-confirmed tags (see suggest-tags route below for where the
+  // frontend's initial suggestions come from) -- a real array from a JSON
+  // body, or a JSON-encoded string from a multipart field (multipart has
+  // no native array type, same reasoning as allowAiTraining's string
+  // variant above). Invalid JSON in the multipart case is treated as "no
+  // tags" rather than a 400 -- a malformed tags field shouldn't block an
+  // otherwise-valid upload for a nice-to-have feature.
+  tags: z
+    .union([z.array(z.string()), z.string()])
+    .default([])
+    .transform((v) => {
+      if (Array.isArray(v)) return v;
+      try {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+      } catch {
+        return [];
+      }
+    }),
 });
 
 // multer's own disk storage, not os.tmpdir() -- same reasoning as
@@ -107,6 +127,7 @@ export function artworksRouter(db: Db): Router {
         ownerWalletAddress: parsed.data.ownerWalletAddress,
         protectionProfile: parsed.data.protectionProfile,
         allowAiTraining: parsed.data.allowAiTraining,
+        tags: JSON.stringify(parsed.data.tags),
         watermarkPayloadHex,
         encryptedImagePath: encrypted.encryptedImagePath,
         encryptedDekBase64: encrypted.encryptedDekBase64,
@@ -124,6 +145,40 @@ export function artworksRouter(db: Db): Router {
     void runUploadPipeline(db, id);
 
     res.status(202).json({ id, status: "UPLOADED" });
+  });
+
+  // Upload-preview step (PixAI-style image-to-tag): the frontend calls this
+  // right after the user picks a file, before the real POST / -- shows
+  // suggested tags to review/edit, then the real upload resubmits the same
+  // file plus whatever tags list the user confirmed. A second real upload
+  // of the same bytes (not a shared temp-file handoff) is the deliberate,
+  // simpler tradeoff here -- see this route's own temp-file cleanup below
+  // for why that's fine: nothing about this request persists past the
+  // response.
+  router.post("/suggest-tags", upload.single("image"), async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "upload an image file" });
+    }
+    try {
+      const tags = await suggestTags(req.file.path);
+      res.json({ tags });
+    } catch (err) {
+      res.status(502).json({
+        error: `protection-svc suggest-tags failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      // Best-effort cleanup -- this file was only ever needed for the CLIP
+      // pass above, unlike the real upload path where encryptImageAtRest
+      // itself deletes the plaintext once it's done with it. Synchronous
+      // (not fire-and-forget) so the file is reliably gone by the time
+      // this request finishes, not racing the response.
+      try {
+        unlinkSync(req.file.path);
+      } catch {
+        // already gone, or some other non-critical cleanup failure -- not
+        // worth failing an otherwise-successful (or already-failed) request over.
+      }
+    }
   });
 
   router.get("/", (req, res) => {

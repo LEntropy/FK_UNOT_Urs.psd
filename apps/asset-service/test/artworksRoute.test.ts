@@ -8,8 +8,10 @@ import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
+vi.mock("../src/clients/protectionSvc.js", () => ({ suggestTags: vi.fn() }));
 
 const { createApp } = await import("../src/app.js");
+const { suggestTags } = await import("../src/clients/protectionSvc.js");
 
 function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof artworks.$inferInsert> = {}) {
   const now = new Date();
@@ -174,5 +176,111 @@ describe("POST /artworks (envelope encryption at rest)", () => {
 
     expect(res.status).toBe(400);
     expect(db.select().from(artworks).all()).toHaveLength(0);
+  });
+
+  it("stores confirmed tags from a JSON-encoded multipart field", async () => {
+    const db = createTestDb();
+
+    const res = await request(createApp(db))
+      .post("/artworks")
+      .field("title", "Tagged upload")
+      .field("creatorId", "creator_tags")
+      .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
+      .field("tags", JSON.stringify(["oil painting", "portrait"]))
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(202);
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(JSON.parse(row.tags)).toEqual(["oil painting", "portrait"]);
+
+    unlinkSync(row.encryptedImagePath);
+  });
+
+  it("defaults tags to an empty array when omitted", async () => {
+    const db = createTestDb();
+
+    const res = await request(createApp(db))
+      .post("/artworks")
+      .field("title", "No tags")
+      .field("creatorId", "creator_notags")
+      .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(202);
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(JSON.parse(row.tags)).toEqual([]);
+
+    unlinkSync(row.encryptedImagePath);
+  });
+
+  it("treats malformed tags JSON as no tags rather than 400ing the whole upload", async () => {
+    const db = createTestDb();
+
+    const res = await request(createApp(db))
+      .post("/artworks")
+      .field("title", "Bad tags field")
+      .field("creatorId", "creator_badtags")
+      .field("ownerWalletAddress", "0xCD836EEED3Cac282B053c1261f198f9eb848Aab2")
+      .field("tags", "not valid json[")
+      .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(202);
+    const row = db.select().from(artworks).where(eq(artworks.id, res.body.id)).get()!;
+    expect(JSON.parse(row.tags)).toEqual([]);
+
+    unlinkSync(row.encryptedImagePath);
+  });
+});
+
+describe("POST /artworks/suggest-tags", () => {
+  it("400s without an image file", async () => {
+    const db = createTestDb();
+    const res = await request(createApp(db)).post("/artworks/suggest-tags").send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("forwards the uploaded file to protection-svc and returns its suggested tags", async () => {
+    const db = createTestDb();
+    vi.mocked(suggestTags).mockResolvedValue([
+      { tag: "oil painting", score: 0.31 },
+      { tag: "portrait", score: 0.28 },
+    ]);
+
+    const res = await request(createApp(db))
+      .post("/artworks/suggest-tags")
+      .attach("image", Buffer.from("bytes"), "preview.jpg");
+
+    expect(res.status).toBe(200);
+    expect(res.body.tags).toEqual([
+      { tag: "oil painting", score: 0.31 },
+      { tag: "portrait", score: 0.28 },
+    ]);
+    // The temp file passed to protection-svc was a real, readable path.
+    expect(vi.mocked(suggestTags)).toHaveBeenCalledWith(expect.stringContaining("preview.jpg"));
+  });
+
+  it("deletes the temp upload file after the request completes, success or not", async () => {
+    const db = createTestDb();
+    let capturedPath = "";
+    vi.mocked(suggestTags).mockImplementation(async (path) => {
+      capturedPath = path;
+      expect(existsSync(path)).toBe(true); // still there mid-request
+      return [];
+    });
+
+    await request(createApp(db)).post("/artworks/suggest-tags").attach("image", Buffer.from("bytes"), "cleanup.jpg");
+
+    expect(existsSync(capturedPath)).toBe(false);
+  });
+
+  it("returns 502 (not a crash) when protection-svc is unreachable", async () => {
+    const db = createTestDb();
+    vi.mocked(suggestTags).mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+    const res = await request(createApp(db))
+      .post("/artworks/suggest-tags")
+      .attach("image", Buffer.from("bytes"), "fail.jpg");
+
+    expect(res.status).toBe(502);
   });
 });

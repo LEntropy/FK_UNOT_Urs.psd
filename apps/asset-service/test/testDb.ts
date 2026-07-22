@@ -23,6 +23,7 @@ export function createTestDb() {
       encryption_iv TEXT NOT NULL DEFAULT 'ZmFrZQ==',
       encryption_auth_tag TEXT NOT NULL DEFAULT 'ZmFrZQ==',
       visibility TEXT NOT NULL DEFAULT 'public',
+      tags TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'UPLOADED',
       error_message TEXT,
       protect_job_id TEXT,

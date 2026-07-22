@@ -11,6 +11,7 @@ export interface CreateArtworkRequest {
   sourceImageUri: string;
   protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN";
   allowAiTraining?: boolean;
+  tags?: string[];
 }
 
 export async function createArtwork(req: CreateArtworkRequest, creatorId: string, ownerWalletAddress: string) {
@@ -30,6 +31,7 @@ export interface CreateArtworkWithFileRequest {
   title: string;
   protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN";
   allowAiTraining?: boolean;
+  tags?: string[];
   file: { buffer: Buffer; originalname: string; mimetype: string };
 }
 
@@ -53,6 +55,7 @@ export async function createArtworkWithFile(
   form.set("ownerWalletAddress", ownerWalletAddress);
   if (req.protectionProfile) form.set("protectionProfile", req.protectionProfile);
   if (req.allowAiTraining !== undefined) form.set("allowAiTraining", String(req.allowAiTraining));
+  if (req.tags !== undefined) form.set("tags", JSON.stringify(req.tags)); // multipart has no array type -- see asset-service's own identical parsing
   form.set("image", new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype }), req.file.originalname);
 
   const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks`, { method: "POST", body: form });
@@ -61,6 +64,31 @@ export async function createArtworkWithFile(
     throw new AssetServiceError(res.status, body);
   }
   return body;
+}
+
+export interface SuggestedTag {
+  tag: string;
+  score: number;
+}
+
+/**
+ * Upload-preview step: proxies the picked file to asset-service's own
+ * suggest-tags route (which in turn calls protection-svc's CLIP-based
+ * ranking, see ml-engine/src/tag_suggest.py) before the user commits to
+ * the real upload. Same re-packing-into-a-fresh-FormData approach as
+ * createArtworkWithFile above, for the same reason (carrying raw bytes
+ * through, not a JSON string).
+ */
+export async function suggestTags(file: { buffer: Buffer; originalname: string; mimetype: string }): Promise<SuggestedTag[]> {
+  const form = new FormData();
+  form.set("image", new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }), file.originalname);
+
+  const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/suggest-tags`, { method: "POST", body: form });
+  const body = await res.json();
+  if (!res.ok) {
+    throw new AssetServiceError(res.status, body);
+  }
+  return body.tags;
 }
 
 export async function listArtworks(creatorId: string) {

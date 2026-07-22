@@ -1,0 +1,1 @@
+ALTER TABLE `artworks` ADD `tags` text DEFAULT '[]' NOT NULL;

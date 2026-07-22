@@ -7,6 +7,7 @@ import {
   createArtworkWithFile,
   getArtwork,
   listArtworks,
+  suggestTags,
   AssetServiceError,
 } from "../clients/assetService.js";
 import { signRenderUrl } from "../clients/deliveryGateway.js";
@@ -23,6 +24,23 @@ const createArtworkSchema = z.object({
     .union([z.boolean(), z.enum(["true", "false"])])
     .optional()
     .transform((v) => (v === undefined ? undefined : v === true || v === "true")),
+  // Real array from a JSON body, or a JSON-encoded string from a multipart
+  // field -- same reasoning as allowAiTraining's string variant above.
+  // Passed through as-is to asset-service, which does its own parsing/
+  // validation (this gateway's job is auth + identity injection, not
+  // reshaping the payload -- see this file's module doc).
+  tags: z
+    .union([z.array(z.string()), z.string()])
+    .optional()
+    .transform((v) => {
+      if (v === undefined || Array.isArray(v)) return v;
+      try {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : undefined;
+      } catch {
+        return undefined;
+      }
+    }),
 });
 
 // Memory storage, not disk -- api-gateway only holds the bytes long enough
@@ -53,16 +71,32 @@ export function artworksRouter(): Router {
     try {
       const result = req.file
         ? await createArtworkWithFile(
-            { title: parsed.data.title, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining, file: req.file },
+            { title: parsed.data.title, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining, tags: parsed.data.tags, file: req.file },
             req.user!.sub,
             req.user!.walletAddress,
           )
         : await createArtwork(
-            { title: parsed.data.title, sourceImageUri: parsed.data.sourceImageUri!, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining },
+            { title: parsed.data.title, sourceImageUri: parsed.data.sourceImageUri!, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining, tags: parsed.data.tags },
             req.user!.sub,
             req.user!.walletAddress,
           );
       res.status(202).json(result);
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Upload-preview step (PixAI-style image-to-tag) -- see asset-service's
+  // own suggest-tags route doc for the full flow. requireAuth still
+  // applies (router.use above): this needs a logged-in user the same way
+  // every other artwork action does, even though nothing gets persisted.
+  router.post("/suggest-tags", upload.single("image"), async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "upload an image file" });
+    }
+    try {
+      const tags = await suggestTags(req.file);
+      res.json({ tags });
     } catch (err) {
       forwardAssetServiceError(err, res);
     }

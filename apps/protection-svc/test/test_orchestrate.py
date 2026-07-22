@@ -3,6 +3,7 @@ select_style_target.py's own concern -- mocked here to keep this fast and
 GPU-free).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -122,3 +123,105 @@ def test_resolution_restoration_produces_a_fully_loadable_non_truncated_file(mon
     restored = Image.open(cloaked_path)
     restored.load()  # raises OSError("image file is truncated") if corrupted
     assert restored.size[0] > restored.size[1]  # 2:1 aspect restored, not square
+
+
+def _protect_with_rust_core_stub(monkeypatch, tmp_path, rust_core_calls, run_rust_core_impl):
+    """Shared setup for the two C2PA-step tests below -- everything except
+    run_rust_core and compute_perceptual_hash_from_path is stubbed the same
+    way test_resolution_restoration_produces_a_fully_loadable_non_truncated_file
+    stubs it, just also recording each run_rust_core call's args."""
+    input_path = tmp_path / "original.png"
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(input_path)
+    style_target_path = tmp_path / "style_target.png"
+    Image.new("RGB", (64, 64), (200, 200, 200)).save(style_target_path)
+
+    def fake_cloak(original_path, style_target_path, output_path, preset_name, eot, size, eot_samples, perceptual_mask, use_amp):
+        Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)
+
+    def recording_run_rust_core(*args):
+        rust_core_calls.append(args)
+        return run_rust_core_impl(*args)
+
+    monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
+    monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
+    monkeypatch.setattr(orchestrate, "run_rust_core", recording_run_rust_core)
+    monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
+    monkeypatch.setattr(orchestrate, "compute_perceptual_hash_from_path", lambda path: "deadbeef")
+
+    return str(input_path), str(style_target_path)
+
+
+def test_c2pa_sign_is_called_with_real_pipeline_data(monkeypatch, tmp_path):
+    """Confirms C2PA embedding actually runs as part of protect() (it
+    previously didn't -- see rust-core/README.md's C2PA section), and that
+    the ownership assertion carries this call's real doNotTrain/title/
+    creatorId/perceptualHash, not placeholders."""
+    rust_core_calls = []
+    input_path, style_target_path = _protect_with_rust_core_stub(
+        monkeypatch, tmp_path, rust_core_calls, lambda *a: ""
+    )
+
+    result = orchestrate.protect(
+        input_path=input_path,
+        out_dir=str(tmp_path / "out"),
+        preset_name="L1_PREVIEW",
+        style_target_path=style_target_path,
+        title="My Artwork",
+        creator_id="creator_42",
+        allow_ai_training=False,
+        watermark_payload_hex="deadbeefcafef00d",
+        size=256,
+    )
+
+    assert result["c2paApplied"] is True
+
+    c2pa_calls = [c for c in rust_core_calls if c[0] == "c2pa-sign"]
+    assert len(c2pa_calls) == 1
+    args = c2pa_calls[0]
+    assert "--title" in args and args[args.index("--title") + 1] == "My Artwork"
+
+    ownership_json = args[args.index("--ownership-json") + 1]
+    ownership = json.loads(ownership_json)
+    assert ownership == {
+        "doNotTrain": True,  # allow_ai_training=False above
+        "title": "My Artwork",
+        "creatorId": "creator_42",
+        "perceptualHash": "deadbeef",  # from the stubbed compute_perceptual_hash_from_path
+    }
+
+    signing_key_path = args[args.index("--signing-key-path") + 1]
+    assert signing_key_path == str(orchestrate.C2PA_SIGNING_KEY_PATH)
+
+
+def test_c2pa_sign_failure_does_not_fail_the_whole_upload(monkeypatch, tmp_path):
+    """Best-effort like protection_metrics/concept-misalign elsewhere in
+    protect() -- a C2PA signing failure (rust-core binary missing, disk
+    full persisting the signing key, whatever) shouldn't take down a real
+    upload that otherwise succeeded."""
+    rust_core_calls = []
+
+    def flaky_run_rust_core(*args):
+        if args[0] == "c2pa-sign":
+            raise RuntimeError("rust-core c2pa-sign failed: simulated failure")
+        return ""
+
+    input_path, style_target_path = _protect_with_rust_core_stub(
+        monkeypatch, tmp_path, rust_core_calls, flaky_run_rust_core
+    )
+
+    result = orchestrate.protect(
+        input_path=input_path,
+        out_dir=str(tmp_path / "out"),
+        preset_name="L1_PREVIEW",
+        style_target_path=style_target_path,
+        title="t",
+        creator_id="c",
+        allow_ai_training=True,
+        watermark_payload_hex="deadbeefcafef00d",
+        size=256,
+    )
+
+    assert result["status"] == "completed"
+    assert result["c2paApplied"] is False
+    # The rest of the pipeline (variants) still ran despite the C2PA failure.
+    assert any(c[0] == "variants" for c in rust_core_calls)

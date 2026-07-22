@@ -31,8 +31,7 @@ original image
 [ml-engine]  style_cloak.py --preset <profile> --eot   (slow: seconds-to-minutes, see below)
      |
      v
-[rust-core]  watermark (built) + C2PA manifest (built, but claim signature
-             doesn't validate — see below) + resolution variants (built)
+[rust-core]  watermark -> C2PA manifest (best-effort, see below) -> resolution variants
      |
      v
 final public image variant(s) -> perceptualHash computed HERE, not earlier
@@ -113,20 +112,28 @@ Both mechanisms happen to fail around the same resize threshold, for
 unrelated reasons — see `rust-core/README.md`'s side-by-side table before
 assuming either one protects an image at every generated resolution.
 
-`rust-core`'s C2PA manifest embedding also works — title, custom
-`com.dontai.ownership` assertion (where blockchain-svc's contentHash/txHash
-would go), content-hash data integrity, and now the claim signature itself
-all embed and validate correctly on read-back. (Previously the signature
-was misreported as `claimSignature.mismatch` — root-caused to a known
-upstream `c2pa` crate bug around self-signed certs missing an Organization
-subject attribute, fixed by adding one; full writeup in
-`rust-core/README.md`'s "C2PA manifest" section.) The remaining caveat is
-that the signing identity is self-signed, not from a real C2PA-trusted CA,
-so `signingCredential.untrusted` is still an expected status — an
-operational PKI question, not a cryptographic one. blockchain-svc's
-on-chain registration remains the mechanism this project stands behind for
-provenance today, but the C2PA manifest's signature can now be trusted as
-real proof the manifest wasn't tampered with after signing.
+`rust-core`'s C2PA manifest embedding also works, and (as of 2026-07-22) is
+actually called by this real pipeline — title, custom `com.dontai.ownership`
+assertion (`doNotTrain`/`title`/`creatorId`/`perceptualHash`; NOT
+blockchain-svc's contentHash/txHash, which doesn't exist yet at this point
+in the pipeline — on-chain registration is a separate, later step
+asset-service triggers after `protect()` already returned), content-hash
+data integrity, and the claim signature itself all embed and validate
+correctly on read-back, verified against a real production upload.
+(Previously the signature was misreported as `claimSignature.mismatch` —
+root-caused to a known upstream `c2pa` crate bug around self-signed certs
+missing an Organization subject attribute, fixed by adding one; full
+writeup in `rust-core/README.md`'s "C2PA manifest" section.) Best-effort,
+same as the protection-metrics/concept-misalign steps elsewhere in this
+pipeline — a signing failure logs and continues rather than failing the
+upload; `result.json`'s `c2paApplied` field says whether it actually ran.
+The remaining caveat is that the signing identity is self-signed, not from
+a real C2PA-trusted CA, so `signingCredential.untrusted` is still an
+expected status — an operational PKI question, not a cryptographic one.
+blockchain-svc's on-chain registration remains the mechanism this project
+stands behind for provenance today, but the C2PA manifest's signature can
+now be trusted as real proof the manifest wasn't tampered with after
+signing.
 
 **perceptualHash must be computed on the final published variant** (after
 rust-core's watermark/C2PA step), not on ml-engine's raw cloak output —
@@ -169,6 +176,7 @@ GET /protect/{jobId}
   "size": 256,
   "sizeValidated": true,
   "variants": [ { "name": "grid_thumbnail_150", "width": 150, "height": 150, "scaleVsSource": 0.59, "protectionStatus": "SAFE" }, ... ],
+  "c2paApplied": true,                    // false if C2PA signing failed -- best-effort, doesn't fail the job
   "processingTimeMs": 87000
 }
 ```

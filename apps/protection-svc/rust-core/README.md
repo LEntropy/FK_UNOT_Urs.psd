@@ -141,17 +141,55 @@ future work, still not attempted here) to close.
 
 `src/c2pa_manifest.rs`, using the official `c2pa` crate (v0.89, `rust_native_crypto`
 feature). Embeds a manifest with a title, `c2pa.actions` assertion, and a
-custom `com.dontai.ownership` assertion -- in the real pipeline this is
-where `blockchain-svc`'s `contentHash`/`txHash` would go, tying C2PA
-provenance to the on-chain registration (`apps/blockchain-svc/INTEGRATION.md`).
+custom `com.dontai.ownership` assertion carrying `doNotTrain`/`title`/
+`creatorId`/`perceptualHash`. NOT `blockchain-svc`'s on-chain `contentHash`/
+`txHash` -- an earlier draft of this doc (and of `sign_and_embed`'s own
+comment) implied that's where those would go, but that's structurally not
+possible at this point in the pipeline: on-chain registration is a
+separate, later step `asset-service`'s own job state machine triggers
+*after* `protect()` already returned, not something `protect()` itself has
+any access to.
+
+**Wired into the real pipeline as of 2026-07-22** -- `orchestrate.py`'s
+`protect()` now calls `c2pa-sign` as step 2b/4 (right after watermarking,
+before resolution variants), best-effort like the protection-metrics/
+concept-misalign steps around it (a signing failure logs and continues,
+doesn't fail the upload). Previously this was a working, tested capability
+reachable *only* via the standalone `c2pa-sign` CLI subcommand below --
+never actually called by the real upload flow. Verified end-to-end against
+a real production upload on the Pi: the resulting `watermarked.png` carries
+a real, validating manifest with real ownership data, and the invisible
+watermark (embedded one step earlier) survives C2PA signing intact (0% bit
+error rate, confirmed via `detect` on the post-C2PA file).
 
 ```bash
 cargo run -- c2pa-sign --input watermarked.png --output watermarked_c2pa.png \
   --format png --title "Starry Night (DONTAI protected)" \
-  --ownership-json '{"contentHash":"0x...","chain":"polygon-amoy"}'
+  --ownership-json '{"doNotTrain":true,"title":"Starry Night","creatorId":"usr_123","perceptualHash":"0x..."}'
 
 cargo run -- c2pa-verify --input watermarked_c2pa.png --format png
 ```
+
+### Signing identity now persists across calls
+
+`LocalSigner::generate()` used to mint a brand-new Ed25519 keypair on
+*every* call -- meaning every image this pipeline signed would carry a
+different, unrelated "identity," with no way to say two DONTAI-signed
+images share a signer. `LocalSigner::load_or_generate(key_path)` (what
+`sign_and_embed`/the `c2pa-sign` CLI subcommand actually use now, via
+`--signing-key-path`, defaulting to `rust-core/keys/c2pa_signing_key.der`)
+persists the private key to disk on first use and reloads it on every
+subsequent call -- same public key, same identity, across every image this
+deployment ever signs. The self-signed *certificate* wrapping that key is
+still rebuilt fresh each call (new serial/validity window each time,
+exactly like reissuing a real cert around the same key would), which is
+fine: what makes the identity recognizable is the public key inside it,
+not the cert bytes being byte-identical too. Best-effort persistence (falls
+back to `generate()`'s old per-call-fresh-key behavior if the key file
+can't be read or written) so a filesystem hiccup degrades gracefully
+instead of failing the sign step outright. `generate()` itself is kept
+around unchanged, both as that fallback and for the PoC-scope tests in
+`tests/c2pa_integration.rs` that don't care about cross-call identity.
 
 ### Why a self-signed identity instead of the crate's own signer helpers
 

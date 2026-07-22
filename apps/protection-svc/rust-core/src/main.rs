@@ -62,10 +62,20 @@ enum Commands {
         #[arg(long, default_value = "DONTAI protected artwork")]
         title: String,
         /// JSON string embedded as a custom "com.dontai.ownership" assertion
-        /// -- in the real pipeline this is where blockchain-svc's
-        /// contentHash/txHash would go.
+        /// -- orchestrate.py fills this with doNotTrain/title/creatorId/
+        /// perceptualHash (blockchain-svc's on-chain contentHash/txHash
+        /// isn't available yet at this point in the pipeline -- on-chain
+        /// registration is a separate, later step asset-service triggers
+        /// after protect() returns, not something protect() itself does).
         #[arg(long, default_value = "{}")]
         ownership_json: String,
+        /// Where the persistent C2PA signing identity's private key lives
+        /// (PKCS8 DER) -- generated on first use if missing, reused on
+        /// every call after that so every image this deployment signs
+        /// shares the same identity. See c2pa_manifest.rs's
+        /// LocalSigner::load_or_generate doc for why that matters.
+        #[arg(long, default_value = "rust-core/keys/c2pa_signing_key.der")]
+        signing_key_path: String,
     },
     /// Read back an embedded C2PA manifest and report its contents +
     /// validation status.
@@ -208,6 +218,7 @@ fn main() {
             format,
             title,
             ownership_json,
+            signing_key_path,
         } => {
             let input_bytes = std::fs::read(&input).expect("failed to read input file");
             let ownership: serde_json::Value =
@@ -219,6 +230,7 @@ fn main() {
                 &title,
                 "com.dontai.ownership",
                 &ownership,
+                std::path::Path::new(&signing_key_path),
             )
             .expect("failed to sign/embed C2PA manifest");
 

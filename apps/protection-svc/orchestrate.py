@@ -57,6 +57,13 @@ RUST_CORE_BIN = Path(os.environ["RUST_CORE_BIN"]) if "RUST_CORE_BIN" in os.envir
     (p for p in _rust_core_candidates if p.exists()), _rust_core_candidates[0]
 )
 
+# Absolute (not rust-core's own relative default) so the signing identity's
+# location doesn't depend on this process's working directory matching
+# rust-core's own assumption about it -- see c2pa_manifest.rs's
+# LocalSigner::load_or_generate doc for why this file needs to actually
+# persist across calls to mean anything.
+C2PA_SIGNING_KEY_PATH = Path(__file__).parent / "rust-core" / "keys" / "c2pa_signing_key.der"
+
 sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 
 from style_cloak import PRESETS  # noqa: E402
@@ -456,13 +463,57 @@ def protect(
         "--strength", "24.0",
     )
 
+    # Computed here (not at step 4/4's original spot) so the real value can
+    # go into the C2PA assertion below instead of an empty placeholder --
+    # deterministic from watermarked_path either way, so computing it once
+    # here and reusing it later isn't a behavior change, just an ordering one.
+    perceptual_hash = compute_perceptual_hash_from_path(str(watermarked_path))
+
+    # C2PA manifest embedding (rust-core/src/c2pa_manifest.rs) -- previously
+    # built, tested, and reachable only via the standalone `c2pa-sign` CLI
+    # subcommand, never actually called from this pipeline (see
+    # rust-core/README.md's C2PA section for that history). Real content
+    # available at this point: doNotTrain, title, creatorId, and the
+    # watermarked image's own perceptualHash. NOT blockchain-svc's on-chain
+    # contentHash/txHash -- despite what an earlier draft of this module's
+    # doc comment implied, that data structurally can't exist yet here:
+    # on-chain registration is a separate, later step asset-service's own
+    # job state machine triggers after protect() already returned, not
+    # something protect() itself has any access to.
+    #
+    # Best-effort like protection_metrics/concept-misalign above: a missing
+    # C2PA manifest shouldn't fail a real upload. Signs in place
+    # (watermarked_path -> watermarked_path) -- safe because rust-core's
+    # c2pa-sign reads the whole input into memory before writing any output
+    # bytes, so there's no read/write race with itself.
+    c2pa_applied = False
+    print("[orchestrate] 2b/4 C2PA manifest ...", flush=True)
+    try:
+        ownership = {
+            "doNotTrain": not allow_ai_training,
+            "title": title,
+            "creatorId": creator_id,
+            "perceptualHash": perceptual_hash,
+        }
+        run_rust_core(
+            "c2pa-sign",
+            "--input", str(watermarked_path),
+            "--output", str(watermarked_path),
+            "--format", "png",
+            "--title", title,
+            "--ownership-json", json.dumps(ownership),
+            "--signing-key-path", str(C2PA_SIGNING_KEY_PATH),
+        )
+        c2pa_applied = True
+    except Exception as exc:  # noqa: BLE001 -- a real upload succeeding matters more than this enrichment
+        print(f"[orchestrate] C2PA signing failed, continuing without it: {exc}", flush=True)
+
     variants_dir = out / "variants"
     print("[orchestrate] 3/4 resolution variants ...", flush=True)
     variants_output = run_rust_core("variants", "--input", str(watermarked_path), "--out-dir", str(variants_dir))
     variants = parse_variants_output(variants_output)
 
-    print("[orchestrate] 4/4 perceptualHash + metadataHash ...", flush=True)
-    perceptual_hash = compute_perceptual_hash_from_path(str(watermarked_path))
+    print("[orchestrate] 4/4 metadataHash ...", flush=True)
 
     metadata = {
         "title": title,
@@ -483,6 +534,7 @@ def protect(
         "doNotTrain": not allow_ai_training,
         "watermarkPayloadHex": watermark_payload_hex,
         "conceptMisalignApplied": bool(concept_misalign_target_path) and not USE_REMOTE_GPU,
+        "c2paApplied": c2pa_applied,
         "processingTimeMs": round((time.time() - start) * 1000),
         "variants": variants,
         # None (not 0) when compute_protection_metrics() above didn't run

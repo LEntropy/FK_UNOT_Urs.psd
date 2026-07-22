@@ -8,6 +8,13 @@ image = "0.25"
 clap = { version = "4", features = ["derive"] }
 c2pa = { version = "0.89", default-features = false, features = ["rust_native_crypto"] }
 rcgen = "0.13"
+# Only for PrivatePkcs8KeyDer, the wrapper type
+# KeyPair::from_pkcs8_der_and_sign_algo needs to reload a persisted C2PA
+# signing key (see c2pa_manifest.rs's LocalSigner::load_or_generate) --
+# pinned to the exact version rcgen 0.13.2 itself depends on so the type
+# rcgen expects and the type this crate constructs are the same type, not
+# two incompatible copies from a version mismatch.
+rustls-pki-types = "1.4.1"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 serde_json = "1"
 

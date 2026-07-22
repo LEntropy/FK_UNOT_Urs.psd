@@ -246,8 +246,18 @@ PRESETS = {
     # left out for a quality reason -- it's purely that its frozen weights'
     # static VRAM footprint doesn't leave enough headroom on 8GB hardware.
     # fp16-casting the frozen CLIP/VGG models (halving their static
-    # footprint, distinct from autocast's op-level-only mixed precision) is
-    # the next attempt at making 3 models fit for real, not yet done.
+    # footprint, distinct from autocast's op-level-only mixed precision)
+    # was tried next, on top of the sequential-backward fix -- also not
+    # enough. cloak() itself completed without crashing, but VRAM stayed
+    # pegged near the same ~95%+ ceiling and one config alone ran 90+ min
+    # without finishing before being killed (see CLIP_ENSEMBLE_CHECKPOINTS'
+    # doc for the full writeup). The frozen weights weren't the dominant
+    # cost after all -- activation-graph/optimizer-state memory and the
+    # sheer number of distinct model graphs resident at once (VGG19 +
+    # LPIPS + 3 CLIP models) apparently matter more on this 8GB card. 2
+    # models is this hardware's practical ceiling for now; a real fix for
+    # 3+ would need something bigger (gradient checkpointing, or a GPU with
+    # more VRAM), not attempted further.
     "L3_ANTI_TRAIN": Preset(epsilon=0.05, steps=500, lr=0.01, color_weight=8.0, mask_low=0.15, clip_transfer_weight=0.5),
 }
 
@@ -423,11 +433,27 @@ _vae_extractor = None
 # genuinely fitting. Real cost: a 4-config sweep that normally takes
 # minutes took 7h24m wall-clock (see PRESETS' L3_ANTI_TRAIN comment for the
 # full writeup) -- technically completes, not practical for any real
-# upload pipeline. 2 models (same architecture, different training data --
-# still real diversity, just not also varying depth/width) is what
-# actually fits comfortably in real VRAM on this hardware; fp16-casting the
-# frozen models' weights (halving their static footprint) is the next
-# attempt at making a 3rd model fit for real, not yet done.
+# upload pipeline.
+#
+# Third attempt: fp16-cast the frozen extractor weights themselves (see
+# cloak()'s `extractor_dtype` cast, distinct from autocast's op-level-only
+# mixed precision) on top of the sequential-backward fix, on the theory
+# that halving the static weight footprint would close the remaining
+# ~500MB overage. Real result: cloak() itself did complete this time (no
+# crash), but VRAM stayed pegged near the same ~95%+ ceiling and one
+# config (weight=0.5) alone ran 90+ min without finishing before being
+# killed -- fp16-casting the weights clearly wasn't enough by itself.
+# Working theory: activation-graph and optimizer-state memory (which the
+# weight-halving doesn't touch) plus the surviving overhead of loading 3
+# separate model architectures simultaneously (even at fp16, VGG19 + LPIPS
+# + 3 CLIP models is still a lot of *distinct* graphs to keep resident)
+# dominates on an 8GB card, not the weights alone. A real fix would need
+# something bigger -- gradient checkpointing on the CLIP forward passes,
+# or simply accepting that 2 models is this hardware's ceiling until a
+# GPU with more VRAM is available -- not attempted further for now. 2
+# models (same architecture, different training data -- still real
+# diversity, just not also varying depth/width) is what actually fits
+# comfortably in real VRAM on this hardware and is what's shipped.
 CLIP_ENSEMBLE_CHECKPOINTS: list[tuple[str, str]] = [
     ("ViT-B-32", "openai"),
     ("ViT-B-32", "laion2b_s34b_b79k"),
@@ -626,6 +652,31 @@ def cloak(
             _vae_extractor = DiffusionVAEExtractor(device)
         vae_extractor = _vae_extractor
 
+    # fp16-cast these frozen models' *weights* (not just autocast's
+    # op-level-only mixed precision, which leaves static storage dtype
+    # unchanged) when AMP is on for this call -- halves their resident
+    # VRAM footprint, the real fix CLIP_ENSEMBLE_CHECKPOINTS' doc promised
+    # after the 2-vs-3-model ensemble measurement found the 3rd model's
+    # frozen weights (not activation-graph memory, already fixed by the
+    # sequential-backward restructuring below) were what pushed peak VRAM
+    # past this project's 8GB GPU's physical capacity. Re-cast on every
+    # call rather than once at load time because these models are cached
+    # module-level singletons (get_clip_ensemble, _vae_extractor) reused
+    # across calls that may have different use_amp settings (e.g.
+    # orchestrate.py's choose_use_amp turns AMP off for small images) --
+    # a stale fp16 cast from an earlier AMP call would crash a later
+    # non-AMP call's un-autocasted forward passes (dtype mismatch, no
+    # autocast context to reconcile fp32 activations against fp16
+    # weights). The cast itself is just a dtype conversion of
+    # already-loaded weights (no recomputation), effectively free compared
+    # to the steps it runs before.
+    extractor_dtype = torch.float16 if amp_enabled else torch.float32
+    if clip_ensemble is not None:
+        for clip_ext in clip_ensemble:
+            clip_ext.to(extractor_dtype)
+    if vae_extractor is not None:
+        vae_extractor.to(extractor_dtype)
+
     original = load_image_tensor(original_path, size, device)
     style_target = load_image_tensor(style_target_path, size, device)
     target_grams = extractor.gram_matrices(style_target)
@@ -634,14 +685,18 @@ def cloak(
     # as the decoy for clip_transfer_loss/vae_transfer_loss, the same image
     # already driving the Gram-matrix style objective, so a single target
     # image coherently drives all three feature spaces this preset opts
-    # into instead of needing a separate decoy parameter.
+    # into instead of needing a separate decoy parameter. Wrapped in the
+    # same autocast context the training loop uses -- required now that
+    # the extractors above may be fp16 while style_target itself stays
+    # fp32 (autocast is what reconciles that, same as every per-step
+    # forward pass already does).
     clip_target_embeds = None
     if clip_ensemble is not None:
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
             clip_target_embeds = [clip_ext.embed(style_target) for clip_ext in clip_ensemble]
     vae_target_latent = None
     if vae_extractor is not None:
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled):
             vae_target_latent = vae_extractor.encode_latent(style_target)
 
     # Opt-in (default off -- see this parameter's callers/README before
@@ -736,6 +791,21 @@ def cloak(
     x_adv = (original + delta).clamp(0, 1)
     save_tensor_image(x_adv, output_path)
     print(f"[cloak] wrote {output_path}")
+
+    # Restore these cached singletons to fp32 before returning -- real bug,
+    # found live: leaving them in the fp16 state this call may have cast
+    # them to (see the cast above) meant any *other* code touching the same
+    # cached clip_ensemble/vae_extractor after this call returns (e.g. an
+    # evaluation script calling clip_ext.embed() directly, with no
+    # autocast context to reconcile fp32 activations against fp16 weights)
+    # crashed with a dtype-mismatch RuntimeError. fp32 is the safe default
+    # any caller should be able to assume; the next cloak() call re-casts
+    # to fp16 itself if it needs to (cheap, see that cast's own comment).
+    if clip_ensemble is not None:
+        for clip_ext in clip_ensemble:
+            clip_ext.to(torch.float32)
+    if vae_extractor is not None:
+        vae_extractor.to(torch.float32)
 
 
 if __name__ == "__main__":

@@ -617,10 +617,23 @@ than a real fix. Local quality was comparable to the 2-model result
 (weight=0.5: styleDriftScore=0.1562, -2.1%, clipSim=[0.997, 0.9952,
 0.9975]), so the 3rd model isn't excluded for a quality reason — its
 frozen weights simply don't leave enough headroom on 8GB hardware.
-fp16-casting the frozen CLIP/VGG models' weights (halving their static
-footprint — distinct from `torch.autocast`'s op-level-only mixed
-precision, which doesn't change static storage dtype) is the next attempt
-at making a 3rd model fit for real; not yet implemented.
+
+A third attempt tried fp16-casting the frozen CLIP/VGG models' weights
+(halving their static footprint — distinct from `torch.autocast`'s
+op-level-only mixed precision, which doesn't change static storage dtype)
+on top of the sequential-backward fix, on the theory that the remaining
+~500MB overage was the weights themselves. Real result: `cloak()` did
+complete without crashing this time, but VRAM stayed pegged near the same
+~95%+ ceiling and a single config (`weight=0.5`) alone ran 90+ minutes
+without finishing before being killed — fp16-casting the weights clearly
+wasn't sufficient by itself. Working theory: activation-graph and
+optimizer-state memory (which weight-halving doesn't touch), plus the
+overhead of keeping 3 architecturally distinct model graphs resident at
+once (VGG19 + LPIPS + 3 separate CLIP models, even at fp16), dominates on
+this 8GB card more than the frozen weights alone. **2 models is this
+hardware's practical ceiling for now** — a real fix for 3+ would need
+something bigger (gradient checkpointing on the CLIP forward passes, or
+simply a GPU with more VRAM), not attempted further in this session.
 
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 

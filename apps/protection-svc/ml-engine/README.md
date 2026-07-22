@@ -635,16 +635,76 @@ hardware's practical ceiling for now** — a real fix for 3+ would need
 something bigger (gradient checkpointing on the CLIP forward passes, or
 simply a GPU with more VRAM), not attempted further in this session.
 
+### Ensemble re-tested against real ChatGPT/Gemini — still negative, defense deprioritized (2026-07-22)
+
+The 2-model ensemble (deployed to production, see above) was re-tested the
+same way as the original single-model version: a real image cloaked with
+production `L3_ANTI_TRAIN` settings (fp16-cast weights, watermarked, the
+exact artifact a real user's browser would receive) was uploaded to actual
+ChatGPT and actual Gemini through their real consumer web UIs, alongside
+the unprotected original, both asked to redraw it in a different style.
+
+**Result: still no evidence of a protective effect.** ChatGPT kept the
+same overall composition for both but shifted the *protected* version's
+sky color/background more than the original's redraw — a real, visible
+difference, in the wrong direction (more altered, not less). Gemini
+redrew both images into a substantially different illustrated style
+regardless of protection status; the original-vs-protected difference in
+that case was within the range of normal generation-to-generation
+variance for the same prompt, giving no clear signal either way. Ensemble
+diversity (the standard adversarial-ML lever for better black-box
+transfer) did not produce a measurably different real-world outcome than
+the single-model version.
+
+**Decision: stop escalating the adversarial-perturbation approach for
+this specific threat.** The underlying limitation isn't a tuning problem
+this project can fix with a bigger ensemble or higher weight — it's the
+well-documented fact that white-box attacks against small open models
+transfer unreliably to large closed ones, and this project has no access
+to GPT-4o/Gemini's actual vision encoder to attack directly. Escalating
+further (bigger ensembles, higher perturbation weight, more aggressive
+noise) was considered and rejected: it runs into the same "analog hole"
+every image-protection scheme in this space eventually hits — any pixel
+pattern visible enough for a *human* to still recognize the artwork can
+be screenshotted, and a screenshot carries none of the original file's
+adversarial structure through to the re-upload, so no perturbation
+survives that path regardless of how strong it's made. Making the noise
+strong enough to survive a screenshot would also make it visible/
+damaging to the human viewer it's supposed to look normal to — pushing
+harder buys no reliable defense, only guaranteed quality loss.
+
+**Repositioning**: `clip_transfer_weight` stays in the codebase as a
+real, cheap, measured (against this project's own metrics), low-cost
+mechanism grounded in published research — but is no longer this
+project's primary answer to "can I stop someone from feeding my art to
+ChatGPT and asking it to redraw it." That threat is better addressed by
+this project's mechanisms that don't depend on fooling a specific closed
+model's internals: invisible watermarking + `detection-svc`'s evidence
+pipeline (real, verified end-to-end against the live production
+deployment — recovers the exact embedded payload, builds a signed
+evidence bundle) and on-chain registration, which together answer "can
+this be proven, after the fact, to be a copy of a specific registered
+work" — a claim this project can actually back with real, repeatable
+measurements, unlike inference-time editing prevention against an
+unknown closed model.
+
 ## What this PoC does not do (see PROJECT_DESIGN.md §12)
 
 - Concept-misalignment exists as opt-in code (`concept_misalign.py`,
   above) — a real GPU LoRA-training validation found no measurable
   protection effect, not just "not proven yet." Not on by default
   anywhere.
-- `clip_transfer_weight`'s chat-AI-editing defense (see the section
-  above) is enabled by default for all three presets but a real test
-  against actual ChatGPT/Gemini found it does not block editing, and may
-  make the AI's redraw *more* different from the original, not less.
+- `clip_transfer_weight`'s chat-AI-editing defense (see the sections
+  above) is enabled by default for all three presets but real tests
+  against actual ChatGPT/Gemini, with both a single-model and a 2-model
+  ensemble surrogate, found no evidence it blocks editing — one platform's
+  redraw diverged *more* from the original when protected, the other
+  showed no clear signal either way. Deprioritized as of 2026-07-22: not
+  represented to end users as a chat-AI-editing defense; this project's
+  actual answer to that threat is the watermark + evidence-pipeline +
+  on-chain-registration combination (post-hoc provable copying), not
+  pre-emptive editing prevention against a closed model this project
+  can't inspect.
 - EOT here only covers resize; JPEG recompression isn't part of the training
   loop (real JPEG encoding isn't differentiable — would need a differentiable
   JPEG approximation to include it in EOT, not implemented here).

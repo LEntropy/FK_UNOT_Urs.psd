@@ -150,3 +150,104 @@ def test_patch_case_rejects_transition_from_a_non_evidence_ready_automated_state
 def test_patch_unknown_case_is_404(client):
     resp = client.patch("/cases/case_does_not_exist", json={"status": "NOTIFIED"})
     assert resp.status_code == 404
+
+
+# _run_case_for_urls itself is stubbed out for every test above (see this
+# file's module docstring) -- none of them exercise the real wiring that
+# calls verify_c2pa(), builds the c2paDetection dict from its result, and
+# falls back to None on failure. These two tests call it directly instead,
+# mocking only its immediate dependencies (capture/is_likely_match/
+# detect_watermark/verify_c2pa/sign_bundle/write_json/write_pdf_best_effort),
+# so build_bundle's actual c2pa_result handling runs for real.
+class _FakeWatermarkResult:
+    def __init__(self):
+        self.recovered_hex = "deadbeef"
+        self.avg_confidence = 0.5
+        self.min_confidence = 0.5
+        self.bit_error_rate = 0.5
+        self.is_match = False  # phash alone drives is_match in these tests
+
+
+def _stub_common_run_case_deps(monkeypatch, tmp_path):
+    from evidence_capture import CapturedEvidence
+
+    async def fake_capture(url, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        image_path = out_dir / "candidate_image.png"
+        image_path.write_bytes(b"fake")
+        return CapturedEvidence(str(image_path), {"content-type": "image/png"}, None, 1_700_000_000.0)
+
+    captured_bundles = []
+
+    monkeypatch.setattr(server, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(server, "capture", fake_capture)
+    monkeypatch.setattr(server, "is_likely_match", lambda registered_hash, path, threshold: (True, 5))
+    monkeypatch.setattr(server, "detect_watermark", lambda path, hexpayload: _FakeWatermarkResult())
+    monkeypatch.setattr(server, "sign_bundle", lambda bundle: {"signature": "fake-sig", "publicKeyPem": "fake-pem", "algorithm": "ed25519"})
+    monkeypatch.setattr(server, "write_json", lambda bundle, path: captured_bundles.append(bundle))
+    monkeypatch.setattr(server, "write_pdf_best_effort", lambda bundle, path: None)
+    return captured_bundles
+
+
+def test_run_case_for_urls_wires_a_real_c2pa_match_into_the_bundle(monkeypatch, tmp_path):
+    from db import create_case, get_case
+    from c2pa_verify import C2paVerifyResult
+
+    captured_bundles = _stub_common_run_case_deps(monkeypatch, tmp_path)
+    fake_result = C2paVerifyResult(
+        manifest={
+            "active_manifest": "urn:c2pa:abc",
+            "manifests": {
+                "urn:c2pa:abc": {
+                    "assertions": [{"label": "com.dontai.ownership", "data": {"title": "t", "doNotTrain": True}}],
+                    "signature_info": {"issuer": "DONTAI"},
+                }
+            },
+        },
+        validation_issues=["signingCredential.untrusted: signing certificate untrusted"],
+    )
+    monkeypatch.setattr(server, "verify_c2pa", lambda path, fmt: fake_result)
+
+    case_id = "case_c2pa_wired_match"
+    create_case(server._db, case_id, "ast_abc", "report")
+
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert len(captured_bundles) == 1
+    c2pa_detection = captured_bundles[0]["c2paDetection"]
+    assert c2pa_detection == {
+        "hasManifest": True,
+        "signedByDontai": True,
+        "ownership": {"title": "t", "doNotTrain": True},
+        "validationIssues": ["signingCredential.untrusted: signing certificate untrusted"],
+    }
+
+    case = get_case(server._db, case_id)
+    assert case["status"] == "EVIDENCE_READY"
+
+
+def test_run_case_for_urls_falls_back_to_none_c2pa_when_verify_raises(monkeypatch, tmp_path):
+    """verify_c2pa can raise (rust-core binary missing, non-zero exit) --
+    real production behavior found live before this was wired in (see
+    c2pa_verify.py's module doc). A C2PA verification failure must not
+    block or fail the case; it should just show up as c2paDetection: None,
+    distinct from a real {"hasManifest": False, ...} result."""
+    from db import create_case, get_case
+
+    captured_bundles = _stub_common_run_case_deps(monkeypatch, tmp_path)
+
+    def raising_verify_c2pa(path, fmt):
+        raise RuntimeError("rust-core c2pa-verify failed: simulated failure")
+
+    monkeypatch.setattr(server, "verify_c2pa", raising_verify_c2pa)
+
+    case_id = "case_c2pa_wired_failure"
+    create_case(server._db, case_id, "ast_abc", "report")
+
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert len(captured_bundles) == 1
+    assert captured_bundles[0]["c2paDetection"] is None
+
+    case = get_case(server._db, case_id)
+    assert case["status"] == "EVIDENCE_READY"

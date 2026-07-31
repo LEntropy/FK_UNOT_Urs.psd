@@ -178,6 +178,12 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
     enabled: Boolean(caseId),
     refetchInterval: (query) =>
       query.state.data && query.state.data.status !== "OPEN" ? false : 2000,
+    // A scan/report result matters even if the user tabbed away while it
+    // ran (unlike, say, a feed refresh) -- react-query's own default
+    // pauses refetchInterval in a backgrounded tab, which would otherwise
+    // leave this stuck showing "진행 중" until the user comes back and
+    // triggers a refetch some other way.
+    refetchIntervalInBackground: true,
   });
 
   const evidenceQuery = useQuery({

@@ -8,10 +8,20 @@ import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
-vi.mock("../src/clients/protectionSvc.js", () => ({ suggestTags: vi.fn() }));
+vi.mock("../src/clients/protectionSvc.js", () => ({ suggestTags: vi.fn(), remeasureProtection: vi.fn() }));
+// encryptImageAtRest stays real (existing upload tests exercise it directly,
+// no live KMS server needed for wrapKey -- client-side only). Only
+// decryptToTempFile/cleanupTempFile are mocked: decryptToTempFile makes a
+// real unwrapKey network call to a live KMS server, which isn't available
+// in this test run.
+vi.mock("../src/crypto/imageEncryption.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/crypto/imageEncryption.js")>();
+  return { ...actual, decryptToTempFile: vi.fn(), cleanupTempFile: vi.fn() };
+});
 
 const { createApp } = await import("../src/app.js");
-const { suggestTags } = await import("../src/clients/protectionSvc.js");
+const { suggestTags, remeasureProtection } = await import("../src/clients/protectionSvc.js");
+const { decryptToTempFile, cleanupTempFile } = await import("../src/crypto/imageEncryption.js");
 
 function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof artworks.$inferInsert> = {}) {
   const now = new Date();
@@ -282,5 +292,64 @@ describe("POST /artworks/suggest-tags", () => {
       .attach("image", Buffer.from("bytes"), "fail.jpg");
 
     expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /artworks/:id/remeasure-protection", () => {
+  it("404s for an unknown artwork", async () => {
+    const db = createTestDb();
+    const res = await request(createApp(db)).post("/artworks/ast_missing/remeasure-protection");
+    expect(res.status).toBe(404);
+    expect(decryptToTempFile).not.toHaveBeenCalled();
+  });
+
+  it("400s when the artwork has no protected image yet", async () => {
+    const db = createTestDb();
+    seed(db); // status: UPLOADED, protectedImageUri unset
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/remeasure-protection");
+    expect(res.status).toBe(400);
+    expect(decryptToTempFile).not.toHaveBeenCalled();
+  });
+
+  it("decrypts the original, calls protection-svc against it and the real published image, and cleans up", async () => {
+    const db = createTestDb();
+    seed(db, { protectedImageUri: "/out/job_x/watermarked.png" });
+
+    vi.mocked(decryptToTempFile).mockResolvedValue("/tmp/dontai-decrypted-ast_1.png");
+    vi.mocked(remeasureProtection).mockResolvedValue({
+      styleDriftScore: 0.09,
+      styleSimilarityToOriginal: 0.87,
+      perceptualPsnrDb: 31.2,
+      perceptualRmse: 0.015,
+    });
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/remeasure-protection");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      styleDriftScore: 0.09,
+      styleSimilarityToOriginal: 0.87,
+      perceptualPsnrDb: 31.2,
+      perceptualRmse: 0.015,
+    });
+    expect(remeasureProtection).toHaveBeenCalledWith(
+      "/tmp/dontai-decrypted-ast_1.png",
+      "/out/job_x/watermarked.png",
+    );
+    expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
+  });
+
+  it("still cleans up the decrypted temp file when protection-svc's re-measurement fails", async () => {
+    const db = createTestDb();
+    seed(db, { protectedImageUri: "/out/job_x/watermarked.png" });
+
+    vi.mocked(decryptToTempFile).mockResolvedValue("/tmp/dontai-decrypted-ast_1.png");
+    vi.mocked(remeasureProtection).mockRejectedValue(new Error("GPU PC unreachable"));
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/remeasure-protection");
+
+    expect(res.status).toBe(502);
+    expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
   });
 });

@@ -8,6 +8,7 @@ import {
   getArtwork,
   listArtworks,
   suggestTags,
+  remeasureProtection,
   AssetServiceError,
 } from "../clients/assetService.js";
 import { signRenderUrl } from "../clients/deliveryGateway.js";
@@ -113,6 +114,22 @@ export function artworksRouter(): Router {
   router.get("/:id", async (req, res) => {
     try {
       res.json(await getArtwork(req.params.id));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Test Lab's "재실행" button -- a real SSH round trip to the GPU PC per
+  // call (remote_measure_existing_images), so gated to the artwork's own
+  // creator like the detection routes' scan/report are, unlike plain GET
+  // /:id which any authenticated user can view (community feed browsing).
+  router.post("/:id/remeasure-protection", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.json(await remeasureProtection(req.params.id));
     } catch (err) {
       forwardAssetServiceError(err, res);
     }

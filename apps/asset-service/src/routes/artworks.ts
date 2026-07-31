@@ -8,8 +8,8 @@ import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "../db/schema.js";
 import { runUploadPipeline } from "../orchestration.js";
-import { encryptImageAtRest } from "../crypto/imageEncryption.js";
-import { suggestTags } from "../clients/protectionSvc.js";
+import { encryptImageAtRest, decryptToTempFile, cleanupTempFile } from "../crypto/imageEncryption.js";
+import { suggestTags, remeasureProtection } from "../clients/protectionSvc.js";
 import { env } from "../env.js";
 import { attachAssetVersions } from "../lib/attachAssetVersions.js";
 
@@ -206,6 +206,46 @@ export function artworksRouter(db: Db): Router {
     const ownership = db.select().from(ownershipRecords).where(eq(ownershipRecords.artworkId, artwork.id)).all();
 
     res.json({ ...artwork, assetVersions: versions, ownershipRecords: ownership });
+  });
+
+  // Test Lab's "재실행" button (apps/web's TestLabPage) -- a live re-run of
+  // the styleDriftScore/etc measurement stored on the row at upload time,
+  // not a rewrite of that stored value (this never UPDATEs the artworks
+  // table). Compares the real original (decrypted on demand -- it's
+  // envelope-encrypted at rest, see crypto/imageEncryption.ts) against the
+  // artwork's actual *published* image (protectedImageUri: the final
+  // watermarked+C2PA-signed file, not protection-svc's own intermediate
+  // pre-watermark cloaked.png) -- arguably the more honest comparison
+  // anyway, since that published file is what would actually get
+  // redistributed/trained on, not an internal intermediate nobody else
+  // ever sees.
+  router.post("/:id/remeasure-protection", async (req, res) => {
+    const artwork = db.select().from(artworks).where(eq(artworks.id, req.params.id)).get();
+    if (!artwork) {
+      return res.status(404).json({ error: `no artwork ${req.params.id}` });
+    }
+    if (!artwork.protectedImageUri) {
+      return res.status(400).json({ error: "artwork has no protected image yet" });
+    }
+
+    let decryptedTempPath: string | undefined;
+    try {
+      decryptedTempPath = await decryptToTempFile(
+        {
+          encryptedImagePath: artwork.encryptedImagePath,
+          encryptedDekBase64: artwork.encryptedDekBase64,
+          encryptionIv: artwork.encryptionIv,
+          encryptionAuthTag: artwork.encryptionAuthTag,
+        },
+        artwork.id,
+      );
+      const metrics = await remeasureProtection(decryptedTempPath, artwork.protectedImageUri);
+      res.json(metrics);
+    } catch (err) {
+      res.status(502).json({ error: `re-measurement failed: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      if (decryptedTempPath) cleanupTempFile(decryptedTempPath);
+    }
   });
 
   return router;

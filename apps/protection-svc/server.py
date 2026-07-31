@@ -45,11 +45,17 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
-from orchestrate import ML_ENGINE_DIR, PRESETS, choose_processing_size, protect  # noqa: E402
+from orchestrate import ML_ENGINE_DIR, PRESETS, USE_REMOTE_GPU, choose_processing_size, protect  # noqa: E402
 import jobs_db  # noqa: E402
+
+if USE_REMOTE_GPU:
+    from remote_gpu import remote_measure_existing_images
 
 sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 from tag_suggest import suggest_tags  # noqa: E402
+
+if not USE_REMOTE_GPU:
+    from evaluate import compute_protection_metrics
 
 app = FastAPI(title="protection-svc", version="0.1.0")
 
@@ -110,6 +116,19 @@ class SuggestTagsRequest(BaseModel):
     topK: int = 10
 
 
+class RemeasureRequest(BaseModel):
+    originalImageUri: str
+    cloakedImageUri: str
+    # Same default as ProtectRequest's own styleTargetUri handling
+    # (_run_job above) -- real uploads never pass a per-artwork style
+    # target (see orchestrate.py's own note that auto-selection is a
+    # no-op under USE_REMOTE_GPU), so the fixed default asset is what
+    # every real protect() job actually compared against, and reusing it
+    # here keeps a re-test comparable to the original measurement.
+    styleTargetUri: Optional[str] = None
+    size: int = 256
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -126,6 +145,46 @@ def suggest_tags_endpoint(req: SuggestTagsRequest):
 
     tags = suggest_tags(req.imageUri, top_k=req.topK)
     return {"tags": tags}
+
+
+@app.post("/remeasure")
+def remeasure(req: RemeasureRequest):
+    """Live, synchronous re-run of the "테스트 랩" 보호 강도 테스트 tab's
+    protection-strength measurement, on demand -- distinct from the
+    styleDriftScore/perceptualPsnrDb/styleSimilarityToOriginal stored on
+    the artwork at upload time (protect()'s own one-shot measurement).
+    Fast (a few VGG19 forward passes plus one SSH round trip under
+    USE_REMOTE_GPU, no cloak/training step), so this runs synchronously
+    rather than through the job-based /protect flow.
+    """
+    if not Path(req.originalImageUri).exists():
+        raise HTTPException(400, f"originalImageUri {req.originalImageUri!r} not found")
+    if not Path(req.cloakedImageUri).exists():
+        raise HTTPException(400, f"cloakedImageUri {req.cloakedImageUri!r} not found")
+
+    style_target = req.styleTargetUri or str(ML_ENGINE_DIR / "out" / "style_target.png")
+    if not Path(style_target).exists():
+        raise HTTPException(400, f"styleTargetUri {style_target!r} not found")
+
+    try:
+        if USE_REMOTE_GPU:
+            metrics = remote_measure_existing_images(
+                original_path=req.originalImageUri,
+                cloaked_path=req.cloakedImageUri,
+                style_target_path=style_target,
+                size=req.size,
+            )
+        else:
+            metrics = compute_protection_metrics(
+                original_path=req.originalImageUri,
+                cloaked_path=req.cloakedImageUri,
+                style_target_path=style_target,
+                size=req.size,
+            )
+    except Exception as exc:  # noqa: BLE001 -- surfaced to the caller as a real error, unlike protect()'s own best-effort metrics step (there, a missing measurement shouldn't fail an upload; here, the measurement IS the whole request)
+        raise HTTPException(502, f"re-measurement failed: {exc}") from None
+
+    return metrics
 
 
 @app.post("/protect", status_code=202)

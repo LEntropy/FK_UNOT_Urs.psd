@@ -101,6 +101,82 @@ def test_happy_path_reaches_completed(client, real_image, monkeypatch):
     assert final["appliedPreset"] == "L1_PREVIEW"
 
 
+def test_remeasure_returns_metrics_for_the_given_original_and_cloaked_images(client, real_image, tmp_path, monkeypatch):
+    cloaked = tmp_path / "cloaked.png"
+    from PIL import Image
+
+    Image.new("RGB", (64, 48), (50, 200, 50)).save(cloaked)
+
+    def fake_metrics(*, original_path, cloaked_path, style_target_path, size):
+        assert original_path == real_image
+        assert cloaked_path == str(cloaked)
+        assert size == 256
+        return {
+            "styleDriftScore": 0.12,
+            "styleSimilarityToOriginal": 0.9,
+            "perceptualPsnrDb": 33.0,
+            "perceptualRmse": 0.01,
+        }
+
+    monkeypatch.setattr(server, "compute_protection_metrics", fake_metrics)
+
+    res = client.post(
+        "/remeasure",
+        json={"originalImageUri": real_image, "cloakedImageUri": str(cloaked)},
+    )
+    assert res.status_code == 200
+    assert res.json() == {
+        "styleDriftScore": 0.12,
+        "styleSimilarityToOriginal": 0.9,
+        "perceptualPsnrDb": 33.0,
+        "perceptualRmse": 0.01,
+    }
+
+
+def test_remeasure_400s_when_original_image_is_missing(client, tmp_path):
+    cloaked = tmp_path / "cloaked.png"
+    from PIL import Image
+
+    Image.new("RGB", (64, 48), (50, 200, 50)).save(cloaked)
+
+    res = client.post(
+        "/remeasure",
+        json={"originalImageUri": str(tmp_path / "does_not_exist.png"), "cloakedImageUri": str(cloaked)},
+    )
+    assert res.status_code == 400
+
+
+def test_remeasure_400s_when_cloaked_image_is_missing(client, real_image, tmp_path):
+    res = client.post(
+        "/remeasure",
+        json={"originalImageUri": real_image, "cloakedImageUri": str(tmp_path / "does_not_exist.png")},
+    )
+    assert res.status_code == 400
+
+
+def test_remeasure_surfaces_a_measurement_failure_as_a_real_502_not_a_silent_null(client, real_image, tmp_path, monkeypatch):
+    """Unlike protect()'s own best-effort protection_metrics step (a missing
+    number there shouldn't fail an otherwise-successful upload), a failure
+    here IS the whole point of the request -- the caller should see a real
+    error, not {} or nulls."""
+    cloaked = tmp_path / "cloaked.png"
+    from PIL import Image
+
+    Image.new("RGB", (64, 48), (50, 200, 50)).save(cloaked)
+
+    def failing_metrics(**kwargs):
+        raise RuntimeError("GPU PC unreachable")
+
+    monkeypatch.setattr(server, "compute_protection_metrics", failing_metrics)
+
+    res = client.post(
+        "/remeasure",
+        json={"originalImageUri": real_image, "cloakedImageUri": str(cloaked)},
+    )
+    assert res.status_code == 502
+    assert "GPU PC unreachable" in res.json()["detail"]
+
+
 def test_protect_failure_is_reported_as_failed_status_not_a_500(client, real_image, monkeypatch):
     def fake_protect(**kwargs):
         raise RuntimeError("GPU out of memory")

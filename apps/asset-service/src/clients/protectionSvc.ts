@@ -72,6 +72,37 @@ export async function suggestTags(imageUri: string, topK = 10): Promise<Suggeste
   });
 }
 
+export interface RemeasureResult {
+  styleDriftScore: number | null;
+  styleSimilarityToOriginal: number | null;
+  perceptualPsnrDb: number | null;
+  perceptualRmse: number | null;
+}
+
+/**
+ * Live counterpart to the styleDriftScore/etc stored on the artwork row at
+ * upload time (protect()'s own one-shot measurement) -- backs the Test
+ * Lab's "재실행" button. Synchronous, unlike createProtectJob/pollProtectJob:
+ * server.py's /remeasure is a few VGG19 forward passes plus one SSH round
+ * trip under USE_REMOTE_GPU, not a cloak/training job.
+ */
+export async function remeasureProtection(
+  originalImageUri: string,
+  cloakedImageUri: string,
+): Promise<RemeasureResult> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/remeasure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ originalImageUri, cloakedImageUri }),
+    });
+    if (!res.ok) {
+      throw new Error(`protection-svc POST /remeasure failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
 export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: string; status: string }> {
   return withRetry(async () => {
     const res = await fetch(`${env.PROTECTION_SVC_URL}/protect`, {

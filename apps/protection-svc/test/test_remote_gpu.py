@@ -81,3 +81,59 @@ def test_remote_compute_metrics_raises_on_nonzero_exit(monkeypatch):
 
     with pytest.raises(RuntimeError):
         remote_gpu.remote_compute_metrics("input.jpg", "target.png")
+
+
+def test_remote_measure_existing_images_uploads_under_a_fresh_unique_tag_and_cleans_up(monkeypatch):
+    """Unlike remote_compute_metrics() (reuses remote_cloak's fixed shared
+    filenames, only safe right after that same job), this is called
+    on-demand, arbitrarily long after the original job -- must not reuse
+    those same fixed names, or a concurrent real upload's remote_cloak()
+    could race it (or it could read back stale/wrong data)."""
+    calls = []
+
+    def fake_run(args):
+        calls.append(list(args))
+        if args[0] == "ssh" and "evaluate.py" in args[-1]:
+            return _FakeCompletedProcess(stdout='{"styleDriftScore": 0.05}')
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: fake_run(args))
+
+    result = remote_gpu.remote_measure_existing_images("orig.png", "cloaked.png", "target.png", size=256)
+
+    assert result == {"styleDriftScore": 0.05}
+
+    scp_calls = [c for c in calls if c[0] == "scp"]
+    assert len(scp_calls) == 3  # original, cloaked, style target -- all freshly uploaded, none reused
+
+    # All three uploads (and the ssh eval command) must share the exact same
+    # uuid tag, and that tag must not be remote_cloak()'s own fixed
+    # "_remote_job_..." names.
+    remote_dests = [c[-1] for c in scp_calls]
+    assert all("_retest_" in dest for dest in remote_dests)
+    tags = {dest.split("_retest_")[1].split("_")[0] for dest in remote_dests}
+    assert len(tags) == 1  # same tag across all three uploads
+    assert not any("_remote_job_" in dest for dest in remote_dests)
+
+    ssh_calls = [c for c in calls if c[0] == "ssh"]
+    assert len(ssh_calls) == 2  # the evaluate.py run, plus the best-effort cleanup
+    assert "evaluate.py" in ssh_calls[0][-1]
+    assert "Remove-Item" in ssh_calls[1][-1]
+
+
+def test_remote_measure_existing_images_still_cleans_up_after_a_failed_ssh_call(monkeypatch):
+    calls = []
+
+    def fake_run(args):
+        calls.append(list(args))
+        if args[0] == "ssh" and "evaluate.py" in args[-1]:
+            return _FakeCompletedProcess(returncode=1, stderr="GPU PC unreachable")
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: fake_run(args))
+
+    with pytest.raises(RuntimeError):
+        remote_gpu.remote_measure_existing_images("orig.png", "cloaked.png", "target.png")
+
+    cleanup_calls = [c for c in calls if c[0] == "ssh" and "Remove-Item" in c[-1]]
+    assert len(cleanup_calls) == 1

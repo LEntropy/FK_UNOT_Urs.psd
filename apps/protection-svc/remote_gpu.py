@@ -17,6 +17,7 @@ hardcoding the GPU PC's LAN address here.
 
 import os
 import subprocess
+import uuid
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -135,6 +136,55 @@ def remote_compute_metrics(original_path: str, style_target_path: str, size: int
     import json
 
     return json.loads(result.stdout)
+
+
+def remote_measure_existing_images(
+    original_path: str, cloaked_path: str, style_target_path: str, size: int = 256
+) -> dict:
+    """Live, on-demand counterpart to remote_compute_metrics() -- that
+    function only works right after remote_cloak() for the same job (it
+    reuses remote_cloak's fixed, shared remote filenames). This is for the
+    Test Lab's "재실행" (re-run) button: asset-service already has a
+    *finished* artwork's decrypted original and its already-published
+    protected image sitting on local disk, arbitrarily long after the
+    original protect() job ran -- calling remote_compute_metrics() at that
+    point would either race a concurrent real upload's own use of those
+    same shared filenames, or read back whatever that job happens to have
+    left there. Uploads its own three files under a fresh uuid-tagged name
+    instead, so it can never collide with an in-flight protect() job (or
+    another concurrent re-test), and best-effort deletes them again
+    afterward -- a re-test's temp files have no reason to linger on the
+    GPU PC once the measurement is done, unlike remote_cloak()'s output
+    (which callers still need to scp back).
+    """
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _connection()
+    tag = uuid.uuid4().hex[:12]
+    remote_original = f"{gpu_remote_dir}/out/_retest_{tag}_original{os.path.splitext(original_path)[1]}"
+    remote_cloaked = f"{gpu_remote_dir}/out/_retest_{tag}_cloaked{os.path.splitext(cloaked_path)[1]}"
+    remote_style = f"{gpu_remote_dir}/out/_retest_{tag}_style{os.path.splitext(style_target_path)[1]}"
+
+    try:
+        _run("scp", *scp_opts, original_path, f"{remote}:{remote_original}")
+        _run("scp", *scp_opts, cloaked_path, f"{remote}:{remote_cloaked}")
+        _run("scp", *scp_opts, style_target_path, f"{remote}:{remote_style}")
+
+        remote_cmd = (
+            f"cd '{gpu_remote_dir}'; "
+            f".\\.venv\\Scripts\\python.exe src/evaluate.py "
+            f"--original '{remote_original}' --cloaked '{remote_cloaked}' "
+            f"--style-target '{remote_style}' --size {size} --json"
+        )
+        result = _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
+
+        import json
+
+        return json.loads(result.stdout)
+    finally:
+        try:
+            cleanup_cmd = f"Remove-Item -Force '{remote_original}','{remote_cloaked}','{remote_style}' -ErrorAction SilentlyContinue"
+            _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{cleanup_cmd}"')
+        except RuntimeError:
+            pass  # best-effort -- a leftover temp file on the GPU PC isn't worth failing the request over
 
 
 def remote_upscale(input_path: str, output_path: str, target_width: int, target_height: int) -> None:

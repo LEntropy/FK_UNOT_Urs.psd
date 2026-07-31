@@ -100,6 +100,25 @@ export async function listArtworks(creatorId: string) {
   return body;
 }
 
+export interface RemeasureResult {
+  styleDriftScore: number | null;
+  styleSimilarityToOriginal: number | null;
+  perceptualPsnrDb: number | null;
+  perceptualRmse: number | null;
+}
+
+/** Thin pass-through to asset-service's own POST /:id/remeasure-protection (the Test Lab's "재실행" button). */
+export async function remeasureProtection(id: string): Promise<RemeasureResult> {
+  const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/${encodeURIComponent(id)}/remeasure-protection`, {
+    method: "POST",
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    throw new AssetServiceError(res.status, body);
+  }
+  return body;
+}
+
 export async function getArtwork(id: string) {
   const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/${encodeURIComponent(id)}`);
   const body = await res.json();

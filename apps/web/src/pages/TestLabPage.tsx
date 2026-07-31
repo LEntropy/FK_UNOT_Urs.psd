@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import * as delivery from "../api/delivery";
 import * as detection from "../api/detection";
+import * as protection from "../api/protection";
+import type { RemeasureResult } from "../api/protection";
 import type { Artwork, DetectionCase, EvidenceBundle } from "../api/types";
 import { ArtworkImage } from "../components/ArtworkImage";
 
@@ -94,7 +96,10 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 
 function ProtectionTest({ artwork }: { artwork: Artwork }) {
   const hasMeasurement = typeof artwork.styleDriftScore === "number";
-  const passes = hasMeasurement && (artwork.styleDriftScore as number) > STYLE_DRIFT_PASS_THRESHOLD;
+
+  const remeasure = useMutation({
+    mutationFn: () => protection.remeasureProtection(artwork.id),
+  });
 
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950/40 px-4 py-4">
@@ -105,44 +110,100 @@ function ProtectionTest({ artwork }: { artwork: Artwork }) {
       </p>
 
       {!hasMeasurement && (
-        <p className="rounded border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-400">
+        <p className="mb-4 rounded border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-400">
           이 작품은 보호 효과 측정값이 저장되어 있지 않습니다 (측정이 스킵되었거나 이전 버전으로 처리된 작품일 수
           있어요).
         </p>
       )}
 
       {hasMeasurement && (
-        <>
-          <div
-            className={`mb-4 flex items-center gap-2 rounded px-3 py-2 text-sm font-medium ${
+        <MeasurementCard
+          title="업로드 시 측정값"
+          styleDriftScore={artwork.styleDriftScore as number}
+          perceptualPsnrDb={artwork.perceptualPsnrDb}
+          styleSimilarityToOriginal={artwork.styleSimilarityToOriginal}
+        />
+      )}
+
+      <div className="mt-4 border-t border-neutral-800 pt-4">
+        <button
+          onClick={() => remeasure.mutate()}
+          disabled={remeasure.isPending}
+          className="rounded bg-neutral-100 px-3 py-2 text-sm font-medium text-neutral-900 disabled:opacity-50"
+        >
+          {remeasure.isPending ? "재측정 중... (GPU에 위임, 몇 초 걸려요)" : "지금 다시 실행"}
+        </button>
+        <p className="mt-1 text-xs text-neutral-500">
+          저장된 값을 덮어쓰지 않고, 원본을 그때그때 복호화해서 실제로 지금 배포 중인 이미지로 다시 측정해요.
+        </p>
+
+        {remeasure.isError && (
+          <p className="mt-3 text-sm text-red-400">
+            재측정에 실패했습니다 ({remeasure.error instanceof Error ? remeasure.error.message : "알 수 없는 오류"}).
+          </p>
+        )}
+
+        {remeasure.isSuccess && (
+          <div className="mt-3">
+            <MeasurementCard
+              title="방금 재실행한 결과 (라이브)"
+              styleDriftScore={remeasure.data.styleDriftScore}
+              perceptualPsnrDb={remeasure.data.perceptualPsnrDb}
+              styleSimilarityToOriginal={remeasure.data.styleSimilarityToOriginal}
+              accent
+            />
+          </div>
+        )}
+      </div>
+
+      <p className="mt-4 text-xs text-neutral-500">
+        참고: 이 수치는 실제 LoRA 재학습 없이 스타일 특징 거리만 비교한 값이에요. 우리 팀이 실제 GPU로 LoRA를
+        재학습시켜 검증한 결과에서는, 이 효과가 이미지에 따라 약하게 나타나기도 한다는 점을 확인했습니다 (완벽한
+        차단을 보장하지 않음).
+      </p>
+    </div>
+  );
+}
+
+function MeasurementCard({
+  title,
+  styleDriftScore,
+  perceptualPsnrDb,
+  styleSimilarityToOriginal,
+  accent = false,
+}: {
+  title: string;
+  styleDriftScore: RemeasureResult["styleDriftScore"];
+  perceptualPsnrDb: RemeasureResult["perceptualPsnrDb"];
+  styleSimilarityToOriginal: RemeasureResult["styleSimilarityToOriginal"];
+  accent?: boolean;
+}) {
+  const passes = typeof styleDriftScore === "number" && styleDriftScore > STYLE_DRIFT_PASS_THRESHOLD;
+
+  return (
+    <div className={`rounded border px-3 py-3 ${accent ? "border-blue-900 bg-blue-950/20" : "border-neutral-800"}`}>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-medium text-neutral-400">{title}</span>
+        {typeof styleDriftScore === "number" && (
+          <span
+            className={`rounded px-2 py-0.5 text-xs font-medium ${
               passes ? "bg-green-900/40 text-green-300" : "bg-amber-900/40 text-amber-300"
             }`}
           >
-            {passes ? "✓ 측정상 유의미한 변화 확인됨" : "△ 변화가 측정됐지만 약한 편이에요"}
-          </div>
-
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-neutral-400">화풍 인식 변화도 (styleDriftScore)</dt>
-            <dd className="font-mono">{(artwork.styleDriftScore as number).toFixed(4)}</dd>
-            <dt className="text-neutral-400">원본과의 시각적 유사도 (PSNR)</dt>
-            <dd className="font-mono">
-              {typeof artwork.perceptualPsnrDb === "number" ? `${artwork.perceptualPsnrDb.toFixed(1)} dB` : "측정 안 됨"}
-            </dd>
-            <dt className="text-neutral-400">원본 화풍과의 유사도</dt>
-            <dd className="font-mono">
-              {typeof artwork.styleSimilarityToOriginal === "number"
-                ? artwork.styleSimilarityToOriginal.toFixed(4)
-                : "측정 안 됨"}
-            </dd>
-          </dl>
-
-          <p className="mt-4 text-xs text-neutral-500">
-            참고: 이 수치는 실제 LoRA 재학습 없이 스타일 특징 거리만 비교한 값이에요. 우리 팀이 실제 GPU로 LoRA를
-            재학습시켜 검증한 결과에서는, 이 효과가 이미지에 따라 약하게 나타나기도 한다는 점을 확인했습니다 (완벽한
-            차단을 보장하지 않음).
-          </p>
-        </>
-      )}
+            {passes ? "✓ 유의미한 변화" : "△ 약한 변화"}
+          </span>
+        )}
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dt className="text-neutral-400">화풍 인식 변화도 (styleDriftScore)</dt>
+        <dd className="font-mono">{typeof styleDriftScore === "number" ? styleDriftScore.toFixed(4) : "측정 안 됨"}</dd>
+        <dt className="text-neutral-400">원본과의 시각적 유사도 (PSNR)</dt>
+        <dd className="font-mono">{typeof perceptualPsnrDb === "number" ? `${perceptualPsnrDb.toFixed(1)} dB` : "측정 안 됨"}</dd>
+        <dt className="text-neutral-400">원본 화풍과의 유사도</dt>
+        <dd className="font-mono">
+          {typeof styleSimilarityToOriginal === "number" ? styleSimilarityToOriginal.toFixed(4) : "측정 안 됨"}
+        </dd>
+      </dl>
     </div>
   );
 }

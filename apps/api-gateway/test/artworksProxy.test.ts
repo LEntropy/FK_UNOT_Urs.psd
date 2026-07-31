@@ -9,6 +9,7 @@ vi.mock("../src/clients/assetService.js", () => ({
   listArtworks: vi.fn(),
   getArtwork: vi.fn(),
   suggestTags: vi.fn(),
+  remeasureProtection: vi.fn(),
   AssetServiceError: class AssetServiceError extends Error {
     constructor(public status: number, public body: unknown) {
       super("asset-service request failed");
@@ -17,7 +18,7 @@ vi.mock("../src/clients/assetService.js", () => ({
 }));
 vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }));
 
-const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, suggestTags, AssetServiceError } = await import("../src/clients/assetService.js");
+const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, suggestTags, remeasureProtection, AssetServiceError } = await import("../src/clients/assetService.js");
 const { signRenderUrl } = await import("../src/clients/deliveryGateway.js");
 
 beforeEach(() => {
@@ -222,6 +223,66 @@ describe("POST /artworks/suggest-tags", () => {
       .post("/artworks/suggest-tags")
       .set("Authorization", `Bearer ${accessToken}`)
       .attach("image", Buffer.from("bytes"), "x.jpg");
+
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /artworks/:id/remeasure-protection", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).post("/artworks/ast_1/remeasure-protection");
+    expect(res.status).toBe(401);
+    expect(remeasureProtection).not.toHaveBeenCalled();
+  });
+
+  it("403s when the caller isn't this artwork's creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .post("/artworks/ast_1/remeasure-protection")
+      .set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(403);
+    expect(remeasureProtection).not.toHaveBeenCalled();
+  });
+
+  it("triggers a real re-measurement for the artwork's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(remeasureProtection).mockResolvedValue({
+      styleDriftScore: 0.09,
+      styleSimilarityToOriginal: 0.87,
+      perceptualPsnrDb: 31.2,
+      perceptualRmse: 0.015,
+    });
+
+    const res = await request(app)
+      .post("/artworks/ast_1/remeasure-protection")
+      .set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      styleDriftScore: 0.09,
+      styleSimilarityToOriginal: 0.87,
+      perceptualPsnrDb: 31.2,
+      perceptualRmse: 0.015,
+    });
+    expect(remeasureProtection).toHaveBeenCalledWith("ast_1");
+  });
+
+  it("forwards asset-service errors with the same status code", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(remeasureProtection).mockRejectedValue(new AssetServiceError(502, { error: "re-measurement failed" }));
+
+    const res = await request(app)
+      .post("/artworks/ast_1/remeasure-protection")
+      .set("Authorization", `Bearer ${accessToken}`);
 
     expect(res.status).toBe(502);
   });

@@ -5,6 +5,12 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default("./data/api-gateway.db"),
   PORT: z.coerce.number().default(4000),
   ASSET_SERVICE_URL: z.string().url().default("http://localhost:3002"),
+  // detection-svc (apps/detection-svc) -- the "테스트" tab's 추적·증빙 test
+  // proxies scan/report/case/evidence calls through here the same way
+  // artworks.ts proxies asset-service, so the frontend never talks to
+  // detection-svc directly (it has no auth of its own, same reasoning as
+  // asset-service).
+  DETECTION_SERVICE_URL: z.string().url().default("http://localhost:8003"),
   // Delivery Gateway (apps/delivery-gateway): this service is the only
   // caller of its /internal/sign endpoint -- see that service's README's
   // trust-boundary note. The browser then hits the returned signed URL on

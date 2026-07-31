@@ -9,6 +9,7 @@ import { FeedPage } from "./pages/FeedPage";
 import { ModerationPage } from "./pages/ModerationPage";
 import { ArtworkDetailPage } from "./pages/ArtworkDetailPage";
 import { OAuthCallbackPage } from "./pages/OAuthCallbackPage";
+import { TestLabPage } from "./pages/TestLabPage";
 
 export function App() {
   return (
@@ -24,6 +25,7 @@ export function App() {
             <Route path="/my-artworks" element={<GalleryPage />} />
             <Route path="/moderation" element={<ModerationPage />} />
             <Route path="/upload" element={<UploadPage />} />
+            <Route path="/test-lab" element={<TestLabPage />} />
             <Route path="/artworks/:id" element={<ArtworkDetailPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

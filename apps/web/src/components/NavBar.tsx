@@ -23,6 +23,9 @@ export function NavBar() {
             <Link to="/my-artworks" className="hover:underline">
               내 작품
             </Link>
+            <Link to="/test-lab" className="hover:underline">
+              테스트
+            </Link>
             {(user.role === "MODERATOR" || user.role === "ADMIN") && (
               <Link to="/moderation" className="hover:underline">
                 모더레이션

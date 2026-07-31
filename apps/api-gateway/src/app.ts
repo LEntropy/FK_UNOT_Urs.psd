@@ -7,6 +7,7 @@ import { meRouter } from "./routes/me.js";
 import { artworksRouter } from "./routes/artworks.js";
 import { communityRouter } from "./routes/community.js";
 import { internalRouter } from "./routes/internal.js";
+import { detectionRouter } from "./routes/detection.js";
 
 export function createApp(db: Db) {
   const app = express();
@@ -21,15 +22,27 @@ export function createApp(db: Db) {
   app.use("/auth", oauthRouter(db)); // /auth/google, /auth/kakao (+ /callback)
   app.use("/me", meRouter(db));
   app.use("/artworks", artworksRouter());
+  // internalRouter has no auth of its own (network-level trust boundary,
+  // see its own doc) -- must be mounted before detectionRouter/
+  // communityRouter below, both of which apply requireAuth via router.use()
+  // with no path prefix. That runs unconditionally for *every* request that
+  // reaches the router, matched route or not, so mounting either of them
+  // first would 401 /internal/sign-evidence before it ever reached its own
+  // handler (a real bug, caught by evidenceSigning.test.ts failing once
+  // detectionRouter was briefly mounted ahead of this).
+  app.use(internalRouter());
+  // detectionRouter owns /artworks/:id/scan, /artworks/:id/report, and
+  // /detection-cases/:id/... -- mounted at root (like communityRouter
+  // below) since it adds sub-paths under /artworks rather than owning the
+  // whole prefix.
+  app.use(detectionRouter());
   // communityRouter registers its own /artworks/:id/..., /users/:id/...,
   // /feed, /me/..., /collections, /moderation sub-paths -- mounted at root
   // since it owns multiple top-level prefixes, not just one (same reason as
-  // asset-service's own community router).
-  // Registered before communityRouter, which mounts its own requireAuth
-  // via router.use() with no path prefix -- that runs unconditionally for
-  // any request still unmatched by an earlier route, so a router mounted
-  // after it would otherwise 401 before ever reaching its own handlers.
-  app.use(internalRouter());
+  // asset-service's own community router). Must stay last among the
+  // no-path-prefix routers for the same reason internalRouter had to come
+  // first: its own requireAuth would otherwise swallow anything mounted
+  // after it.
   app.use(communityRouter());
 
   return app;

@@ -157,6 +157,18 @@ if __name__ == "__main__":
     parser.add_argument("--cloaked", default="out/cloaked.png")
     parser.add_argument("--style-target", default="out/style_target.png")
     parser.add_argument("--size", type=int, default=256)
+    # Machine-readable counterpart to evaluate()'s human-readable printout --
+    # added so remote_gpu.py's remote_compute_metrics() can invoke this CLI
+    # over SSH and parse the result, the same way orchestrate.py already
+    # calls compute_protection_metrics() in-process on a non-remote-GPU
+    # deployment. Printed alone (no other output) so a caller can just
+    # json.loads() stdout directly.
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    evaluate(args.original, args.cloaked, args.style_target, args.size)
+    if args.json:
+        import json
+
+        print(json.dumps(compute_protection_metrics(args.original, args.cloaked, args.style_target, args.size)))
+    else:
+        evaluate(args.original, args.cloaked, args.style_target, args.size)

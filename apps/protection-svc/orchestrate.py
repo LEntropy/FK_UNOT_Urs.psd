@@ -79,7 +79,7 @@ from perceptual_hash import compute_perceptual_hash_from_path  # noqa: E402
 USE_REMOTE_GPU = os.environ.get("USE_REMOTE_GPU") == "1"
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_cloak, remote_upscale
+    from remote_gpu import remote_cloak, remote_compute_metrics, remote_upscale
 else:
     from style_cloak import cloak
 
@@ -349,27 +349,37 @@ def protect(
     # after style-cloak, before any concept-misalign step further perturbs
     # cloaked_path -- this is specifically the style-drift number
     # style_cloak.py's own optimization target maps to, not a mix of two
-    # different mechanisms' effects. Local-only (needs a VGG19 forward pass,
-    # same reason concept-misalign and auto-target-selection above are
-    # local-only): under USE_REMOTE_GPU this machine may have no usable
-    # local torch at all, so this is skipped, not attempted and silently
-    # wrong. Non-fatal either way -- a real upload succeeding is more
-    # important than this nice-to-have number, so any failure here (missing
-    # torch, OOM, whatever) is logged and the pipeline continues without it.
+    # different mechanisms' effects. Needs a VGG19 forward pass, so under
+    # USE_REMOTE_GPU this delegates to the GPU PC too (remote_compute_metrics
+    # reuses the exact files remote_cloak() already uploaded/downloaded
+    # there -- no extra transfer) instead of the old behavior of silently
+    # skipping this measurement entirely on a Pi with no local torch worth
+    # relying on, which left styleDriftScore/perceptualPsnrDb/
+    # styleSimilarityToOriginal permanently null for every real upload on
+    # that deployment. Non-fatal either way -- a real upload succeeding is
+    # more important than this nice-to-have number, so any failure here
+    # (GPU PC unreachable, missing torch, OOM, whatever) is logged and the
+    # pipeline continues without it.
     protection_metrics: dict = {}
-    if not USE_REMOTE_GPU:
-        try:
+    try:
+        print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
+        if USE_REMOTE_GPU:
+            protection_metrics = remote_compute_metrics(
+                original_path=input_path,
+                style_target_path=style_target_path,
+                size=size,
+            )
+        else:
             from evaluate import compute_protection_metrics
 
-            print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
             protection_metrics = compute_protection_metrics(
                 original_path=input_path,
                 cloaked_path=str(cloaked_path),
                 style_target_path=style_target_path,
                 size=size,
             )
-        except Exception as exc:  # noqa: BLE001 -- a missing metric shouldn't fail a real upload
-            print(f"[orchestrate] protection-metrics measurement failed, continuing without it: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001 -- a missing metric shouldn't fail a real upload
+        print(f"[orchestrate] protection-metrics measurement failed, continuing without it: {exc}", flush=True)
 
     # Concept Misalignment Layer (PHASE4_SCOPING.md §1, PROJECT_DESIGN.md
     # §3-3 layer [3]) -- opt-in only, off unless a caller explicitly passes

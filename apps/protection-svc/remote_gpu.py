@@ -47,10 +47,24 @@ def _connection():
     return gpu_remote_dir, remote, ssh_opts, scp_opts
 
 
-def _run(*args: str) -> None:
+def _run(*args: str) -> subprocess.CompletedProcess:
     result = subprocess.run(list(args), capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"remote command failed: {' '.join(args)}\n{result.stderr}")
+    return result
+
+
+def _remote_job_paths(gpu_remote_dir: str, original_path: str, style_target_path: str) -> tuple[str, str, str]:
+    """Same deterministic naming remote_cloak() uploads its inputs under --
+    shared here so remote_compute_metrics() can reuse those same files
+    (original, style target, and remote_cloak's own cloaked output) without
+    re-uploading anything, as long as it's called right after remote_cloak()
+    for the same original_path/style_target_path (which is how
+    orchestrate.py's protect() actually calls it)."""
+    remote_input = f"{gpu_remote_dir}/out/_remote_job_original{os.path.splitext(original_path)[1]}"
+    remote_style = f"{gpu_remote_dir}/out/_remote_job_style{os.path.splitext(style_target_path)[1]}"
+    remote_output = f"{gpu_remote_dir}/out/_remote_job_cloaked.png"
+    return remote_input, remote_style, remote_output
 
 
 def remote_cloak(
@@ -68,10 +82,7 @@ def remote_cloak(
     `output_path` (a local path on whatever machine calls this).
     """
     gpu_remote_dir, remote, ssh_opts, scp_opts = _connection()
-
-    remote_input = f"{gpu_remote_dir}/out/_remote_job_original{os.path.splitext(original_path)[1]}"
-    remote_style = f"{gpu_remote_dir}/out/_remote_job_style{os.path.splitext(style_target_path)[1]}"
-    remote_output = f"{gpu_remote_dir}/out/_remote_job_cloaked.png"
+    remote_input, remote_style, remote_output = _remote_job_paths(gpu_remote_dir, original_path, style_target_path)
 
     # 1. Upload the input images.
     _run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
@@ -92,6 +103,38 @@ def remote_cloak(
 
     # 3. Download the result.
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+
+
+def remote_compute_metrics(original_path: str, style_target_path: str, size: int = 256) -> dict:
+    """GPU-PC counterpart to evaluate.py's compute_protection_metrics() --
+    orchestrate.py's protect() used to just skip this measurement entirely
+    under USE_REMOTE_GPU (this machine, in practice the Pi, has no local
+    torch worth relying on), leaving styleDriftScore/perceptualPsnrDb/
+    styleSimilarityToOriginal permanently null for every real upload. Since
+    remote_cloak() already uploaded the original and style-target images and
+    downloaded the cloaked result under fixed, well-known remote paths (see
+    _remote_job_paths), this just re-runs evaluate.py's own `--json` mode
+    against those same three files already sitting on the GPU PC -- no new
+    upload needed, only a single lightweight SSH command (three VGG19
+    forward passes, "a second or two" per evaluate.py's own docstring) and
+    its JSON stdout to parse. Must be called right after remote_cloak() for
+    the same original_path/style_target_path, same requirement as that
+    function's own doc note on _remote_job_paths.
+    """
+    gpu_remote_dir, remote, ssh_opts, _ = _connection()
+    remote_input, remote_style, remote_output = _remote_job_paths(gpu_remote_dir, original_path, style_target_path)
+
+    remote_cmd = (
+        f"cd '{gpu_remote_dir}'; "
+        f".\\.venv\\Scripts\\python.exe src/evaluate.py "
+        f"--original '{remote_input}' --cloaked '{remote_output}' "
+        f"--style-target '{remote_style}' --size {size} --json"
+    )
+    result = _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
+
+    import json
+
+    return json.loads(result.stdout)
 
 
 def remote_upscale(input_path: str, output_path: str, target_width: int, target_height: int) -> None:

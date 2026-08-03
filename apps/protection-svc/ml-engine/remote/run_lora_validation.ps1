@@ -78,8 +78,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "=== 1/3: preparing datasets for both images (cloak() runs here, CPU-fine, no GPU needed yet) ==="
-& $ML_VENV_PY "$EXP_DIR\prepare_dataset.py"
-if ($LASTEXITCODE -ne 0) { throw "prepare_dataset.py failed" }
+# $ErrorActionPreference = "Stop" (script scope) otherwise turns any stderr
+# line from this native python.exe call into a terminating error -- real
+# bug, found live: an unauthenticated-HF-Hub-rate-limit warning (harmless,
+# printed to stderr by huggingface_hub/open_clip while loading a pretrained
+# checkpoint) aborted this step entirely on a fresh re-run. Same fix as
+# Train-Condition/generate_and_score.py's own calls below, just missing
+# here until now.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $ML_VENV_PY "$EXP_DIR\prepare_dataset.py" *>&1 | Tee-Object -FilePath "$LOGS_DIR\prepare_dataset.log"
+$ErrorActionPreference = $prevEAP
+if ($LASTEXITCODE -ne 0) { throw "prepare_dataset.py failed -- see $LOGS_DIR\prepare_dataset.log" }
 
 $manifest = Get-Content "$OUT_DIR\manifest.json" | ConvertFrom-Json
 

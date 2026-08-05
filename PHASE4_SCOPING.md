@@ -435,3 +435,59 @@ Audit first. Everything else in this section (gas model, key custody,
 monitoring) is worth doing regardless of audit outcome, but none of it
 matters if the contract itself has an exploitable bug once real value is
 on the line.
+
+## 5. Protection-strength visual-quality tuning (teammate exploratory findings, 2026-07-24)
+
+A teammate independently explored two things on a separate local clone
+(`work/FK_UNOT_Urs.psd-main`, not merged into this repo -- only their
+write-ups, `PROTECTION_STRENGTH_TEST_REPORT.md` and
+`LAPTOP_PROTECTION_STRENGTH_HANDOFF.md`, ended up here as untracked files;
+the actual `protection_pipeline/` code, sweep scripts, and comparison
+images were never shared into this repository): (1) whether tuning
+`style_cloak.py`'s existing knobs (VGG19 layer weights, perturbation
+frequency placement, `mask_low`/`mask_high` region masking) can push
+protection strength higher without visible quality loss, and (2) a
+separate, non-`style_cloak` pipeline (P2T/SCL/CML/TL, from an earlier
+`laptop-protection-strength-test.zip` handoff) layered on top of the
+existing L2 preset.
+
+**(1) Knob-tuning result, at reduced scale (256px, 60 steps, `art2` from a
+different 5-image set than this repo's own `starry_night`/etc. benchmark)**:
+VGG-layer-weight variants (`shallow`/`middle`/`deep`/`middle_deep`),
+frequency-band placement (`low`/`mid`/`high`) and mixing, and region-mask
+range sweeps **all failed human visual QA** ("이미지가 깨져 보임") even when
+automated style-drift/PSNR numbers looked fine or even improved -- echoing
+this repo's own finding in `style_cloak.py`'s `L3_ANTI_TRAIN` comment
+block (TV-regularization and LPIPS terms both collapsed the real
+adversarial effect while "fixing" the metric). The teammate's own
+methodology caveat, and a real one: this was all done at 256px/60 steps
+with `clip_transfer_weight` off, not this repo's actual production path
+(1024px, official step counts, EOT, perceptual mask, CLIP transfer) --
+so **read this as "the fast-search methodology couldn't validate these
+knobs," not "VGG-layer/frequency/mask tuning is proven not to work."** A
+real 1024px/300-step run of the official L2 preset on one image
+(`experiments/run_official_l2_art2.py`, prepared but never executed --
+estimated 2-4h/image on their CPU-only environment) is the natural next
+step if anyone picks this back up, before spending more time on knob
+variants at reduced scale.
+
+**(2) The separate P2T/SCL/CML/TL pipeline**: not this repo's
+`style_cloak.py`/`concept_misalign.py` -- different loss functions,
+parameters that don't map 1:1 to `epsilon`/`steps`/`color_weight`. Reached
+"L2+2" (a small step past the existing `L2_PORTFOLIO` baseline) with no
+visible degradation by teammate's own eye, `L3_ANTI_TRAIN`-equivalent and
+`L3_BALANCED_CANDIDATE` variants both rejected for visible noise/artifacts
+in flat regions -- same failure mode this repo's own `style_cloak.py`
+`L3_ANTI_TRAIN` comment already documents for its color-balance/mask
+tuning. **No LoRA-attack validation of this pipeline has been run** (planned
+for "final candidate only, on Colab GPU," never reached). Given this
+repo's own `PHASE4_SCOPING.md`/experiment history (see [[lora-protection-research]]
+memory) found that *five different* mechanisms -- style_cloak,
+concept_misalign, diffusion_attack, aspl_attack, hybrid_attack -- all
+failed to produce a statistically significant real-LoRA protection effect
+despite each one's own proxy metric moving in the intended direction, the
+prior for P2T/SCL/CML also passing a real LoRA-attack test should be set
+low until it's actually run against the same 5-image/2-seed/real-training
+benchmark this repo's `experiments/*_validation/` directories already use
+-- visible-quality tuning alone was never the bottleneck in any of those
+five; the proxy-to-real-training transfer gap was.

@@ -83,6 +83,15 @@ if USE_REMOTE_GPU:
 else:
     from style_cloak import cloak
 
+# strong_protection (PHASE4_SCOPING.md §6) always dispatches to the
+# dedicated A40-class pod regardless of USE_REMOTE_GPU -- it needs more
+# VRAM than any local machine this project runs on has, GPU PC included --
+# so this import is unconditional; remote_multiarch_cloak() itself only
+# gets called when a caller actually opts in (see protect()'s
+# strong_protection branch below), and only touches MULTIARCH_GPU_HOST
+# (raises if unset) at that point, not at import time.
+from remote_gpu import remote_multiarch_cloak
+
 from Crypto.Hash import keccak  # noqa: E402
 
 # Real, measured result on the GPU PC comparing this project's own two
@@ -289,6 +298,7 @@ def protect(
     size: int = 256,
     eot: bool | None = None,
     concept_misalign_target_path: str | None = None,
+    strong_protection: bool = False,
 ) -> dict:
     start = time.time()
     out = Path(out_dir)
@@ -314,35 +324,66 @@ def protect(
     # ml-engine's manual experiment scripts) that don't go through
     # server.py's request layer at all.
     cloaked_path = out / "cloaked.png"
-    mode = "remote GPU" if USE_REMOTE_GPU else "local"
-    eot_samples = choose_eot_samples(size)
-    perceptual_mask = choose_perceptual_mask(preset_name)
-    use_amp = choose_use_amp(size)
-    print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} use_amp={use_amp} ...", flush=True)
-    if USE_REMOTE_GPU:
-        remote_cloak(
-            original_path=input_path,
-            style_target_path=style_target_path,
-            output_path=str(cloaked_path),
-            preset_name=preset_name,
-            eot=eot,
-            size=size,
-            eot_samples=eot_samples,
-            perceptual_mask=perceptual_mask,
-            use_amp=use_amp,
+
+    # strong_protection (PHASE4_SCOPING.md §6, opt-in only, same shape as
+    # concept_misalign_target_path below): replaces style-cloak entirely
+    # rather than stacking on top of it -- this project's own hybrid_attack
+    # experiment already found combining multiple attack objectives makes
+    # things worse, not better, and multiarch_ensemble_attack was validated
+    # as a standalone perturbation, not as a layer on top of style_cloak's
+    # output. SD1.5-training protection only (see remote_multiarch_cloak's
+    # own doc) -- a caller opting in is accepting that scope, not getting a
+    # strictly-strictly-stronger version of the default. Falls back to
+    # style_cloak on any failure (pod unreachable, MULTIARCH_GPU_HOST
+    # unset, etc.) rather than publishing an unprotected image -- a real
+    # upload succeeding with the proven mechanism beats a failed upload.
+    used_strong_protection = False
+    if strong_protection:
+        print(
+            "[orchestrate] 1/4 style-cloak (multiarch SD1.5+SDXL, EXPERIMENTAL -- "
+            "SD1.5-training protection only, see PHASE4_SCOPING.md §6) ...",
+            flush=True,
         )
-    else:
-        cloak(
-            original_path=input_path,
-            style_target_path=style_target_path,
-            output_path=str(cloaked_path),
-            preset_name=preset_name,
-            eot=eot,
-            size=size,
-            eot_samples=eot_samples,
-            perceptual_mask=perceptual_mask,
-            use_amp=use_amp,
-        )
+        try:
+            remote_multiarch_cloak(
+                original_path=input_path,
+                output_path=str(cloaked_path),
+                prompt=title,
+            )
+            used_strong_protection = True
+        except Exception as exc:  # noqa: BLE001 -- fall back to the proven mechanism rather than publish unprotected
+            print(f"[orchestrate] strong_protection requested but multiarch cloak failed ({exc}) -- falling back to style_cloak", flush=True)
+
+    if not used_strong_protection:
+        mode = "remote GPU" if USE_REMOTE_GPU else "local"
+        eot_samples = choose_eot_samples(size)
+        perceptual_mask = choose_perceptual_mask(preset_name)
+        use_amp = choose_use_amp(size)
+        print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} use_amp={use_amp} ...", flush=True)
+        if USE_REMOTE_GPU:
+            remote_cloak(
+                original_path=input_path,
+                style_target_path=style_target_path,
+                output_path=str(cloaked_path),
+                preset_name=preset_name,
+                eot=eot,
+                size=size,
+                eot_samples=eot_samples,
+                perceptual_mask=perceptual_mask,
+                use_amp=use_amp,
+            )
+        else:
+            cloak(
+                original_path=input_path,
+                style_target_path=style_target_path,
+                output_path=str(cloaked_path),
+                preset_name=preset_name,
+                eot=eot,
+                size=size,
+                eot_samples=eot_samples,
+                perceptual_mask=perceptual_mask,
+                use_amp=use_amp,
+            )
 
     # Real, per-upload protection metrics (asked for: something non-technical
     # users can be shown, not just "trust us it worked"). Measured right
@@ -361,25 +402,35 @@ def protect(
     # (GPU PC unreachable, missing torch, OOM, whatever) is logged and the
     # pipeline continues without it.
     protection_metrics: dict = {}
-    try:
-        print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
-        if USE_REMOTE_GPU:
-            protection_metrics = remote_compute_metrics(
-                original_path=input_path,
-                style_target_path=style_target_path,
-                size=size,
-            )
-        else:
-            from evaluate import compute_protection_metrics
+    if used_strong_protection:
+        # style_cloak's VGG19-Gram-matrix style-drift-vs-target metric
+        # doesn't apply here -- multiarch_ensemble_attack has no
+        # style_target_path input and optimizes a genuinely different
+        # (denoising-loss-based) objective, so this metric would compare
+        # against a target the cloak step never actually used. Left empty
+        # rather than computed-and-mislabeled; a real CLIP-similarity-based
+        # metric for this mechanism is real future work, not a quick swap.
+        print("[orchestrate] 1c/4 skipping style-drift metric (not meaningful for multiarch strong_protection)", flush=True)
+    else:
+        try:
+            print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
+            if USE_REMOTE_GPU:
+                protection_metrics = remote_compute_metrics(
+                    original_path=input_path,
+                    style_target_path=style_target_path,
+                    size=size,
+                )
+            else:
+                from evaluate import compute_protection_metrics
 
-            protection_metrics = compute_protection_metrics(
-                original_path=input_path,
-                cloaked_path=str(cloaked_path),
-                style_target_path=style_target_path,
-                size=size,
-            )
-    except Exception as exc:  # noqa: BLE001 -- a missing metric shouldn't fail a real upload
-        print(f"[orchestrate] protection-metrics measurement failed, continuing without it: {exc}", flush=True)
+                protection_metrics = compute_protection_metrics(
+                    original_path=input_path,
+                    cloaked_path=str(cloaked_path),
+                    style_target_path=style_target_path,
+                    size=size,
+                )
+        except Exception as exc:  # noqa: BLE001 -- a missing metric shouldn't fail a real upload
+            print(f"[orchestrate] protection-metrics measurement failed, continuing without it: {exc}", flush=True)
 
     # Concept Misalignment Layer (PHASE4_SCOPING.md §1, PROJECT_DESIGN.md
     # §3-3 layer [3]) -- opt-in only, off unless a caller explicitly passes

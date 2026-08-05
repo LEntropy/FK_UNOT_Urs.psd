@@ -84,6 +84,14 @@ class ProtectRequest(BaseModel):
     # still overrides it, for callers (tests, the CLI, future experiments)
     # that want a specific processing size on purpose.
     size: Optional[int] = None
+    # Opt-in only, off by default -- PHASE4_SCOPING.md §6: replaces
+    # style-cloak with the multiarch SD1.5+SDXL ASPL attack (validated
+    # SD1.5-training protection effect; SDXL is not a covered case).
+    # Several minutes per job on a dedicated A40-class pod (MULTIARCH_GPU_*
+    # env vars, see remote_gpu.py's remote_multiarch_cloak) instead of the
+    # GPU PC -- falls back to normal style-cloak if that pod is unreachable
+    # or unconfigured, so this never turns "protected" into "unprotected".
+    strongProtection: bool = False
 
 
 def _run_job(job_id: str, req: ProtectRequest) -> None:
@@ -105,6 +113,7 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
             watermark_payload_hex=req.watermarkPayloadHex,
             size=size,
             eot=req.eot,
+            strong_protection=req.strongProtection,
         )
         jobs_db.set_completed(_jobs_conn, job_id, result)  # result already has "status": "completed"
     except Exception as exc:  # noqa: BLE001 -- report failure via job status, don't just kill the thread silently

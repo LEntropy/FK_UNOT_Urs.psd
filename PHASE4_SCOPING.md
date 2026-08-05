@@ -491,3 +491,140 @@ low until it's actually run against the same 5-image/2-seed/real-training
 benchmark this repo's `experiments/*_validation/` directories already use
 -- visible-quality tuning alone was never the bottleneck in any of those
 five; the proxy-to-real-training transfer gap was.
+
+## 6. Real architecture-diverse ASPL attack (2026-08-06) -- first validated protection effect, and why it isn't wired into `orchestrate.py` yet
+
+### The result, stated plainly
+
+`ml-engine/src/ensemble_attack_multiarch.py` (`multiarch_ensemble_attack`,
+`MULTIARCH_FULL` preset) is a sixth attempt after the five documented
+failures above (§5's closing paragraph), and the first to pass. Where the
+five failures each attacked a single surrogate model (or, for
+`ensemble_attack.py`, several differently-configured LoRA adapters on *one*
+shared SD1.5 backbone -- the most VRAM this project's original 8GB GPU
+could hold), this one alternately fine-tunes and PGD-attacks two genuinely
+separate frozen backbones at once, SD1.5 and SDXL, fp32, at
+`aspl_attack.py`'s own `L3_ANTI_TRAIN` iteration counts (outer_iters=30,
+surrogate_steps=3, pgd_steps=6) -- a combination that needs more VRAM than
+this project had access to until moving the validation runs to a rented
+RunPod A40 (48GB). Validated against 10 synthetic anime-style original-
+character illustrations (generated via Illustrious-XL specifically to
+avoid scraping a real artist's copyrighted work for a protection-research
+benchmark -- see [[lora-protection-research]] memory) x 3 seeds = n=30, real
+`train_network.py`/`sdxl_train_network.py` LoRA trainings, CLIP-similarity
+delta scored the same way every prior experiment in this project was:
+
+- **SD1.5: mean delta +0.0414, 95% CI [+0.0225, +0.0603]** on the full n=30
+  -- CI excludes zero. Checked twice more before trusting it (this
+  project's own stated practice, per §5's closing paragraph, of not
+  overclaiming a proxy or single-run result): with the single strongest
+  image (`silver_garden`, +0.16-0.17, 3-8x every other image) removed,
+  n=27 still gives +0.0272, 95% CI [+0.0162, +0.0383] -- not driven by one
+  outlier. Then re-run from scratch on four *new* character illustrations
+  never used in the first 30 (`desert_wanderer`/`library_scholar`/
+  `ice_skater`/`punk_guitarist`), n=12: +0.0332, 95% CI [+0.0184, +0.0481].
+  **All three independent checks exclude zero.** This is the first of nine
+  attack mechanisms tried across this project's history to clear that bar.
+- **SDXL: does not work, and an earlier claim here was wrong.** The
+  original n=30 showed a statistically significant *negative* effect
+  (mean -0.0134, 95% CI [-0.0261, -0.0006] -- the attacked LoRA ending up
+  *more* similar to the true image than baseline). That did not replicate
+  on the four new images (mean +0.0099, 95% CI [-0.0017, +0.0215] --
+  includes zero, sign even flipped). The original negative result was very
+  likely one image (`winter_scarf`, -0.07 to -0.09, more than double every
+  other image's magnitude) doing to the SDXL numbers what `silver_garden`
+  did to the SD1.5 numbers -- except SD1.5's effect survived removing its
+  outlier and SDXL's didn't survive changing the image set at all.
+  **Correct read: SDXL protection has no measured effect, positive or
+  negative, not "measured to backfire."**
+
+### Why this can't reuse `remote_gpu.py`'s existing dispatch as-is
+
+Every other mechanism in this document that reached a "wire it in" stage
+(`concept_misalign.py`, §1) plugged into the *same* deployment `style_cloak`
+already uses -- an opt-in function call inside `protect()`, running either
+in-process or delegated to the GPU PC over `remote_gpu.py`'s existing SSH
+path (`orchestrate.py:79-84`), on hardware this project already owns and
+pays nothing marginal to use. `multiarch_ensemble_attack` cannot reuse that
+path:
+
+- **VRAM**: `remote_gpu.py`'s target is the GPU PC's RTX 5060 Ti (8GB) --
+  the same card five of the nine attack mechanisms in this project's
+  history were constrained by. Loading SD1.5 (~2GB) + SDXL (~7GB) fp32
+  plus two LoRA surrogates' optimizer state does not fit; this mechanism
+  was specifically *un*-runnable until the RunPod A40 (48GB) migration.
+- **Latency**: `style_cloak.cloak()` at production settings (1024px, EOT)
+  measures ~129s/image (`ml-engine/README.md`) -- already slow enough that
+  `server.py` made `/protect` an async job-queue (`202` + poll) rather than
+  a synchronous response, single-worker due to the 8GB VRAM ceiling. A
+  single `multiarch_ensemble_attack` call (just the attack step -- a real
+  deployment needs none of the validation experiments' LoRA-training/
+  scoring steps, only `multiarch_ensemble_attack()` itself) scales from
+  this project's own measured `CALIBRATION`-preset timing (175s for
+  outer_iters=10) to `MULTIARCH_FULL`'s outer_iters=30 at roughly the same
+  per-iteration cost -- **on the order of 15 minutes per image**, not
+  2 minutes. An order of magnitude slower than the mechanism already
+  identified as this pipeline's latency bottleneck.
+- **Cost**: the GPU PC is hardware this project already owns; `style_cloak`
+  and `concept_misalign` cost nothing marginal per request. An A40 has no
+  local equivalent here -- running this mechanism means renting cloud GPU
+  time, at a real, recurring, per-request dollar cost (RunPod A40 secure-
+  cloud measured at $0.44/hr during this validation; a ~15min request is
+  roughly **$0.11 of GPU time per protected image**, before accounting for
+  cold-start/idle overhead on a rented-by-the-hour pod). That is a product/
+  pricing decision (who pays it, and whether it's worth it), not just an
+  engineering one -- exactly the kind of thing this document's other
+  sections (§3's "don't build unvalidatable machinery," §4's mainnet gas
+  cost model) already treat as a real gate, not a footnote.
+
+### Recommendation (2026-08-06, updated -- A40-class capacity is available)
+
+Originally scoped this section around RunPod Serverless specifically
+*because* renting a by-the-hour A40 pod only for occasional per-request use
+looked wasteful next to the owned, marginal-cost-free GPU PC. That
+tradeoff changes if a 48GB-class GPU is available on an ongoing basis
+rather than spun up per request (confirmed feasible for this project,
+2026-08-06) -- at that point the simpler, more consistent design is to
+treat it the same way this codebase already treats its one existing remote
+GPU target, not build a second, differently-shaped dispatch mechanism next
+to it. Still **do not** fold this into `protect()`'s default path, and do
+not present it as "AI-training protection" without qualification -- it is
+**SD1.5-training protection**, measured; SDXL is an open question, not a
+covered case.
+
+1. **New opt-in tier, not a `protectionProfile` value.** `server.py`'s
+   `protectionProfile` is validated against `style_cloak.PRESETS`
+   (`server.py:192`) -- this needs its own parameter, same shape as
+   `concept_misalign_target_path`'s opt-in flag (`orchestrate.py`), e.g.
+   `strong_protection: bool`, defaulting to off so every existing caller's
+   behavior stays byte-for-byte unchanged, matching this project's own
+   established pattern for adding an unproven-at-scale mechanism next to a
+   proven one.
+2. **Extend `remote_gpu.py`'s existing pattern with a second remote
+   target, not a new dispatch mechanism.** With an A40-class pod kept
+   available rather than rented per-request, `remote_gpu.py`'s SSH-to-a-
+   known-host shape (`_connection()`, `GPU_HOST`/`GPU_USER`/`GPU_SSH_KEY`
+   env vars) fits this directly -- add a parallel set of env vars
+   (`MULTIARCH_GPU_HOST` etc., or a `GPU_TARGET=multiarch` selector reusing
+   the same three) and a `remote_multiarch_cloak()` function alongside
+   `remote_cloak()`, SSHing to the A40 pod's `kohya_ss`/`ml-engine` venv
+   the same way `remote_cloak()` already SSHes to the GPU PC's, instead of
+   standing up a separate Serverless worker image/API integration for a
+   single function call. Simpler, reuses code this project has already
+   tested in production, and avoids adding a second remote-execution
+   pattern to maintain. (RunPod Serverless remains worth revisiting later
+   specifically if request volume grows enough that scale-to-zero starts
+   mattering for cost -- not needed at this project's current scale.)
+3. **Async job-queue already fits the latency, no new architecture
+   needed** -- `/protect` is already `202` + poll (`server.py`), built
+   because `style_cloak` was already too slow to be synchronous. A ~15min
+   `strong_protection` job is a longer wait on the same mechanism, not a
+   new one.
+4. **Surface the scope honestly wherever this is offered** -- an
+   "SD1.5 only" caveat is a product-facing fact, not an implementation
+   detail to bury, independent of who's paying for the GPU time.
+
+Full experimental record, robustness checks, and replication numbers: see
+the `lora-protection-research` memory (this session's own working notes,
+not part of this repo) and `apps/protection-svc/ml-engine/experiments/
+ensemble_validation/run_multiarch_n30.py`/`run_multiarch_n30_score.py`.

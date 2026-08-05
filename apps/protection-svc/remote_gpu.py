@@ -187,6 +187,89 @@ def remote_measure_existing_images(
             pass  # best-effort -- a leftover temp file on the GPU PC isn't worth failing the request over
 
 
+def _multiarch_connection():
+    """Connection details for the dedicated A40-class pod running
+    ensemble_attack_multiarch.py -- deliberately separate env vars from
+    _connection()'s GPU_HOST/GPU_USER/GPU_SSH_KEY (the owned 8GB GPU PC).
+    This is a genuinely different machine (different venv layout, different
+    checkpoints, a non-standard SSH port since it's a rented cloud pod, not
+    a fixed LAN box) -- PHASE4_SCOPING.md §6 has the full reasoning for why
+    this needed its own target instead of reusing remote_cloak()'s, and
+    why "extend remote_gpu.py with a second host" won out over standing up
+    a separate Serverless integration once ongoing A40-class capacity was
+    confirmed available.
+    """
+    gpu_host = _env("MULTIARCH_GPU_HOST")
+    gpu_user = _env("MULTIARCH_GPU_USER", "root")
+    gpu_port = _env("MULTIARCH_GPU_PORT", "22")
+    gpu_remote_dir = _env("MULTIARCH_GPU_REMOTE_DIR", "/workspace/dontai-protection-svc")
+    ssh_key = os.path.expanduser(_env("MULTIARCH_GPU_SSH_KEY", "~/.ssh/dontai_runpod"))
+    remote = f"{gpu_user}@{gpu_host}"
+    ssh_opts = ["-i", ssh_key, "-p", gpu_port, "-o", "ConnectTimeout=15"]
+    # scp uses -P (capital) for port, unlike ssh's -p -- same -O legacy-scp
+    # note as _connection() does not apply here (this pod's OpenSSH sftp-
+    # server doesn't have the GPU PC's Windows sftp-server truncation bug),
+    # so no -O needed.
+    scp_opts = ["-i", ssh_key, "-P", gpu_port, "-o", "ConnectTimeout=15"]
+    return gpu_remote_dir, remote, ssh_opts, scp_opts
+
+
+def remote_multiarch_cloak(
+    original_path: str,
+    output_path: str,
+    prompt: str,
+    preset_name: str = "MULTIARCH_FULL",
+) -> None:
+    """Runs ensemble_attack_multiarch.py's multiarch_ensemble_attack() on
+    the dedicated A40-class pod (PHASE4_SCOPING.md §6) -- the validated
+    SD1.5 LoRA-training protection effect, needs more VRAM (two full
+    diffusion backbones, fp32) than remote_cloak()'s GPU PC target has.
+    SD1.5-validated only; SDXL protection is not a covered case (see
+    PHASE4_SCOPING.md §6's replication numbers) -- callers should not
+    present this as broader "AI-training protection" than that.
+
+    Several minutes per call (MULTIARCH_FULL's outer_iters=30) -- an order
+    of magnitude slower than remote_cloak(). Callers should already be
+    treating this as an async job (server.py's /protect is already a job
+    queue for exactly this reason with the existing, faster mechanism), not
+    something to await synchronously.
+
+    `prompt` has no natural production equivalent to the experiments' own
+    trigger-word captions (orchestrate.py's `protect()` has no real
+    per-image caption in its data model -- same gap concept_misalign.py's
+    module doc already flags for the same reason). Callers pass whatever
+    descriptive text they have (e.g. the artwork's title) -- a rough
+    proxy, not the literal mechanism the validation experiments used.
+    """
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _multiarch_connection()
+    kohya_python = _env("MULTIARCH_KOHYA_PYTHON", "/workspace/kohya_ss/venv/bin/python")
+    sd15_checkpoint = _env("MULTIARCH_SD15_CHECKPOINT", "/workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors")
+    sdxl_checkpoint = _env("MULTIARCH_SDXL_CHECKPOINT", "/workspace/checkpoints/Illustrious-XL-v0.1.safetensors")
+
+    remote_input = f"{gpu_remote_dir}/out/_remote_multiarch_original{os.path.splitext(original_path)[1]}"
+    remote_output = f"{gpu_remote_dir}/out/_remote_multiarch_cloaked.png"
+
+    _run("ssh", *ssh_opts, remote, f"mkdir -p '{gpu_remote_dir}/out'")
+
+    # 1. Upload the input image.
+    _run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
+
+    # 2. Run ensemble_attack_multiarch.py on the pod, in its kohya_ss venv
+    #    (needs diffusers + peft + accelerate, same as remote_cloak's GPU
+    #    PC venv needs for style_cloak.py, just a different machine/venv).
+    escaped_prompt = prompt.replace("'", "'\\''")  # single-quote-safe for the remote shell, not a Windows PowerShell target like remote_cloak's
+    remote_cmd = (
+        f"{kohya_python} '{gpu_remote_dir}/ml-engine/src/ensemble_attack_multiarch.py' "
+        f"--original '{remote_input}' --sd15-checkpoint '{sd15_checkpoint}' "
+        f"--sdxl-checkpoint '{sdxl_checkpoint}' --prompt '{escaped_prompt}' "
+        f"--output '{remote_output}' --preset {preset_name}"
+    )
+    _run("ssh", *ssh_opts, remote, remote_cmd)
+
+    # 3. Download the result.
+    _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+
+
 def remote_upscale(input_path: str, output_path: str, target_width: int, target_height: int) -> None:
     """Runs upscale.py's super-resolution restoration step on the GPU PC
     instead of locally. Found for real, live, in production: loading torch

@@ -49,7 +49,21 @@ def _connection():
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    result = subprocess.run(list(args), capture_output=True, text=True)
+    # encoding="utf-8" (not this machine's default cp949 Windows codepage)
+    # -- found live, real: remote_multiarch_cloak's SSH call captured a
+    # kohya_ss/diffusers progress bar containing Unicode block characters,
+    # which crashed subprocess.run's internal stdout-reader thread trying
+    # to decode it as cp949 (UnicodeDecodeError, silently swallowed by
+    # Python's default threading.excepthook rather than raised here -- the
+    # call still "succeeded" by luck since returncode/wait() don't depend
+    # on that reader thread, but result.stdout/stderr would have come back
+    # truncated or empty on any call unlucky enough to fail *and* hit this
+    # at the same time, hiding the real error message). Same underlying
+    # class of bug as gpu-infra-access's documented PowerShell EAP/cp949
+    # issue, different process (Python's own subprocess module here, not
+    # PowerShell) -- errors="replace" so a genuinely undecodable byte
+    # degrades to a replacement character instead of crashing the read.
+    result = subprocess.run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(f"remote command failed: {' '.join(args)}\n{result.stderr}")
     return result

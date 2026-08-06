@@ -115,6 +115,60 @@ def test_evidence_for_unknown_case_is_404(client):
     assert resp.status_code == 404
 
 
+def test_dmca_notice_for_unknown_case_is_404(client):
+    resp = client.get("/cases/case_does_not_exist/dmca-notice")
+    assert resp.status_code == 404
+
+
+def test_dmca_notice_fills_in_a_real_copy_bundle_and_flags_a_model_leak_bundle(client, tmp_path):
+    import json
+
+    from db import add_evidence, create_case
+
+    case_id = "case_dmca_1"
+    create_case(server._db, case_id, "ast_abc", "report")
+
+    copy_dir = tmp_path / "copy"
+    copy_dir.mkdir()
+    (copy_dir / "bundle.json").write_text(
+        json.dumps(
+            {
+                "originalHash": "0xaaaa",
+                "watermarkDetection": None,
+                "c2paDetection": None,
+                "modelLeakDetection": None,
+                "discoveredUrl": "https://example.com/stolen.png",
+                "discoveredAt": 1_700_000_000.0,
+                "phashDistance": 4,
+                "onchainTransaction": None,
+                "registeredAt": None,
+            }
+        )
+    )
+    add_evidence(server._db, case_id, "phash_match", "https://example.com/stolen.png", 0.9, str(copy_dir))
+
+    leak_dir = tmp_path / "leak"
+    leak_dir.mkdir()
+    (leak_dir / "bundle.json").write_text(
+        json.dumps({"modelLeakDetection": {"verdict": "SUSPECTED_LEAK"}, "discoveredUrl": "https://civitai.com/models/1"})
+    )
+    add_evidence(server._db, case_id, "model_leak", "https://civitai.com/models/1", 0.1, str(leak_dir))
+
+    res = client.get(f"/cases/{case_id}/dmca-notice")
+    assert res.status_code == 200
+    notices = res.json()["notices"]
+    assert len(notices) == 2
+
+    copy_notice = next(n for n in notices if n["sourceUrl"] == "https://example.com/stolen.png")
+    assert copy_notice["note"] is None
+    assert "https://example.com/stolen.png" in copy_notice["notice"]
+    assert "0xaaaa" in copy_notice["notice"]
+
+    leak_notice = next(n for n in notices if n["sourceUrl"] == "https://civitai.com/models/1")
+    assert leak_notice["notice"] is None
+    assert "AI training dataset" in leak_notice["note"]
+
+
 def test_patch_case_moves_evidence_ready_to_notified(client):
     from db import create_case, set_case_status
 

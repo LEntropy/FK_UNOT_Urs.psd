@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from asset_client import ArtworkNotFoundError, get_artwork  # noqa: E402
 from c2pa_verify import verify_c2pa  # noqa: E402
 from db import add_evidence, connect, create_case, get_case, get_last_scan_time, set_case_status  # noqa: E402
+from dmca_notice import build_dmca_notice, is_dmca_applicable  # noqa: E402
 from evidence_bundle import build_bundle, write_json, write_pdf_best_effort  # noqa: E402
 from evidence_capture import capture  # noqa: E402
 from evidence_signing import sign_bundle  # noqa: E402
@@ -436,6 +437,39 @@ def get_evidence(case_id: str):
 
             bundles.append(json.loads(bundle_path.read_text()))
     return {"caseId": case_id, "status": case["status"], "bundles": bundles}
+
+
+@app.get("/cases/{case_id}/dmca-notice")
+def get_dmca_notice(case_id: str):
+    """RUNBOOK.md Step 5's DMCA template, filled in from each real evidence
+    bundle this case produced -- see dmca_notice.py's module doc for what's
+    auto-filled vs left as a bracketed placeholder, and why a model-leak
+    bundle gets a note instead of a notice (it isn't a "URL hosting a copy
+    of this work" situation)."""
+    case = get_case(_db, case_id)
+    if case is None:
+        raise HTTPException(404, f"no case {case_id!r}")
+
+    notices = []
+    for record in case["evidence"]:
+        bundle_path = Path(record["artifact_uri"]) / "bundle.json"
+        if not bundle_path.exists():
+            continue
+        import json
+
+        bundle = json.loads(bundle_path.read_text())
+        if is_dmca_applicable(bundle):
+            notices.append({"sourceUrl": bundle.get("discoveredUrl"), "notice": build_dmca_notice(bundle), "note": None})
+        else:
+            notices.append(
+                {
+                    "sourceUrl": bundle.get("discoveredUrl"),
+                    "notice": None,
+                    "note": "모델 학습 유출 의심 건은 DMCA 통지 대상이 아닙니다 -- RUNBOOK.md Step 5의 "
+                    "'Suspected AI training dataset inclusion' 절차를 따르세요.",
+                }
+            )
+    return {"caseId": case_id, "notices": notices}
 
 
 if AUTO_SCAN_ENABLED:

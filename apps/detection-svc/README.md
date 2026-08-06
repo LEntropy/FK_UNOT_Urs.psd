@@ -91,6 +91,7 @@ instead of tracking it outside the system entirely.
 - `POST /scan/{artworkId}` → `202 {caseId, status: "queued"}`
 - `POST /reports {artworkId, suspectUrl}` → `202 {caseId, status: "queued"}`
 - `POST /model-leak-reports {artworkId, suspectModelUrl}` → `202 {caseId, status: "queued"}`
+- `GET /cases/{caseId}/dmca-notice` → RUNBOOK.md's DMCA template auto-filled from each real evidence bundle (`src/dmca_notice.py`)
 - `GET /cases/{caseId}` → case status (`OPEN` → `EVIDENCE_READY` /
   `NO_MATCH_FOUND` / `FAILED`) + evidence record list
 - `PATCH /cases/{caseId} {status, note?}` → records a manual runbook step

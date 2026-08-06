@@ -42,7 +42,17 @@ Read the bundle (`GET /evidence/{caseId}`) and pick a path based on
 
 ### DMCA / infringement notice template
 
-Fill in the bracketed fields from `GET /evidence/{caseId}`'s bundle.
+`GET /cases/{caseId}/dmca-notice` fills this in automatically from the
+case's real evidence bundle(s) (`src/dmca_notice.py`) -- one notice per
+bundle, keyed by `sourceUrl`. Still-manual fields (the host's DMCA/abuse
+contact, your name/contact, your signature) stay as brackets; that part
+still requires a human decision this service has no data for. A
+model-leak bundle gets `notice: null` and a `note` pointing to the
+"Suspected AI training dataset inclusion" bullet below instead -- a
+suspect model file isn't "a URL hosting a copy of this work," so a DMCA
+takedown notice isn't the applicable instrument.
+
+Manual fallback: fill in the bracketed fields from `GET /evidence/{caseId}`'s bundle yourself.
 
 ```text
 To: [host/platform's designated DMCA agent or abuse contact]

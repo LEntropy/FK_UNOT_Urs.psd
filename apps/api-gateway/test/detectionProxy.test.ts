@@ -19,6 +19,7 @@ vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }))
 vi.mock("../src/clients/detectionService.js", () => ({
   scanArtwork: vi.fn(),
   reportArtwork: vi.fn(),
+  reportModelLeak: vi.fn(),
   getCase: vi.fn(),
   getEvidence: vi.fn(),
   DetectionServiceError: class DetectionServiceError extends Error {
@@ -29,7 +30,7 @@ vi.mock("../src/clients/detectionService.js", () => ({
 }));
 
 const { getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
-const { scanArtwork, reportArtwork, getCase, getEvidence, DetectionServiceError } = await import(
+const { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, DetectionServiceError } = await import(
   "../src/clients/detectionService.js"
 );
 
@@ -122,6 +123,59 @@ describe("POST /artworks/:id/report", () => {
       .send({ suspectUrl: "https://example.com/found.png" });
     expect(res.status).toBe(202);
     expect(reportArtwork).toHaveBeenCalledWith("ast_1", "https://example.com/found.png");
+  });
+});
+
+describe("POST /artworks/:id/model-leak-report", () => {
+  it("400s on a missing/invalid suspectModelUrl", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+
+    const res = await request(app)
+      .post("/artworks/ast_1/model-leak-report")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ suspectModelUrl: "not-a-url" });
+    expect(res.status).toBe(400);
+    expect(getArtwork).not.toHaveBeenCalled();
+  });
+
+  it("403s when the caller isn't this artwork's creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .post("/artworks/ast_1/model-leak-report")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ suspectModelUrl: "https://civitai.com/models/12345" });
+    expect(res.status).toBe(403);
+    expect(reportModelLeak).not.toHaveBeenCalled();
+  });
+
+  it("forwards a real model-leak report for the artwork's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(reportModelLeak).mockResolvedValue({ caseId: "case_leak1", status: "queued" });
+
+    const res = await request(app)
+      .post("/artworks/ast_1/model-leak-report")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ suspectModelUrl: "https://civitai.com/models/12345" });
+    expect(res.status).toBe(202);
+    expect(reportModelLeak).toHaveBeenCalledWith("ast_1", "https://civitai.com/models/12345");
+  });
+
+  it("404s when the artwork doesn't exist", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockRejectedValue(new AssetServiceError(404, { error: "no artwork ast_missing" }));
+
+    const res = await request(app)
+      .post("/artworks/ast_missing/model-leak-report")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ suspectModelUrl: "https://civitai.com/models/12345" });
+    expect(res.status).toBe(404);
   });
 });
 

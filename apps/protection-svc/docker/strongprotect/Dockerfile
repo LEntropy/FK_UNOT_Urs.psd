@@ -67,11 +67,13 @@ RUN --mount=type=secret,id=civitai_token \
       -o /workspace/checkpoints/Illustrious-XL-v0.1.safetensors \
       "https://civitai.com/api/download/models/889818"
 
-# Only the two files ensemble_attack_multiarch.py actually needs (model.py
-# for style_cloak.py's own top-level import -- see this Dockerfile's
-# header comment) -- not the whole ml-engine tree.
+# ensemble_attack_multiarch.py's own two deps (model.py for style_cloak.py's
+# top-level import), plus model_leak_detect.py (detection-svc's model-leak
+# report pathway, remote_gpu.py's remote_detect_model_leak) -- it only
+# imports diffusers/transformers/PIL/torch, all already installed above,
+# no new dependency needed for it. Still not the whole ml-engine tree.
 RUN mkdir -p /workspace/dontai-protection-svc/ml-engine/src
-COPY ensemble_attack_multiarch.py style_cloak.py model.py /workspace/dontai-protection-svc/ml-engine/src/
+COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py /workspace/dontai-protection-svc/ml-engine/src/
 
 # Sanity checks baked into the build itself -- fail the build (not a later
 # pod boot) if a checkpoint download silently truncated, or the attack

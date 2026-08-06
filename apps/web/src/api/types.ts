@@ -61,7 +61,7 @@ export interface DetectionCase {
   id: string;
   artwork_id: string;
   status: "OPEN" | "EVIDENCE_READY" | "NO_MATCH_FOUND" | "FAILED" | "NOTIFIED" | "RESOLVED" | "ESCALATED";
-  trigger: "scan" | "report";
+  trigger: "scan" | "report" | "model_report";
   error_message: string | null;
   note: string | null;
   created_at: number;
@@ -94,6 +94,18 @@ export interface EvidenceBundle {
     signedByDontai: boolean;
     ownership: Record<string, unknown> | null;
     validationIssues: string[] | null;
+  } | null;
+  modelLeakDetection: {
+    perPrompt: Array<{
+      prompt: string;
+      avgBaseSimilarity: number;
+      avgSuspectSimilarity: number;
+      delta: number;
+    }>;
+    meanDelta: number;
+    stdevDelta: number;
+    verdict: "SUSPECTED_LEAK" | "INCONCLUSIVE" | "NO_EVIDENCE";
+    threshold: number;
   } | null;
   discoveredUrl: string | null;
   discoveredAt: number;

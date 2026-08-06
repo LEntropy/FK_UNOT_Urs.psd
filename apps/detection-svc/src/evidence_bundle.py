@@ -21,11 +21,12 @@ def build_bundle(
     artwork: dict,
     source_url: str | None,
     detected_at: float,
-    phash_distance: int | None,
-    watermark_result: dict | None,
+    phash_distance: int | None = None,
+    watermark_result: dict | None = None,
     c2pa_result: dict | None = None,
-    headers: dict | None,
-    screenshot_path: str | None,
+    headers: dict | None = None,
+    screenshot_path: str | None = None,
+    model_leak_result: dict | None = None,
 ) -> dict[str, Any]:
     ownership_records = artwork.get("ownershipRecords") or []
     onchain = ownership_records[0] if ownership_records else None
@@ -46,6 +47,12 @@ def build_bundle(
         # {"hasManifest": False, ...} result meaning verification *did* run
         # and genuinely found no manifest.
         "c2paDetection": c2pa_result,
+        # Set only for a model-leak report (server.py's _run_model_leak_case)
+        # -- protection_client.poll_leak_detection_job's completed job
+        # result (perPrompt/meanDelta/verdict, see ml-engine/src/
+        # model_leak_detect.py's module doc), None for every other
+        # evidence path (a scraped webpage has no suspect model to score).
+        "modelLeakDetection": model_leak_result,
         "discoveredUrl": source_url,
         "discoveredAt": detected_at,
         "phashDistance": phash_distance,

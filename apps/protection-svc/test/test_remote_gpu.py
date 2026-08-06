@@ -137,3 +137,88 @@ def test_remote_measure_existing_images_still_cleans_up_after_a_failed_ssh_call(
 
     cleanup_calls = [c for c in calls if c[0] == "ssh" and "Remove-Item" in c[-1]]
     assert len(cleanup_calls) == 1
+
+
+@pytest.fixture(autouse=True)
+def _multiarch_env(monkeypatch):
+    monkeypatch.setenv("MULTIARCH_GPU_HOST", "1.2.3.4")
+    monkeypatch.setenv("MULTIARCH_GPU_USER", "root")
+    monkeypatch.setenv("MULTIARCH_GPU_PORT", "22222")
+    monkeypatch.setenv("MULTIARCH_GPU_SSH_KEY", "~/.ssh/fake_runpod_key_for_tests")
+
+
+def test_remote_detect_model_leak_uploads_original_and_lora_under_a_fresh_tag_and_cleans_up(monkeypatch):
+    calls = []
+
+    def fake_run(args):
+        calls.append(list(args))
+        if args[0] == "ssh" and "model_leak_detect.py" in args[-1]:
+            return _FakeCompletedProcess(
+                stdout='{"perPrompt": [], "meanDelta": 0.08, "stdevDelta": 0.0, '
+                '"verdict": "SUSPECTED_LEAK", "threshold": 0.03}\n'
+            )
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: fake_run(args))
+
+    result = remote_gpu.remote_detect_model_leak(
+        "original.png", "suspect.safetensors", ["a painting, oil on canvas"], num_samples=3, resolution=512
+    )
+
+    assert result == {
+        "perPrompt": [],
+        "meanDelta": 0.08,
+        "stdevDelta": 0.0,
+        "verdict": "SUSPECTED_LEAK",
+        "threshold": 0.03,
+    }
+
+    scp_calls = [c for c in calls if c[0] == "scp"]
+    assert len(scp_calls) == 2  # original image, suspect LoRA
+    remote_dests = [c[-1] for c in scp_calls]
+    assert all("_leak_" in dest for dest in remote_dests)
+    tags = {dest.split("_leak_")[1].split("_")[0] for dest in remote_dests}
+    assert len(tags) == 1  # same uuid tag across both uploads
+
+    run_call = next(c for c in calls if c[0] == "ssh" and "model_leak_detect.py" in c[-1])
+    assert "--num-samples 3" in run_call[-1]
+    assert "--resolution 512" in run_call[-1]
+    assert "a painting, oil on canvas" in run_call[-1]
+
+    cleanup_calls = [c for c in calls if c[0] == "ssh" and c[-1].startswith("rm -f")]
+    assert len(cleanup_calls) == 1
+
+
+def test_remote_detect_model_leak_still_cleans_up_after_a_failed_ssh_call(monkeypatch):
+    calls = []
+
+    def fake_run(args):
+        calls.append(list(args))
+        if args[0] == "ssh" and "model_leak_detect.py" in args[-1]:
+            return _FakeCompletedProcess(returncode=1, stderr="pod unreachable")
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: fake_run(args))
+
+    with pytest.raises(RuntimeError):
+        remote_gpu.remote_detect_model_leak("original.png", "suspect.safetensors", ["a prompt"])
+
+    cleanup_calls = [c for c in calls if c[0] == "ssh" and c[-1].startswith("rm -f")]
+    assert len(cleanup_calls) == 1
+
+
+def test_remote_detect_model_leak_joins_multiple_prompts_with_pipe(monkeypatch):
+    calls = []
+
+    def fake_run(args):
+        calls.append(list(args))
+        if args[0] == "ssh" and "model_leak_detect.py" in args[-1]:
+            return _FakeCompletedProcess(stdout='{"meanDelta": 0.0, "verdict": "NO_EVIDENCE"}')
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: fake_run(args))
+
+    remote_gpu.remote_detect_model_leak("original.png", "suspect.safetensors", ["prompt one", "prompt two"])
+
+    run_call = next(c for c in calls if c[0] == "ssh" and "model_leak_detect.py" in c[-1])
+    assert "--prompts 'prompt one|prompt two'" in run_call[-1]

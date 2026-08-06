@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { getArtwork, AssetServiceError } from "../clients/assetService.js";
-import { scanArtwork, reportArtwork, getCase, getEvidence, DetectionServiceError } from "../clients/detectionService.js";
+import { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, DetectionServiceError } from "../clients/detectionService.js";
 
 /**
  * Authenticated proxy in front of detection-svc (which has no auth of its
@@ -53,6 +53,22 @@ export function detectionRouter(): Router {
 
     try {
       res.status(202).json(await reportArtwork(req.params.id, parsed.data.suspectUrl));
+    } catch (err) {
+      forwardDetectionError(err, res);
+    }
+  });
+
+  const modelLeakReportSchema = z.object({ suspectModelUrl: z.string().url() });
+
+  router.post("/artworks/:id/model-leak-report", async (req, res) => {
+    const parsed = modelLeakReportSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    const owns = await assertOwnsArtwork(req.params.id, req.user!.sub);
+    if (!owns.ok) return res.status(owns.status).json(owns.body);
+
+    try {
+      res.status(202).json(await reportModelLeak(req.params.id, parsed.data.suspectModelUrl));
     } catch (err) {
       forwardDetectionError(err, res);
     }

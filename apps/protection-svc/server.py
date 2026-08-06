@@ -49,13 +49,21 @@ from orchestrate import ML_ENGINE_DIR, PRESETS, USE_REMOTE_GPU, choose_processin
 import jobs_db  # noqa: E402
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_measure_existing_images
+    from remote_gpu import remote_detect_model_leak, remote_measure_existing_images
 
 sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 from tag_suggest import suggest_tags  # noqa: E402
 
 if not USE_REMOTE_GPU:
     from evaluate import compute_protection_metrics
+    # model_leak_detect is NOT imported here at module scope, unlike
+    # evaluate.py above -- it needs diffusers/transformers (a full
+    # StableDiffusionPipeline + CLIP), which this project's local (non-
+    # remote-GPU) dev venv has never carried (see generate_and_score.py's
+    # own doc: "ml-engine's own .venv, which only has plain torch/Pillow").
+    # Importing it eagerly here would crash server.py's startup entirely
+    # for that dev mode even though most requests never touch this
+    # endpoint. Imported lazily inside _run_model_leak_job instead.
 
 app = FastAPI(title="protection-svc", version="0.1.0")
 
@@ -117,6 +125,57 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
         )
         jobs_db.set_completed(_jobs_conn, job_id, result)  # result already has "status": "completed"
     except Exception as exc:  # noqa: BLE001 -- report failure via job status, don't just kill the thread silently
+        jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
+
+
+class DetectModelLeakRequest(BaseModel):
+    originalImageUri: str
+    suspectLoraUri: str
+    prompts: list[str]
+    numSamples: int = 4
+    resolution: int = 512
+    genSeed: int = 42
+
+
+def _local_detect_model_leak(**kwargs) -> dict:
+    """Thin indirection point so tests can monkeypatch the local-GPU code
+    path without importing model_leak_detect itself -- that module's
+    top-level `from transformers import ...` isn't satisfiable in this
+    project's local test venv (see the module-scope note above), same
+    reasoning as evaluate.py/compute_protection_metrics being importable
+    at module scope while this deliberately isn't."""
+    from model_leak_detect import detect_model_leak
+
+    return detect_model_leak(**kwargs)
+
+
+def _run_model_leak_job(job_id: str, req: DetectModelLeakRequest) -> None:
+    jobs_db.set_processing(_jobs_conn, job_id)
+    try:
+        if USE_REMOTE_GPU:
+            result = remote_detect_model_leak(
+                original_path=req.originalImageUri,
+                suspect_lora_path=req.suspectLoraUri,
+                prompts=req.prompts,
+                num_samples=req.numSamples,
+                resolution=req.resolution,
+                gen_seed=req.genSeed,
+            )
+        else:
+            result = _local_detect_model_leak(
+                checkpoint_path=os.environ.get(
+                    "SD15_CHECKPOINT", str(ML_ENGINE_DIR / "checkpoints" / "v1-5-pruned-emaonly-fp16.safetensors")
+                ),
+                suspect_lora_path=req.suspectLoraUri,
+                original_image_path=req.originalImageUri,
+                prompts=req.prompts,
+                num_samples=req.numSamples,
+                resolution=req.resolution,
+                gen_seed=req.genSeed,
+            )
+        result["status"] = "completed"
+        jobs_db.set_completed(_jobs_conn, job_id, result)
+    except Exception as exc:  # noqa: BLE001 -- report failure via job status, mirrors _run_job
         jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
 
 
@@ -214,6 +273,43 @@ def create_protect_job(req: ProtectRequest):
 
 @app.get("/protect/{job_id}")
 def get_protect_job(job_id: str):
+    job = jobs_db.get_job(_jobs_conn, job_id)
+    if job is None:
+        raise HTTPException(404, f"no job {job_id!r}")
+    return job
+
+
+@app.post("/detect-model-leak", status_code=202)
+def create_detect_model_leak_job(req: DetectModelLeakRequest):
+    """detection-svc's model-leak report pathway (PHASE4_SCOPING.md
+    detection-tracking follow-up): given a suspect LoRA file and the
+    registered artwork's own (published, protected) image, does
+    generating from the suspect LoRA come out anomalously close to it?
+    See ml-engine/src/model_leak_detect.py's module doc for the mechanism.
+
+    Job-based like /protect, not synchronous like /remeasure -- unlike
+    /remeasure's few VGG19 forward passes, this actually generates images
+    (num_samples x len(prompts) x 2 conditions), the same order of cost
+    class as a real /protect job, submitted to the same single-worker
+    executor (so it never contends with an in-flight /protect job for the
+    same GPU).
+    """
+    if not Path(req.originalImageUri).exists():
+        raise HTTPException(400, f"originalImageUri {req.originalImageUri!r} not found")
+    if not Path(req.suspectLoraUri).exists():
+        raise HTTPException(400, f"suspectLoraUri {req.suspectLoraUri!r} not found")
+    if not req.prompts:
+        raise HTTPException(400, "prompts must be non-empty")
+
+    job_id = f"leakjob_{uuid.uuid4().hex[:12]}"
+    jobs_db.create_job(_jobs_conn, job_id, req.model_dump())
+
+    _executor.submit(_run_model_leak_job, job_id, req)
+    return {"jobId": job_id, "status": "queued"}
+
+
+@app.get("/detect-model-leak/{job_id}")
+def get_detect_model_leak_job(job_id: str):
     job = jobs_db.get_job(_jobs_conn, job_id)
     if job is None:
         raise HTTPException(404, f"no job {job_id!r}")

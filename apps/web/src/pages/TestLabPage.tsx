@@ -222,6 +222,7 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
   const queryClient = useQueryClient();
   const [caseId, setCaseId] = useState<string | null>(null);
   const [suspectUrl, setSuspectUrl] = useState("");
+  const [suspectModelUrl, setSuspectModelUrl] = useState("");
   const [fillError, setFillError] = useState<string | null>(null);
 
   const scan = useMutation({
@@ -230,6 +231,10 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
   });
   const report = useMutation({
     mutationFn: () => detection.reportArtwork(artwork.id, suspectUrl),
+    onSuccess: (res) => setCaseId(res.caseId),
+  });
+  const reportModelLeak = useMutation({
+    mutationFn: () => detection.reportModelLeak(artwork.id, suspectModelUrl),
     onSuccess: (res) => setCaseId(res.caseId),
   });
 
@@ -324,9 +329,38 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
             {report.isPending ? "제출 중..." : "이 URL로 신고 접수"}
           </button>
         </form>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (suspectModelUrl.trim() && !caseId) reportModelLeak.mutate();
+          }}
+          className="flex flex-col gap-2 border-t border-neutral-800 pt-3"
+        >
+          <label className="text-sm">
+            의심되는 LoRA/모델 파일 URL로 학습 유출 신고
+            <input
+              value={suspectModelUrl}
+              onChange={(e) => setSuspectModelUrl(e.target.value)}
+              placeholder="https://civitai.com/models/... 또는 .safetensors 직접 링크"
+              className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm"
+            />
+          </label>
+          <p className="text-xs text-neutral-500">
+            이미지가 아니라 "누군가 이 작품으로 LoRA를 학습시켜서 배포했는지"를 확인합니다. 이 작품의 공개된 보호본
+            이미지와, 그 모델로 생성한 샘플의 CLIP 유사도를 baseline과 비교해요.
+          </p>
+          <button
+            type="submit"
+            disabled={reportModelLeak.isPending || !suspectModelUrl.trim() || Boolean(caseId)}
+            className="self-start rounded bg-neutral-800 px-3 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {reportModelLeak.isPending ? "제출 중..." : "이 모델로 학습유출 신고 접수"}
+          </button>
+        </form>
       </div>
 
-      {(scan.isError || report.isError) && (
+      {(scan.isError || report.isError || reportModelLeak.isError) && (
         <p className="mb-4 text-sm text-red-400">요청에 실패했습니다. 다시 시도해주세요.</p>
       )}
 
@@ -362,6 +396,7 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
             onClick={() => {
               setCaseId(null);
               setSuspectUrl("");
+              setSuspectModelUrl("");
             }}
             className="self-start text-xs text-neutral-500 underline hover:text-neutral-300"
           >
@@ -388,6 +423,53 @@ function CaseStatusBadge({ status }: { status: DetectionCase["status"] }) {
 function EvidenceCard({ bundle }: { bundle: EvidenceBundle }) {
   const wm = bundle.watermarkDetection;
   const c2pa = bundle.c2paDetection;
+  const modelLeak = bundle.modelLeakDetection;
+
+  if (modelLeak) {
+    return (
+      <div className="rounded border border-green-900 bg-green-950/20 px-4 py-4">
+        <p className="mb-3 text-sm font-medium text-green-300">
+          ✓ 학습 유출 의심 — 이 모델로 생성한 이미지가 baseline보다 이 작품에 유의미하게 더 가까워요
+        </p>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+          <dt className="text-neutral-500">의심 모델 URL</dt>
+          <dd className="break-all text-neutral-300">{bundle.discoveredUrl}</dd>
+          <dt className="text-neutral-500">판정</dt>
+          <dd className="text-neutral-300">{modelLeak.verdict}</dd>
+          <dt className="text-neutral-500">평균 delta (suspect - base)</dt>
+          <dd className="font-mono text-neutral-300">
+            {modelLeak.meanDelta >= 0 ? "+" : ""}
+            {modelLeak.meanDelta.toFixed(4)} (기준값 {modelLeak.threshold})
+          </dd>
+        </dl>
+        {modelLeak.perPrompt.length > 0 && (
+          <table className="mt-3 w-full text-xs">
+            <thead>
+              <tr className="text-neutral-500">
+                <th className="pb-1 text-left font-normal">프롬프트</th>
+                <th className="pb-1 text-right font-normal">base 유사도</th>
+                <th className="pb-1 text-right font-normal">suspect 유사도</th>
+                <th className="pb-1 text-right font-normal">delta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelLeak.perPrompt.map((p, i) => (
+                <tr key={i} className="border-t border-green-900/40 text-neutral-300">
+                  <td className="py-1 pr-2">{p.prompt}</td>
+                  <td className="py-1 text-right font-mono">{p.avgBaseSimilarity.toFixed(4)}</td>
+                  <td className="py-1 text-right font-mono">{p.avgSuspectSimilarity.toFixed(4)}</td>
+                  <td className="py-1 text-right font-mono">
+                    {p.delta >= 0 ? "+" : ""}
+                    {p.delta.toFixed(4)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded border border-green-900 bg-green-950/20 px-4 py-4">

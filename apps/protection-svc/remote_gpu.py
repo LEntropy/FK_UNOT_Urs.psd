@@ -292,6 +292,63 @@ def remote_multiarch_cloak(
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
 
 
+def remote_detect_model_leak(
+    original_path: str,
+    suspect_lora_path: str,
+    prompts: list[str],
+    num_samples: int = 4,
+    resolution: int = 512,
+    gen_seed: int = 42,
+) -> dict:
+    """Runs model_leak_detect.py's detect_model_leak() on the same
+    dedicated A40-class pod remote_multiarch_cloak() uses -- it already has
+    the exact dependency this needs (diffusers/transformers/peft/torch,
+    no kohya_ss/sd-scripts required, since detect_model_leak() only
+    generates images and loads LoRA weights, never trains one), just for a
+    different script. Reuses _multiarch_connection() rather than
+    _connection()'s owned 8GB GPU PC -- that machine's plain ml-engine venv
+    (remote_cloak()'s target) has no diffusers at all.
+
+    Uploads the original (registered) image and the suspect LoRA file
+    under a fresh uuid tag (same never-collide-with-a-concurrent-call
+    reasoning as remote_measure_existing_images), runs the detector, and
+    best-effort cleans up both uploaded files afterward -- unlike
+    remote_multiarch_cloak's output, nothing here needs to persist on the
+    pod once the JSON result is back.
+    """
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _multiarch_connection()
+    multiarch_python = _env("MULTIARCH_KOHYA_PYTHON", "/usr/bin/python3")
+    sd15_checkpoint = _env("MULTIARCH_SD15_CHECKPOINT", "/workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors")
+
+    tag = uuid.uuid4().hex[:12]
+    remote_original = f"{gpu_remote_dir}/out/_leak_{tag}_original{os.path.splitext(original_path)[1]}"
+    remote_lora = f"{gpu_remote_dir}/out/_leak_{tag}_suspect{os.path.splitext(suspect_lora_path)[1]}"
+
+    _run("ssh", *ssh_opts, remote, f"mkdir -p '{gpu_remote_dir}/out'")
+
+    try:
+        _run("scp", *scp_opts, original_path, f"{remote}:{remote_original}")
+        _run("scp", *scp_opts, suspect_lora_path, f"{remote}:{remote_lora}")
+
+        prompts_arg = "|".join(prompts).replace("'", "'\\''")
+        remote_cmd = (
+            f"{multiarch_python} '{gpu_remote_dir}/ml-engine/src/model_leak_detect.py' "
+            f"--checkpoint '{sd15_checkpoint}' --suspect-lora '{remote_lora}' "
+            f"--original '{remote_original}' --prompts '{prompts_arg}' "
+            f"--num-samples {num_samples} --resolution {resolution} --gen-seed {gen_seed}"
+        )
+        result = _run("ssh", *ssh_opts, remote, remote_cmd)
+
+        import json
+
+        return json.loads(result.stdout)
+    finally:
+        try:
+            _run("ssh", *ssh_opts, remote, f"rm -f '{remote_original}' '{remote_lora}'")
+        except RuntimeError:
+            pass  # best-effort -- a leftover temp file on the pod isn't worth failing the request over
+
+
 def remote_upscale(input_path: str, output_path: str, target_width: int, target_height: int) -> None:
     """Runs upscale.py's super-resolution restoration step on the GPU PC
     instead of locally. Found for real, live, in production: loading torch

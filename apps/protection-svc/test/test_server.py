@@ -304,3 +304,105 @@ def test_suggest_tags_defaults_top_k_to_ten(client, real_image, monkeypatch):
 
     client.post("/suggest-tags", json={"imageUri": real_image})
     assert captured["top_k"] == 10
+
+
+@pytest.fixture
+def suspect_lora(tmp_path):
+    # Not a real safetensors file -- server.py's endpoint only checks
+    # Path.exists() before handing off to the (mocked, in these tests)
+    # detection function, same "real image but fake content" posture as
+    # real_image above for imageUri.
+    p = tmp_path / "suspect.safetensors"
+    p.write_bytes(b"not a real safetensors file")
+    return str(p)
+
+
+def wait_for_model_leak_terminal_status(client, job_id, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/detect-model-leak/{job_id}").json()
+        if body["status"] in ("completed", "failed"):
+            return body
+        time.sleep(0.02)
+    raise TimeoutError(f"job {job_id} never reached a terminal status")
+
+
+def test_detect_model_leak_rejects_missing_original_image(client, suspect_lora):
+    res = client.post(
+        "/detect-model-leak",
+        json={"originalImageUri": "C:/nope.png", "suspectLoraUri": suspect_lora, "prompts": ["a painting"]},
+    )
+    assert res.status_code == 400
+    assert "originalImageUri" in res.json()["detail"]
+
+
+def test_detect_model_leak_rejects_missing_suspect_lora(client, real_image):
+    res = client.post(
+        "/detect-model-leak",
+        json={"originalImageUri": real_image, "suspectLoraUri": "C:/nope.safetensors", "prompts": ["a painting"]},
+    )
+    assert res.status_code == 400
+    assert "suspectLoraUri" in res.json()["detail"]
+
+
+def test_detect_model_leak_rejects_empty_prompts(client, real_image, suspect_lora):
+    res = client.post(
+        "/detect-model-leak",
+        json={"originalImageUri": real_image, "suspectLoraUri": suspect_lora, "prompts": []},
+    )
+    assert res.status_code == 400
+    assert "prompts" in res.json()["detail"]
+
+
+def test_detect_model_leak_unknown_job_404s(client):
+    res = client.get("/detect-model-leak/leakjob_doesnotexist")
+    assert res.status_code == 404
+
+
+def test_detect_model_leak_happy_path_reaches_completed(client, real_image, suspect_lora, monkeypatch):
+    captured = {}
+
+    def fake_detect(**kwargs):
+        captured.update(kwargs)
+        return {
+            "perPrompt": [{"prompt": "a painting", "avgBaseSimilarity": 0.5, "avgSuspectSimilarity": 0.6, "delta": 0.1}],
+            "meanDelta": 0.1,
+            "stdevDelta": 0.0,
+            "verdict": "SUSPECTED_LEAK",
+            "threshold": 0.03,
+        }
+
+    monkeypatch.setattr(server, "_local_detect_model_leak", fake_detect)
+
+    create = client.post(
+        "/detect-model-leak",
+        json={"originalImageUri": real_image, "suspectLoraUri": suspect_lora, "prompts": ["a painting"]},
+    )
+    assert create.status_code == 202
+    job_id = create.json()["jobId"]
+    assert job_id.startswith("leakjob_")
+
+    final = wait_for_model_leak_terminal_status(client, job_id)
+    assert final["status"] == "completed"
+    assert final["verdict"] == "SUSPECTED_LEAK"
+    assert final["meanDelta"] == 0.1
+    assert captured["suspect_lora_path"] == suspect_lora
+    assert captured["original_image_path"] == real_image
+    assert captured["prompts"] == ["a painting"]
+
+
+def test_detect_model_leak_failure_is_reported_as_failed_status_not_a_500(client, real_image, suspect_lora, monkeypatch):
+    def fake_detect(**kwargs):
+        raise RuntimeError("GPU exploded")
+
+    monkeypatch.setattr(server, "_local_detect_model_leak", fake_detect)
+
+    create = client.post(
+        "/detect-model-leak",
+        json={"originalImageUri": real_image, "suspectLoraUri": suspect_lora, "prompts": ["a painting"]},
+    )
+    assert create.status_code == 202
+
+    final = wait_for_model_leak_terminal_status(client, create.json()["jobId"])
+    assert final["status"] == "failed"
+    assert "GPU exploded" in final["error"]

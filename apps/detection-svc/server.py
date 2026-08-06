@@ -11,11 +11,13 @@ are product/human workflow, not automated here.
 
 import os
 import sys
+import time
 import traceback
 import uuid
 from pathlib import Path
 from threading import Thread
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -28,14 +30,22 @@ from evidence_bundle import build_bundle, write_json, write_pdf_best_effort  # n
 from evidence_capture import capture  # noqa: E402
 from evidence_signing import sign_bundle  # noqa: E402
 from phash_match import is_likely_match  # noqa: E402
+from protection_client import LeakDetectionTimeoutError, download_suspect_model, poll_leak_detection_job, submit_leak_detection_job  # noqa: E402
 from rust_watermark import detect_watermark  # noqa: E402
 from vision import vision_configured, web_detect_matching_urls  # noqa: E402
 
 ASSET_SERVICE_URL = os.environ.get("ASSET_SERVICE_URL", "http://localhost:3002")
+PROTECTION_SVC_URL = os.environ.get("PROTECTION_SVC_URL", "http://localhost:8010")
 PHASH_MATCH_THRESHOLD = int(os.environ.get("PHASH_MATCH_THRESHOLD", "20"))
 DEFAULT_WATERMARK_HEX = os.environ.get("DEFAULT_WATERMARK_HEX", "deadbeefcafef00d")
 OUT_DIR = Path(os.environ.get("DETECTION_OUT_DIR", str(Path(__file__).parent / "out")))
 DB_PATH = os.environ.get("DETECTION_DB_PATH", str(Path(__file__).parent / "data" / "detection.db"))
+# Same magnitude as a real LoRA .safetensors file (SD1.5 rank-32 LoRAs run
+# tens of MB; generous headroom for higher ranks) without leaving the cap
+# effectively unbounded -- see protection_client.download_suspect_model's
+# doc for why this exists at all.
+MODEL_LEAK_MAX_BYTES = int(os.environ.get("MODEL_LEAK_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))  # 2GB
+MODEL_LEAK_POLL_TIMEOUT_SECONDS = float(os.environ.get("MODEL_LEAK_POLL_TIMEOUT_SECONDS", "1800"))  # 30min
 
 app = FastAPI(title="detection-svc", version="0.1.1")
 _db = connect(DB_PATH)
@@ -49,6 +59,36 @@ class ScanResponse(BaseModel):
 class ReportRequest(BaseModel):
     artworkId: str
     suspectUrl: str
+
+
+class ModelLeakReportRequest(BaseModel):
+    artworkId: str
+    suspectModelUrl: str  # a .safetensors LoRA file someone else published, suspected of being trained on this artwork
+
+
+def _build_generic_prompts(artwork: dict) -> list[str]:
+    """Deliberately trigger-word-free prompts (see ml-engine/src/
+    model_leak_detect.py's module doc for why) -- built from the artwork's
+    own title/tags, the only subject description this service has (same
+    "no real per-image caption in the data model" gap
+    remote_multiarch_cloak's docstring already flags for strong_protection).
+    Two variants (title alone, title+tags) rather than one, so a single
+    bad prompt doesn't decide the whole verdict."""
+    title = artwork.get("title") or "an illustration"
+    tags = artwork.get("tags")
+    if isinstance(tags, str):
+        import json as _json
+
+        try:
+            tags = _json.loads(tags)
+        except (ValueError, TypeError):
+            tags = []
+    tags = tags or []
+
+    prompts = [title]
+    if tags:
+        prompts.append(f"{title}, {', '.join(tags[:3])}")
+    return prompts
 
 
 # Runbook steps 4-6 (PROJECT_DESIGN.md §7: 권리자 알림, 대응 옵션 안내, 케이스
@@ -154,6 +194,57 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
         set_case_status(_db, case_id, "FAILED", f"{exc}\n{traceback.format_exc()}")
 
 
+def _run_model_leak_case(case_id: str, artwork: dict, suspect_model_url: str) -> None:
+    try:
+        protected_uri = artwork.get("protectedImageUri")
+        if not protected_uri or not Path(protected_uri).exists():
+            set_case_status(_db, case_id, "FAILED", "artwork has no reachable protectedImageUri to compare against")
+            return
+
+        case_out_dir = OUT_DIR / case_id
+        case_out_dir.mkdir(parents=True, exist_ok=True)
+        model_path = case_out_dir / "suspect_model.safetensors"
+
+        try:
+            download_suspect_model(suspect_model_url, str(model_path), MODEL_LEAK_MAX_BYTES)
+        except (httpx.HTTPError, ValueError) as exc:
+            set_case_status(_db, case_id, "FAILED", f"could not download suspect model: {exc}")
+            return
+
+        prompts = _build_generic_prompts(artwork)
+        job_id = submit_leak_detection_job(PROTECTION_SVC_URL, protected_uri, str(model_path), prompts)
+
+        try:
+            job = poll_leak_detection_job(PROTECTION_SVC_URL, job_id, MODEL_LEAK_POLL_TIMEOUT_SECONDS)
+        except LeakDetectionTimeoutError as exc:
+            set_case_status(_db, case_id, "FAILED", str(exc))
+            return
+
+        if job["status"] != "completed":
+            set_case_status(_db, case_id, "FAILED", job.get("error", "model-leak detection job failed"))
+            return
+
+        verdict = job.get("verdict")
+        any_evidence = verdict == "SUSPECTED_LEAK"
+
+        bundle = build_bundle(
+            artwork=artwork,
+            source_url=suspect_model_url,
+            detected_at=time.time(),
+            model_leak_result=job,
+        )
+        bundle["signature"] = sign_bundle({k: v for k, v in bundle.items() if k != "signature"})
+        write_json(bundle, case_out_dir / "bundle.json")
+        write_pdf_best_effort(bundle, case_out_dir / "bundle.pdf")
+
+        evidence_type = "model_leak" if any_evidence else "model_leak_no_match"
+        add_evidence(_db, case_id, evidence_type, suspect_model_url, job.get("meanDelta"), str(case_out_dir))
+
+        set_case_status(_db, case_id, "EVIDENCE_READY" if any_evidence else "NO_MATCH_FOUND")
+    except Exception as exc:  # noqa: BLE001 -- report failure via case status, mirrors _run_case_for_urls
+        set_case_status(_db, case_id, "FAILED", f"{exc}\n{traceback.format_exc()}")
+
+
 def _safe_slug(url: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in url)[:80] or "url"
 
@@ -194,6 +285,32 @@ async def submit_report(req: ReportRequest):
     create_case(_db, case_id, req.artworkId, "report")
 
     Thread(target=_run_case_for_urls, args=(case_id, artwork, [req.suspectUrl]), daemon=True).start()
+
+    return {"caseId": case_id, "status": "queued"}
+
+
+@app.post("/model-leak-reports", status_code=202, response_model=ScanResponse)
+async def submit_model_leak_report(req: ModelLeakReportRequest):
+    """Detects whether a suspect LoRA/model file was trained on this
+    artwork -- the "someone trained a model on my art" threat the original
+    /scan and /reports endpoints don't cover (those only find re-posted
+    copies of the image itself, via reverse image search / pHash /
+    watermark). Compares against the artwork's *published* protected
+    image (protectedImageUri), not the private original -- that's the
+    only version a real infringer could ever have scraped and trained on.
+    See ml-engine/src/model_leak_detect.py's module doc for the detection
+    mechanism and protection_client.py for why this is the one place
+    detection-svc calls out to protection-svc.
+    """
+    try:
+        artwork = await get_artwork(ASSET_SERVICE_URL, req.artworkId)
+    except ArtworkNotFoundError:
+        raise HTTPException(404, f"no artwork {req.artworkId!r} on asset-service")
+
+    case_id = f"case_{uuid.uuid4().hex[:12]}"
+    create_case(_db, case_id, req.artworkId, "model_report")
+
+    Thread(target=_run_model_leak_case, args=(case_id, artwork, req.suspectModelUrl), daemon=True).start()
 
     return {"caseId": case_id, "status": "queued"}
 

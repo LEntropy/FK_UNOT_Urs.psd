@@ -6,7 +6,9 @@ web and assemble an evidence package for each match.
 
 ## Scope
 
-Implements runbook steps 1-3 of §7 only:
+Implements runbook steps 1-3 of §7, for two different threats:
+
+**Re-posted/copied images** (the original scope):
 1. **탐지/신고 접수** — `POST /scan/{artworkId}` (proactive) or `POST /reports`
    (a caller-submitted suspect URL).
 2. **자동 증거 수집** — for each candidate URL: pHash Hamming-distance
@@ -16,6 +18,19 @@ Implements runbook steps 1-3 of §7 only:
    isn't installed).
 3. **증거 패키지 생성** — JSON bundle (always) + best-effort PDF, per
    PROJECT_DESIGN.md §3-7's exact field list.
+
+**Unauthorized model training** — `POST /model-leak-reports {artworkId,
+suspectModelUrl}`: given a suspect LoRA `.safetensors` file (e.g. found on
+CivitAI/HuggingFace), does generating images from it come out anomalously
+close to this artwork? Reuses this project's own LoRA-training-protection
+validation methodology (`apps/protection-svc/ml-engine/src/
+model_leak_detect.py`) as a detection signal instead — see that module's
+doc for the mechanism, and `src/protection_client.py`'s doc for why this
+is the one endpoint that calls out to protection-svc (needs real GPU
+inference, which this service can't do itself). Compares against the
+artwork's *published* protected image, never the private original — the
+only version a real infringer could have scraped. Evidence type
+`model_leak` (verdict `SUSPECTED_LEAK`) or `model_leak_no_match`.
 
 Steps 4-6 of the runbook (권리자 알림, 대응 옵션 안내, 케이스 추적) are
 product/human workflow and are **not** automated here — see
@@ -57,6 +72,7 @@ instead of tracking it outside the system entirely.
 
 - `POST /scan/{artworkId}` → `202 {caseId, status: "queued"}`
 - `POST /reports {artworkId, suspectUrl}` → `202 {caseId, status: "queued"}`
+- `POST /model-leak-reports {artworkId, suspectModelUrl}` → `202 {caseId, status: "queued"}`
 - `GET /cases/{caseId}` → case status (`OPEN` → `EVIDENCE_READY` /
   `NO_MATCH_FOUND` / `FAILED`) + evidence record list
 - `PATCH /cases/{caseId} {status, note?}` → records a manual runbook step

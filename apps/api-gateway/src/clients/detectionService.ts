@@ -38,6 +38,13 @@ export const reportArtwork = (artworkId: string, suspectUrl: string) =>
     body: JSON.stringify({ artworkId, suspectUrl }),
   });
 
+export const reportModelLeak = (artworkId: string, suspectModelUrl: string) =>
+  request<DetectionCaseResponse>("/model-leak-reports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artworkId, suspectModelUrl }),
+  });
+
 export interface EvidenceRecord {
   id: number;
   case_id: string;
@@ -52,7 +59,7 @@ export interface Case {
   id: string;
   artwork_id: string;
   status: "OPEN" | "EVIDENCE_READY" | "NO_MATCH_FOUND" | "FAILED" | "NOTIFIED" | "RESOLVED" | "ESCALATED";
-  trigger: "scan" | "report";
+  trigger: "scan" | "report" | "model_report";
   error_message: string | null;
   note: string | null;
   created_at: number;
@@ -79,6 +86,13 @@ export interface EvidenceBundle {
     signedByDontai: boolean;
     ownership: Record<string, unknown> | null;
     validationIssues: string[] | null;
+  } | null;
+  modelLeakDetection: {
+    perPrompt: Array<{ prompt: string; avgBaseSimilarity: number; avgSuspectSimilarity: number; delta: number }>;
+    meanDelta: number;
+    stdevDelta: number;
+    verdict: "SUSPECTED_LEAK" | "INCONCLUSIVE" | "NO_EVIDENCE";
+    threshold: number;
   } | null;
   discoveredUrl: string | null;
   discoveredAt: number;

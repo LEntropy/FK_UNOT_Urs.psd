@@ -628,3 +628,40 @@ Full experimental record, robustness checks, and replication numbers: see
 the `lora-protection-research` memory (this session's own working notes,
 not part of this repo) and `apps/protection-svc/ml-engine/experiments/
 ensemble_validation/run_multiarch_n30.py`/`run_multiarch_n30_score.py`.
+
+**Update (2026-08-06) -- built and verified live, with one real design
+change from the recommendation above.** Given this project's actual
+current traffic (development stage, sporadic real requests), keeping an
+A40-class pod running continuously turned out not to be the cost-effective
+choice item 2 above assumed -- comparing real RunPod pricing at build
+time, A40 secure-cloud ($0.44/hr) was *cheaper* than every 24GB-class
+alternative checked (RTX 3090 $0.50/hr, L4 $0.49/hr, RTX 4090 $0.74/hr),
+so downsizing the GPU wouldn't have helped either. The design that
+actually shipped: build `docker/strongprotect/Dockerfile` -- a
+self-contained image with the checkpoints and exact dependency set
+`multiarch_ensemble_attack()` needs already baked in (SD1.5+SDXL,
+diffusers/transformers/peft/torch pinned to this project's validated
+versions -- deliberately *not* a kohya_ss clone, since production only
+ever calls the attack directly, never LoRA training) -- and create a fresh
+A40 pod from that image **per request**, instead of keeping one pod (or a
+persistent network volume attached to one) running between requests.
+RunPod's own Network Volume feature (the natural way to keep checkpoints
+attached across a pod's full lifecycle without baking them into an image)
+turned out to have **no data-center overlap with A40 availability** at
+build time -- volumes were only offered in a different DC list than the
+one with A40 stock -- which is what forced the Docker-image approach over
+a network volume in the first place. A first build attempt reused the
+`runpod/pytorch` base image (2026-08-05's experiment pods' usual choice)
+and came out to 49.4GB, almost entirely jupyter/filebrowser/multi-Python-
+version tooling this headless worker never touches; rebuilt on a plain
+`nvidia/cuda` runtime base with a hand-written minimal SSH setup instead,
+down to 36GB. Verified for real: pushed to Docker Hub, created a fresh A40
+pod from the image with no setup step, confirmed the checkpoints/deps were
+already present, and ran `remote_multiarch_cloak()` against it successfully
+(165s attack, valid output) -- pod creation to a completed attack took
+under 8 minutes total, image pull+extract included, with no manual setup
+step in between. `remote_gpu.py`'s `remote_multiarch_cloak()` (added
+alongside `remote_cloak()`, per item 2's original design) is unchanged by
+this -- it dispatches over SSH to whatever `MULTIARCH_GPU_HOST` currently
+points at, whether that's a long-lived pod or a freshly-created one; only
+which of those a caller creates first changed.

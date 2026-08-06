@@ -484,6 +484,72 @@ def test_run_case_for_urls_does_not_notify_on_no_match(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_anchor_if_enabled_returns_none_without_calling_anchor_when_disabled(monkeypatch):
+    monkeypatch.setattr(server, "EVIDENCE_ANCHOR_ENABLED", False)
+    calls = []
+    monkeypatch.setattr(server, "anchor_evidence_bundle", lambda *a, **kw: calls.append(a))
+
+    result = server._anchor_if_enabled({"a": 1}, "0xOWNER")
+
+    assert result is None
+    assert calls == []
+
+
+def test_anchor_if_enabled_calls_through_when_enabled(monkeypatch):
+    monkeypatch.setattr(server, "EVIDENCE_ANCHOR_ENABLED", True)
+    captured = {}
+
+    def fake_anchor(content, owner_address):
+        captured["content"] = content
+        captured["owner_address"] = owner_address
+        return {"txHash": "0xTX", "blockNumber": 1, "contentHash": "0xHASH"}
+
+    monkeypatch.setattr(server, "anchor_evidence_bundle", fake_anchor)
+
+    result = server._anchor_if_enabled({"a": 1}, "0xOWNER")
+
+    assert result == {"txHash": "0xTX", "blockNumber": 1, "contentHash": "0xHASH"}
+    assert captured["owner_address"] == "0xOWNER"
+    assert '"a": 1' in captured["content"]
+
+
+def test_anchor_if_enabled_swallows_a_failure_instead_of_raising(monkeypatch):
+    monkeypatch.setattr(server, "EVIDENCE_ANCHOR_ENABLED", True)
+
+    def raising_anchor(*a, **kw):
+        raise RuntimeError("blockchain-svc unreachable")
+
+    monkeypatch.setattr(server, "anchor_evidence_bundle", raising_anchor)
+
+    assert server._anchor_if_enabled({"a": 1}, "0xOWNER") is None
+
+
+def test_run_case_for_urls_leaves_evidence_anchor_none_by_default(monkeypatch, tmp_path):
+    from db import create_case
+
+    captured_bundles = _stub_common_run_case_deps(monkeypatch, tmp_path)
+
+    case_id = "case_anchor_default"
+    create_case(server._db, case_id, "ast_abc", "report")
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert captured_bundles[0]["evidenceAnchor"] is None
+
+
+def test_run_case_for_urls_sets_evidence_anchor_when_enabled(monkeypatch, tmp_path):
+    from db import create_case
+
+    captured_bundles = _stub_common_run_case_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "EVIDENCE_ANCHOR_ENABLED", True)
+    monkeypatch.setattr(server, "anchor_evidence_bundle", lambda content, owner_address: {"txHash": "0xTX", "blockNumber": 1, "contentHash": "0xHASH"})
+
+    case_id = "case_anchor_enabled"
+    create_case(server._db, case_id, "ast_abc", "report")
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert captured_bundles[0]["evidenceAnchor"] == {"txHash": "0xTX", "blockNumber": 1, "contentHash": "0xHASH"}
+
+
 def test_notify_if_evidence_ready_swallows_a_missing_field_instead_of_raising(monkeypatch):
     def raising_notify(*a, **kw):
         raise RuntimeError("api-gateway unreachable")

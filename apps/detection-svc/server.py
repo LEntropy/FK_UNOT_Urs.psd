@@ -34,6 +34,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from asset_client import ArtworkNotFoundError, get_artwork  # noqa: E402
+from blockchain_client import anchor_evidence_bundle  # noqa: E402
 from c2pa_verify import verify_c2pa  # noqa: E402
 from db import add_evidence, connect, create_case, get_case, get_last_scan_time, set_case_status  # noqa: E402
 from dmca_notice import build_dmca_notice, is_dmca_applicable  # noqa: E402
@@ -65,6 +66,11 @@ MODEL_LEAK_POLL_TIMEOUT_SECONDS = float(os.environ.get("MODEL_LEAK_POLL_TIMEOUT_
 AUTO_SCAN_ENABLED = os.environ.get("AUTO_SCAN_ENABLED") == "1"
 AUTO_SCAN_POLL_INTERVAL_SECONDS = float(os.environ.get("AUTO_SCAN_POLL_INTERVAL_SECONDS", str(6 * 3600)))  # check every 6h
 AUTO_RESCAN_INTERVAL_SECONDS = float(os.environ.get("AUTO_RESCAN_INTERVAL_SECONDS", str(7 * 24 * 3600)))  # re-scan an artwork at most once a week
+# Opt-in, default off -- see blockchain_client.py's module doc: a real
+# (if testnet) relayer gas cost per EVIDENCE_READY case, and this
+# project's own history already hit the relayer running low on funds
+# unexpectedly once.
+EVIDENCE_ANCHOR_ENABLED = os.environ.get("EVIDENCE_ANCHOR_ENABLED") == "1"
 
 app = FastAPI(title="detection-svc", version="0.1.1")
 _db = connect(DB_PATH)
@@ -134,6 +140,23 @@ def _notify_if_evidence_ready(artwork: dict, case_id: str, evidence_type: str) -
         notify_evidence_ready(artwork.get("creatorId", ""), artwork.get("title") or "Untitled", case_id, evidence_type)
     except Exception:  # noqa: BLE001 -- notification is enrichment, never worth failing a case over
         pass
+
+
+def _anchor_if_enabled(bundle_without_signature: dict, owner_address: str) -> dict | None:
+    """Returns None immediately (no network call at all) unless
+    EVIDENCE_ANCHOR_ENABLED -- see blockchain_client.py's module doc for
+    why this defaults off. Wrapped the same best-effort way as
+    _notify_if_evidence_ready: a failure here must never fail an
+    otherwise-complete case."""
+    if not EVIDENCE_ANCHOR_ENABLED:
+        return None
+    try:
+        import json
+
+        bundle_content = json.dumps(bundle_without_signature, sort_keys=True, default=str)
+        return anchor_evidence_bundle(bundle_content, owner_address)
+    except Exception:  # noqa: BLE001 -- anchoring is enrichment, never worth failing a case over
+        return None
 
 
 def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -> None:
@@ -212,7 +235,9 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
             # Best-effort, like the screenshot/PDF steps around it -- a
             # signing failure (api-gateway down, KMS unreachable) degrades
             # to an unsigned bundle rather than losing the whole case.
-            bundle["signature"] = sign_bundle({k: v for k, v in bundle.items() if k != "signature"})
+            bundle_without_signature = {k: v for k, v in bundle.items() if k != "signature"}
+            bundle["signature"] = sign_bundle(bundle_without_signature)
+            bundle["evidenceAnchor"] = _anchor_if_enabled(bundle_without_signature, artwork.get("ownerWalletAddress", ""))
             write_json(bundle, case_out_dir / "bundle.json")
             write_pdf_best_effort(bundle, case_out_dir / "bundle.pdf")
 
@@ -266,7 +291,9 @@ def _run_model_leak_case(case_id: str, artwork: dict, suspect_model_url: str) ->
             detected_at=time.time(),
             model_leak_result=job,
         )
-        bundle["signature"] = sign_bundle({k: v for k, v in bundle.items() if k != "signature"})
+        bundle_without_signature = {k: v for k, v in bundle.items() if k != "signature"}
+        bundle["signature"] = sign_bundle(bundle_without_signature)
+        bundle["evidenceAnchor"] = _anchor_if_enabled(bundle_without_signature, artwork.get("ownerWalletAddress", ""))
         write_json(bundle, case_out_dir / "bundle.json")
         write_pdf_best_effort(bundle, case_out_dir / "bundle.pdf")
 

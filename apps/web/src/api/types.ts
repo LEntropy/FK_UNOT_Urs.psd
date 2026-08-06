@@ -119,4 +119,5 @@ export interface EvidenceBundle {
     blockNumber: number | null;
   } | null;
   signature: { signature: string; publicKeyPem: string; algorithm: string } | null;
+  evidenceAnchor: { txHash: string; blockNumber: number; contentHash: string } | null;
 }

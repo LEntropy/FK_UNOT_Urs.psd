@@ -49,6 +49,14 @@ only version a real infringer could have scraped. Evidence type
   same "this service can't do it itself" reasoning as evidence signing.
   Best-effort: SMTP not configured on api-gateway's end, or unreachable,
   both degrade to "no email sent" rather than failing the case.
+- **On-chain evidence anchoring** (`EVIDENCE_ANCHOR_ENABLED=1`, off by
+  default) -- reuses blockchain-svc's existing artwork-registration
+  contract call to timestamp-anchor the evidence bundle itself
+  (`src/blockchain_client.py`), so a bundle's existence-at-this-time can
+  be proven the same immutable way artwork ownership already is. Adds a
+  bundle field, `evidenceAnchor: {txHash, blockNumber, contentHash} | null`.
+  Real (if testnet) relayer gas per case, so opt-in and best-effort --
+  never fails an otherwise-complete case.
 
 Steps 4-6 of the runbook (권리자 알림, 대응 옵션 안내, 케이스 추적) are
 product/human workflow and are **not** automated here — see

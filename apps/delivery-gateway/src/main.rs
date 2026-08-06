@@ -45,7 +45,26 @@ async fn main() {
                     .unwrap_or(60),
             ),
         ),
-        honeypot: HoneypotTracker::new(honeypot_tokens()),
+        honeypot: {
+            let db_path = std::env::var("HONEYPOT_DB_PATH").unwrap_or_else(|_| "./data/honeypot.db".into());
+            if let Some(parent) = std::path::Path::new(&db_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match HoneypotTracker::with_persistence(honeypot_tokens(), &db_path) {
+                Ok(tracker) => tracker,
+                Err(err) => {
+                    // Best-effort: a corrupt/unwritable DB file shouldn't
+                    // stop the whole service from starting -- falls back
+                    // to in-memory-only (this process's own prior
+                    // behavior), just without surviving a restart.
+                    eprintln!(
+                        "honeypot persistence unavailable ({err}), falling back to in-memory-only \
+                         (hits/blocks won't survive a restart)"
+                    );
+                    HoneypotTracker::new(honeypot_tokens())
+                }
+            }
+        },
         sign_ttl_seconds: std::env::var("SIGN_TTL_SECONDS")
             .ok()
             .and_then(|s| s.parse().ok())

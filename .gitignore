@@ -28,6 +28,7 @@ apps/protection-svc/test/test_jobs.db*
 
 # delivery-gateway
 apps/delivery-gateway/target/
+apps/delivery-gateway/data/
 
 # detection-svc
 apps/detection-svc/out/

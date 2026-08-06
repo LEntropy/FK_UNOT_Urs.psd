@@ -16,7 +16,10 @@
 
 use dashmap::{DashMap, DashSet};
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::honeypot_db::HoneypotDb;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HoneypotHit {
@@ -37,6 +40,11 @@ pub struct HoneypotTracker {
     // this is a one-way set with no expiry, because a honeypot hit isn't
     // an ambiguous signal that should decay -- see is_flagged's doc.
     flagged_ips: DashSet<IpAddr>,
+    // None in every existing unit test and in `new()` -- persistence is
+    // opt-in via `with_persistence`, used only by the real app (main.rs).
+    // Write-through only (see honeypot_db.rs's own doc for why it's not
+    // on is_flagged's hot path).
+    db: Option<Arc<HoneypotDb>>,
 }
 
 impl HoneypotTracker {
@@ -46,7 +54,38 @@ impl HoneypotTracker {
             hits: DashMap::new(),
             next_id: std::sync::atomic::AtomicU64::new(0),
             flagged_ips: DashSet::new(),
+            db: None,
         }
+    }
+
+    /// Same as `new`, but backed by a real SQLite file: hydrates the
+    /// in-memory hit log/flagged-IP set from whatever was already
+    /// persisted (a previous process's lifetime), then keeps writing
+    /// through on every `record_hit` -- see honeypot_db.rs's module doc
+    /// for why a restart losing this state is a real bug, not just lost
+    /// history (it would silently un-block an already-caught scraper).
+    pub fn with_persistence(tokens: Vec<String>, db_path: &str) -> rusqlite::Result<Self> {
+        let db = HoneypotDb::open(db_path)?;
+
+        let hits = DashMap::new();
+        let mut next_id = 0u64;
+        for hit in db.load_all_hits() {
+            hits.insert(next_id, hit);
+            next_id += 1;
+        }
+
+        let flagged_ips = DashSet::new();
+        for ip in db.load_flagged_ips() {
+            flagged_ips.insert(ip);
+        }
+
+        Ok(Self {
+            tokens,
+            hits,
+            next_id: std::sync::atomic::AtomicU64::new(next_id),
+            flagged_ips,
+            db: Some(Arc::new(db)),
+        })
     }
 
     pub fn is_honeypot_token(&self, token: &str) -> bool {
@@ -65,15 +104,17 @@ impl HoneypotTracker {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before 1970")
             .as_secs();
-        self.hits.insert(
-            id,
-            HoneypotHit {
-                token: token.to_string(),
-                ip: ip.to_string(),
-                user_agent: user_agent.to_string(),
-                unix_time,
-            },
-        );
+        let hit = HoneypotHit {
+            token: token.to_string(),
+            ip: ip.to_string(),
+            user_agent: user_agent.to_string(),
+            unix_time,
+        };
+        if let Some(db) = &self.db {
+            db.insert_hit(&hit);
+            db.flag_ip(ip);
+        }
+        self.hits.insert(id, hit);
         self.flagged_ips.insert(ip);
     }
 
@@ -171,5 +212,29 @@ mod tests {
         let img = image::load_from_memory(DECOY_PNG_1X1)
             .expect("DECOY_PNG_1X1 should be a real, valid PNG");
         assert_eq!((img.width(), img.height()), (1, 1));
+    }
+
+    #[test]
+    fn with_persistence_survives_a_restart_a_flagged_ip_stays_flagged() {
+        let path = std::env::temp_dir()
+            .join(format!("honeypot_tracker_restart_test_{}.db", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let ip = IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7));
+        {
+            let t = HoneypotTracker::with_persistence(vec!["abc123".to_string()], path_str).unwrap();
+            t.record_hit("abc123", ip, "bot-1");
+            assert!(t.is_flagged(ip));
+        } // tracker (and its DB connection) dropped -- simulates a process exit
+
+        // Reopen against the same file, simulating a real restart -- a
+        // fresh HoneypotTracker::new() here (the pre-persistence behavior)
+        // would incorrectly report `false` and let a caught scraper back in.
+        let t2 = HoneypotTracker::with_persistence(vec!["abc123".to_string()], path_str).unwrap();
+        assert!(t2.is_flagged(ip));
+        assert_eq!(t2.recent_hits(10).len(), 1);
+
+        std::fs::remove_file(&path).ok();
     }
 }

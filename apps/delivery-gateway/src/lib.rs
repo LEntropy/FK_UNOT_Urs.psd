@@ -1,6 +1,7 @@
 pub mod crawlers;
 pub mod enumeration;
 pub mod honeypot;
+pub mod honeypot_db;
 pub mod rate_limit;
 pub mod signing;
 

@@ -1,15 +1,21 @@
 import { Router } from "express";
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import type { Db } from "../db/client.js";
+import { users } from "../db/schema.js";
 import { signEvidencePayload } from "../evidenceSigning.js";
+import { sendEvidenceReadyEmail } from "../notify.js";
 
 /**
- * Internal-only endpoint (same trust boundary as delivery-gateway's own
+ * Internal-only endpoints (same trust boundary as delivery-gateway's own
  * /internal/sign -- network-level, not app-level auth, per that service's
- * README) -- detection-svc calls this to get a real signature for the
- * "내부 서명" field in its evidence bundles (PROJECT_DESIGN.md §3-7),
- * replacing the previously-always-null placeholder (see
- * apps/detection-svc/src/evidence_bundle.py's former docstring).
+ * README) -- detection-svc calls these for two things it can't do itself:
+ * getting a real signature for evidence bundles' "내부 서명" field
+ * (/internal/sign-evidence, PROJECT_DESIGN.md §3-7), and emailing a
+ * creator once a case reaches EVIDENCE_READY (/internal/notify-evidence-ready
+ * -- api-gateway owns the users table/email, detection-svc never has it).
  */
-export function internalRouter() {
+export function internalRouter(db: Db) {
   const router = Router();
 
   router.post("/internal/sign-evidence", async (req, res) => {
@@ -23,6 +29,35 @@ export function internalRouter() {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "signing failed" });
     }
+  });
+
+  const notifySchema = z.object({
+    creatorId: z.string(),
+    artworkTitle: z.string(),
+    caseId: z.string(),
+    evidenceType: z.enum(["copy", "model_leak"]),
+  });
+
+  router.post("/internal/notify-evidence-ready", async (req, res) => {
+    const parsed = notifySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    const user = db.select().from(users).where(eq(users.id, parsed.data.creatorId)).get();
+    if (!user) {
+      // Not a client error -- detection-svc has no way to know a creator
+      // was deleted/never existed before asking. Same "sent: false, still
+      // 200" shape as SMTP-not-configured, so this best-effort caller
+      // never needs a try/except for this specific case either.
+      return res.json({ sent: false });
+    }
+
+    const sent = await sendEvidenceReadyEmail({
+      toEmail: user.email,
+      artworkTitle: parsed.data.artworkTitle,
+      caseId: parsed.data.caseId,
+      evidenceType: parsed.data.evidenceType,
+    });
+    res.json({ sent });
   });
 
   return router;

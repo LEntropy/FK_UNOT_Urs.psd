@@ -27,6 +27,8 @@ from asset_client import ArtworkNotFoundError
 
 FAKE_ARTWORK = {
     "id": "ast_abc",
+    "title": "Starry Fields",
+    "creatorId": "user_creator1",
     "perceptualHash": "0xaaaa",
     "protectedImageUri": __file__,  # any existing file path works for the "exists" check
     "ownerWalletAddress": "0x1234567890abcdef1234567890ABCDEF12345678",
@@ -187,6 +189,7 @@ def _stub_common_run_case_deps(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "sign_bundle", lambda bundle: {"signature": "fake-sig", "publicKeyPem": "fake-pem", "algorithm": "ed25519"})
     monkeypatch.setattr(server, "write_json", lambda bundle, path: captured_bundles.append(bundle))
     monkeypatch.setattr(server, "write_pdf_best_effort", lambda bundle, path: None)
+    monkeypatch.setattr(server, "notify_evidence_ready", lambda *a, **kw: False)
     return captured_bundles
 
 
@@ -278,6 +281,7 @@ def _stub_model_leak_deps(monkeypatch, tmp_path, job_result):
     monkeypatch.setattr(server, "sign_bundle", lambda bundle: {"signature": "fake-sig", "publicKeyPem": "fake-pem", "algorithm": "ed25519"})
     monkeypatch.setattr(server, "write_json", lambda bundle, path: captured_bundles.append(bundle))
     monkeypatch.setattr(server, "write_pdf_best_effort", lambda bundle, path: None)
+    monkeypatch.setattr(server, "notify_evidence_ready", lambda *a, **kw: False)
     return captured_bundles
 
 
@@ -395,6 +399,127 @@ def test_run_model_leak_case_fails_on_poll_timeout(monkeypatch, tmp_path):
     case = get_case(server._db, case_id)
     assert case["status"] == "FAILED"
     assert "did not finish" in case["error_message"]
+
+
+def test_run_case_for_urls_notifies_the_creator_when_evidence_is_found(monkeypatch, tmp_path):
+    from db import create_case
+
+    _stub_common_run_case_deps(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(server, "notify_evidence_ready", lambda creator_id, title, case_id, evidence_type: calls.append((creator_id, title, case_id, evidence_type)))
+
+    case_id = "case_notify_copy"
+    create_case(server._db, case_id, "ast_abc", "report")
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert calls == [("user_creator1", "Starry Fields", case_id, "copy")]
+
+
+def test_run_case_for_urls_does_not_notify_on_no_match(monkeypatch, tmp_path):
+    from db import create_case
+
+    _stub_common_run_case_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "is_likely_match", lambda registered_hash, path, threshold: (False, 200))
+    calls = []
+    monkeypatch.setattr(server, "notify_evidence_ready", lambda *a, **kw: calls.append(a))
+
+    case_id = "case_notify_no_match"
+    create_case(server._db, case_id, "ast_abc", "report")
+    server._run_case_for_urls(case_id, FAKE_ARTWORK, ["https://example.com/found.png"])
+
+    assert calls == []
+
+
+def test_notify_if_evidence_ready_swallows_a_missing_field_instead_of_raising(monkeypatch):
+    def raising_notify(*a, **kw):
+        raise RuntimeError("api-gateway unreachable")
+
+    monkeypatch.setattr(server, "notify_evidence_ready", raising_notify)
+    server._notify_if_evidence_ready(FAKE_ARTWORK, "case_x", "copy")  # must not raise
+
+
+def test_run_model_leak_case_notifies_the_creator_on_suspected_leak(monkeypatch, tmp_path):
+    from db import create_case
+
+    job_result = {"status": "completed", "perPrompt": [], "meanDelta": 0.1, "stdevDelta": 0.0, "verdict": "SUSPECTED_LEAK", "threshold": 0.03}
+    _stub_model_leak_deps(monkeypatch, tmp_path, job_result)
+    calls = []
+    monkeypatch.setattr(server, "notify_evidence_ready", lambda creator_id, title, case_id, evidence_type: calls.append((creator_id, title, case_id, evidence_type)))
+
+    case_id = "case_notify_leak"
+    create_case(server._db, case_id, "ast_abc", "model_report")
+    server._run_model_leak_case(case_id, FAKE_ARTWORK, "https://example.com/suspect.safetensors")
+
+    assert calls == [("user_creator1", "Starry Fields", case_id, "model_leak")]
+
+
+# _run_auto_scan_pass: mocks _list_all_artworks and _run_case_for_urls
+# directly (that function's own real behavior is already covered by the
+# tests above) -- this only tests the due-for-rescan decision itself. Each
+# test below uses its own never-before-used artwork id, not FAKE_ARTWORK's
+# shared "ast_abc" -- server._db is one shared in-memory connection for the
+# whole test file (see the module docstring), and several earlier tests
+# already create real "scan"-triggered cases for "ast_abc", which would
+# silently make a "never scanned before" assumption false depending on
+# test execution order.
+def test_auto_scan_pass_scans_an_artwork_that_was_never_scanned_before(monkeypatch):
+    artwork = {**FAKE_ARTWORK, "id": "ast_autoscan_never_scanned"}
+    monkeypatch.setattr(server, "_list_all_artworks", lambda: [artwork])
+    calls = []
+    monkeypatch.setattr(server, "_run_case_for_urls", lambda case_id, artwork, urls: calls.append(artwork["id"]))
+    monkeypatch.setattr(server, "vision_configured", lambda: False)
+
+    server._run_auto_scan_pass()
+
+    assert calls == ["ast_autoscan_never_scanned"]
+
+
+def test_auto_scan_pass_skips_an_artwork_scanned_recently(monkeypatch):
+    from db import create_case
+
+    artwork = {**FAKE_ARTWORK, "id": "ast_autoscan_recent"}
+    create_case(server._db, "case_recent_scan", artwork["id"], "scan")  # created just now
+
+    monkeypatch.setattr(server, "_list_all_artworks", lambda: [artwork])
+    calls = []
+    monkeypatch.setattr(server, "_run_case_for_urls", lambda case_id, artwork, urls: calls.append(artwork["id"]))
+
+    server._run_auto_scan_pass()
+
+    assert calls == []
+
+
+def test_auto_scan_pass_rescans_an_artwork_whose_last_scan_is_stale(monkeypatch):
+    from db import connect
+
+    # A fresh in-memory db with a deliberately old case row, so this test
+    # doesn't depend on AUTO_RESCAN_INTERVAL_SECONDS being small enough to
+    # already be stale relative to "just now".
+    monkeypatch.setattr(server, "_db", connect(":memory:"))
+    from db import create_case, set_case_status
+
+    create_case(server._db, "case_old_scan", "ast_abc", "scan")
+    server._db.execute("UPDATE cases SET created_at = 0 WHERE id = 'case_old_scan'")
+    server._db.commit()
+
+    monkeypatch.setattr(server, "_list_all_artworks", lambda: [FAKE_ARTWORK])
+    calls = []
+    monkeypatch.setattr(server, "_run_case_for_urls", lambda case_id, artwork, urls: calls.append(artwork["id"]))
+    monkeypatch.setattr(server, "vision_configured", lambda: False)
+
+    server._run_auto_scan_pass()
+
+    assert calls == ["ast_abc"]
+
+
+def test_auto_scan_pass_skips_artworks_with_no_reachable_protected_image(monkeypatch):
+    monkeypatch.setattr(server, "_list_all_artworks", lambda: [{**FAKE_ARTWORK, "protectedImageUri": "/no/such/file.png"}])
+    calls = []
+    monkeypatch.setattr(server, "_run_case_for_urls", lambda case_id, artwork, urls: calls.append(artwork["id"]))
+
+    server._run_auto_scan_pass()
+
+    assert calls == []
 
 
 def test_run_case_for_urls_falls_back_to_none_c2pa_when_verify_raises(monkeypatch, tmp_path):

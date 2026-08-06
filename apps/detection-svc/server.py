@@ -5,8 +5,18 @@ cases persist in SQLite (src/db.py) rather than an in-memory dict --
 evidence must survive a restart.
 
 Scope: this implements runbook steps 1-3 of §7 (탐지/신고 접수 -> 자동 증거
-수집 -> 증거 패키지 생성). Steps 4-6 (권리자 알림, 테이크다운, 케이스 추적)
-are product/human workflow, not automated here.
+수집 -> 증거 패키지 생성), plus two follow-ups that make those steps less
+dependent on a human remembering to trigger them:
+- Periodic auto-rescan (_auto_scan_loop): every registered artwork gets a
+  background re-check on a rolling interval, not just at upload time or
+  whenever a creator happens to click "웹에서 자동 검색".
+- Evidence-ready email (notify_client.notify_evidence_ready): the creator
+  doesn't have to keep the Test Lab tab open and polling to learn a case
+  found something.
+Runbook steps 4-6 proper (권리자의 실제 대응 판단, 테이크다운 접수, 케이스
+추적 상태 갱신) remain product/human workflow, not automated here -- the
+email above tells a creator a case needs their attention, it doesn't act
+on their behalf.
 """
 
 import os
@@ -25,10 +35,11 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from asset_client import ArtworkNotFoundError, get_artwork  # noqa: E402
 from c2pa_verify import verify_c2pa  # noqa: E402
-from db import add_evidence, connect, create_case, get_case, set_case_status  # noqa: E402
+from db import add_evidence, connect, create_case, get_case, get_last_scan_time, set_case_status  # noqa: E402
 from evidence_bundle import build_bundle, write_json, write_pdf_best_effort  # noqa: E402
 from evidence_capture import capture  # noqa: E402
 from evidence_signing import sign_bundle  # noqa: E402
+from notify_client import notify_evidence_ready  # noqa: E402
 from phash_match import is_likely_match  # noqa: E402
 from protection_client import LeakDetectionTimeoutError, download_suspect_model, poll_leak_detection_job, submit_leak_detection_job  # noqa: E402
 from rust_watermark import detect_watermark  # noqa: E402
@@ -46,6 +57,13 @@ DB_PATH = os.environ.get("DETECTION_DB_PATH", str(Path(__file__).parent / "data"
 # doc for why this exists at all.
 MODEL_LEAK_MAX_BYTES = int(os.environ.get("MODEL_LEAK_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))  # 2GB
 MODEL_LEAK_POLL_TIMEOUT_SECONDS = float(os.environ.get("MODEL_LEAK_POLL_TIMEOUT_SECONDS", "1800"))  # 30min
+# Opt-in, default off -- a background thread doing real outbound HTTP
+# (asset-service + Vision API) at module-import time would be a surprising
+# side effect for anything that just imports this module (every test file
+# does exactly that). Production deployment sets this to "1".
+AUTO_SCAN_ENABLED = os.environ.get("AUTO_SCAN_ENABLED") == "1"
+AUTO_SCAN_POLL_INTERVAL_SECONDS = float(os.environ.get("AUTO_SCAN_POLL_INTERVAL_SECONDS", str(6 * 3600)))  # check every 6h
+AUTO_RESCAN_INTERVAL_SECONDS = float(os.environ.get("AUTO_RESCAN_INTERVAL_SECONDS", str(7 * 24 * 3600)))  # re-scan an artwork at most once a week
 
 app = FastAPI(title="detection-svc", version="0.1.1")
 _db = connect(DB_PATH)
@@ -103,6 +121,18 @@ MANUAL_STATUSES = {"NOTIFIED", "RESOLVED", "ESCALATED"}
 class UpdateCaseRequest(BaseModel):
     status: str
     note: str | None = None
+
+
+def _notify_if_evidence_ready(artwork: dict, case_id: str, evidence_type: str) -> None:
+    """Best-effort -- wrapped so a notification failure (api-gateway down,
+    SMTP unreachable) can never turn an already-EVIDENCE_READY case back
+    into FAILED. notify_client.notify_evidence_ready itself already
+    catches httpx errors and returns False rather than raising; this
+    outer guard is for anything else (a malformed artwork dict, etc)."""
+    try:
+        notify_evidence_ready(artwork.get("creatorId", ""), artwork.get("title") or "Untitled", case_id, evidence_type)
+    except Exception:  # noqa: BLE001 -- notification is enrichment, never worth failing a case over
+        pass
 
 
 def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -> None:
@@ -190,6 +220,8 @@ def _run_case_for_urls(case_id: str, artwork: dict, candidate_urls: list[str]) -
             add_evidence(_db, case_id, evidence_type, url, confidence, str(case_out_dir))
 
         set_case_status(_db, case_id, "EVIDENCE_READY" if any_evidence else "NO_MATCH_FOUND")
+        if any_evidence:
+            _notify_if_evidence_ready(artwork, case_id, "copy")
     except Exception as exc:  # noqa: BLE001 -- report failure via case status, mirrors protection-svc/server.py
         set_case_status(_db, case_id, "FAILED", f"{exc}\n{traceback.format_exc()}")
 
@@ -241,12 +273,58 @@ def _run_model_leak_case(case_id: str, artwork: dict, suspect_model_url: str) ->
         add_evidence(_db, case_id, evidence_type, suspect_model_url, job.get("meanDelta"), str(case_out_dir))
 
         set_case_status(_db, case_id, "EVIDENCE_READY" if any_evidence else "NO_MATCH_FOUND")
+        if any_evidence:
+            _notify_if_evidence_ready(artwork, case_id, "model_leak")
     except Exception as exc:  # noqa: BLE001 -- report failure via case status, mirrors _run_case_for_urls
         set_case_status(_db, case_id, "FAILED", f"{exc}\n{traceback.format_exc()}")
 
 
 def _safe_slug(url: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in url)[:80] or "url"
+
+
+def _list_all_artworks() -> list[dict]:
+    """No creatorId filter -- the auto-scan loop needs every published
+    artwork on the platform, not one creator's, unlike everything else in
+    this file (which only ever looks at one artwork a caller already named).
+    """
+    resp = httpx.get(f"{ASSET_SERVICE_URL}/artworks", timeout=30.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _run_auto_scan_pass() -> None:
+    """One sweep: for every artwork due for a re-check (never scanned, or
+    last scanned more than AUTO_RESCAN_INTERVAL_SECONDS ago), run the same
+    web-search + evidence pipeline a manual POST /scan/{artworkId} would.
+    Sequential, not parallelized across artworks -- this already runs on
+    its own background thread and this project's scale doesn't need more
+    concurrency than that; parallelizing would also mean juggling several
+    Vision API calls at once for no real benefit yet.
+    """
+    now = time.time()
+    for artwork in _list_all_artworks():
+        protected_uri = artwork.get("protectedImageUri")
+        if not protected_uri or not Path(protected_uri).exists():
+            continue  # nothing published yet to check copies of
+
+        last_scan = get_last_scan_time(_db, artwork["id"])
+        if last_scan is not None and now - last_scan < AUTO_RESCAN_INTERVAL_SECONDS:
+            continue
+
+        case_id = f"case_{uuid.uuid4().hex[:12]}"
+        create_case(_db, case_id, artwork["id"], "auto_scan")
+        candidate_urls = web_detect_matching_urls(protected_uri) if vision_configured() else []
+        _run_case_for_urls(case_id, artwork, candidate_urls)
+
+
+def _auto_scan_loop() -> None:
+    while True:
+        time.sleep(AUTO_SCAN_POLL_INTERVAL_SECONDS)
+        try:
+            _run_auto_scan_pass()
+        except Exception:  # noqa: BLE001 -- one bad sweep (asset-service down, etc) must not kill the loop forever
+            traceback.print_exc()
 
 
 @app.get("/health")
@@ -358,6 +436,10 @@ def get_evidence(case_id: str):
 
             bundles.append(json.loads(bundle_path.read_text()))
     return {"caseId": case_id, "status": case["status"], "bundles": bundles}
+
+
+if AUTO_SCAN_ENABLED:
+    Thread(target=_auto_scan_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

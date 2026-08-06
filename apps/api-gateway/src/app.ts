@@ -30,7 +30,7 @@ export function createApp(db: Db) {
   // first would 401 /internal/sign-evidence before it ever reached its own
   // handler (a real bug, caught by evidenceSigning.test.ts failing once
   // detectionRouter was briefly mounted ahead of this).
-  app.use(internalRouter());
+  app.use(internalRouter(db));
   // detectionRouter owns /artworks/:id/scan, /artworks/:id/report, and
   // /detection-cases/:id/... -- mounted at root (like communityRouter
   // below) since it adds sub-paths under /artworks rather than owning the

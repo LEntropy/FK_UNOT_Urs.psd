@@ -32,6 +32,24 @@ artwork's *published* protected image, never the private original — the
 only version a real infringer could have scraped. Evidence type
 `model_leak` (verdict `SUSPECTED_LEAK`) or `model_leak_no_match`.
 
+**Two follow-ups that reduce how much a human has to remember to trigger**:
+- **Periodic auto-rescan** (`AUTO_SCAN_ENABLED=1`) -- a background thread
+  re-checks every published artwork on a rolling interval
+  (`AUTO_RESCAN_INTERVAL_SECONDS`, default weekly), not just at upload
+  time or whenever a creator happens to click "웹에서 자동 검색". Creates
+  cases with `trigger=auto_scan` (distinguishable from a manual `scan`),
+  reuses the exact same evidence pipeline. Off by default -- see
+  `server.py`'s own note on why a background thread doing real network
+  calls at import time would be a bad default for anything that just
+  imports this module (every test file does).
+- **Evidence-ready email** -- once a case (from any of scan/report/
+  model-leak-report/auto-scan) reaches `EVIDENCE_READY`, the artwork's
+  creator gets an email via api-gateway's `POST /internal/notify-evidence-ready`
+  (`src/notify_client.py`) -- api-gateway owns the users table/SMTP config,
+  same "this service can't do it itself" reasoning as evidence signing.
+  Best-effort: SMTP not configured on api-gateway's end, or unreachable,
+  both degrade to "no email sent" rather than failing the case.
+
 Steps 4-6 of the runbook (권리자 알림, 대응 옵션 안내, 케이스 추적) are
 product/human workflow and are **not** automated here — see
 [`RUNBOOK.md`](RUNBOOK.md) for the actual checklist a person follows,

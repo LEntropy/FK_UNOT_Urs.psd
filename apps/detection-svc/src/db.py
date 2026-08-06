@@ -100,6 +100,20 @@ def add_evidence(
     conn.commit()
 
 
+def get_last_scan_time(conn: sqlite3.Connection, artwork_id: str) -> float | None:
+    """Most recent 'scan' or 'auto_scan' case created for this artwork --
+    server.py's periodic re-scan loop uses this to decide whether an
+    artwork is due for another automated check. Deliberately excludes
+    'report' and 'model_report' (caller-submitted, not this artwork's own
+    periodic monitoring cadence) and manual PATCH-only states (those don't
+    create new case rows at all)."""
+    row = conn.execute(
+        "SELECT MAX(created_at) AS last_scan FROM cases WHERE artwork_id = ? AND trigger IN ('scan', 'auto_scan')",
+        (artwork_id,),
+    ).fetchone()
+    return row["last_scan"] if row and row["last_scan"] is not None else None
+
+
 def get_case(conn: sqlite3.Connection, case_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
     if row is None:

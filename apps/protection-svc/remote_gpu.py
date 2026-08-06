@@ -256,7 +256,15 @@ def remote_multiarch_cloak(
     proxy, not the literal mechanism the validation experiments used.
     """
     gpu_remote_dir, remote, ssh_opts, scp_opts = _multiarch_connection()
-    kohya_python = _env("MULTIARCH_KOHYA_PYTHON", "/workspace/kohya_ss/venv/bin/python")
+    # "MULTIARCH_KOHYA_PYTHON" is a legacy name from this project's
+    # validation pods (which needed kohya_ss/sd-scripts for real LoRA
+    # training) -- the production dontai-strongprotect Docker image
+    # (docker/strongprotect/Dockerfile) doesn't clone kohya_ss at all,
+    # since multiarch_ensemble_attack() itself never imports sd-scripts,
+    # just torch/diffusers/peft. Default now points at that image's plain
+    # system Python; kept the env var name for backward compat with any
+    # already-deployed MULTIARCH_KOHYA_PYTHON override.
+    multiarch_python = _env("MULTIARCH_KOHYA_PYTHON", "/usr/bin/python3")
     sd15_checkpoint = _env("MULTIARCH_SD15_CHECKPOINT", "/workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors")
     sdxl_checkpoint = _env("MULTIARCH_SDXL_CHECKPOINT", "/workspace/checkpoints/Illustrious-XL-v0.1.safetensors")
 
@@ -268,12 +276,12 @@ def remote_multiarch_cloak(
     # 1. Upload the input image.
     _run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
 
-    # 2. Run ensemble_attack_multiarch.py on the pod, in its kohya_ss venv
-    #    (needs diffusers + peft + accelerate, same as remote_cloak's GPU
-    #    PC venv needs for style_cloak.py, just a different machine/venv).
+    # 2. Run ensemble_attack_multiarch.py on the pod (torch/diffusers/peft
+    #    installed directly into the dontai-strongprotect image's system
+    #    Python -- see docker/strongprotect/Dockerfile).
     escaped_prompt = prompt.replace("'", "'\\''")  # single-quote-safe for the remote shell, not a Windows PowerShell target like remote_cloak's
     remote_cmd = (
-        f"{kohya_python} '{gpu_remote_dir}/ml-engine/src/ensemble_attack_multiarch.py' "
+        f"{multiarch_python} '{gpu_remote_dir}/ml-engine/src/ensemble_attack_multiarch.py' "
         f"--original '{remote_input}' --sd15-checkpoint '{sd15_checkpoint}' "
         f"--sdxl-checkpoint '{sdxl_checkpoint}' --prompt '{escaped_prompt}' "
         f"--output '{remote_output}' --preset {preset_name}"

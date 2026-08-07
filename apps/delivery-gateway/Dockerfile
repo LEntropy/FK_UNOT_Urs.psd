@@ -1,7 +1,12 @@
 # delivery-gateway: standalone Rust (axum) binary, no other services'
 # build artifacts needed (unlike protection-svc's rust-core, which is
 # vendored into a Python image -- this one ships as its own image).
-FROM rust:1-slim AS build
+# Pinned to bookworm explicitly, matching the runtime stage's debian:
+# bookworm-slim -- plain `rust:1-slim` now tracks Debian 13 (trixie,
+# glibc 2.38+), which produced a binary the bookworm (glibc 2.36) runtime
+# stage couldn't run at all ("GLIBC_2.38' not found"), found live
+# bringing this stack up locally.
+FROM rust:1-slim-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

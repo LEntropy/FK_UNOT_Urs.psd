@@ -24,6 +24,13 @@ services:
   contracts-deploy:
     image: ghcr.io/foundry-rs/foundry:latest
     entrypoint: ["sh", "/contracts/docker-deploy.sh"]
+    # A freshly created named volume (shared:) is root-owned by default;
+    # the foundry image runs as a non-root "foundry" user (uid 1000),
+    # which can't write registry-address.txt into it otherwise. Found
+    # live: "cannot create /shared/registry-address.txt: Permission
+    # denied" on this container's very last step, after a successful
+    # on-chain deploy.
+    user: root
     environment:
       RPC_URL: http://anvil:8545
     volumes:
@@ -35,7 +42,8 @@ services:
 
   blockchain-svc:
     build:
-      context: apps/blockchain-svc
+      context: .
+      dockerfile: apps/blockchain-svc/Dockerfile
     ports:
       - "3001:3001"
     environment:
@@ -78,6 +86,19 @@ services:
       # for anything from before a container restart would 404 even though
       # jobs_db.py's whole point is surviving that restart.
       - protection_data:/app/data
+      # asset-service hands protection-svc a local file path (imageUri,
+      # INTEGRATION.md's contract -- decryptToTempFile's own doc: "it needs
+      # a real local file path, not bytes in memory") -- across two
+      # separate containers that only works if they share the exact same
+      # underlying volume at the exact same absolute path. This is
+      # asset-service's own asset_data volume (which its DECRYPT_TEMP_DIR
+      # default, ./data/tmp, already lives inside) mounted read-only here
+      # at the identical path. Found live: every real upload's PROTECTING
+      # step 400'd with "imageUri ... not found" until this was added --
+      # server.py's own module doc already calls this gap out ("imageUri
+      # is a local file path in this PoC, not a real object-storage URI"),
+      # this compose file just hadn't worked around it yet.
+      - asset_data:/apps/asset-service/data:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 5s
@@ -211,10 +232,26 @@ services:
       # This gateway is the only trusted caller of delivery-gateway's
       # /internal/sign -- see apps/delivery-gateway/README.md.
       DELIVERY_GATEWAY_URL: http://delivery-gateway:4500
+      # DELIVERY_GATEWAY_URL above is only reachable inside this compose
+      # network -- the signed render URL handed back to it gets embedded
+      # directly into an <img src>, which the *browser* on the host loads,
+      # not another container. Without this override it defaults to
+      # DELIVERY_GATEWAY_URL (env.ts's own doc), producing an unresolvable
+      # "http://delivery-gateway:4500/..." src and every artwork image
+      # failing to load (503/DNS error) -- found live testing a real
+      # upload end-to-end.
+      DELIVERY_GATEWAY_PUBLIC_URL: http://localhost:4500
       # Dev-only secrets, fine to hardcode here -- never use these for a
       # real deployment (see apps/api-gateway/README.md).
       JWT_ACCESS_SECRET: dev-compose-access-secret-not-for-production
       JWT_REFRESH_SECRET: dev-compose-refresh-secret-not-for-production
+      # env.ts requires one of EVIDENCE_SIGNING_PRIVATE_KEY/_ENCRYPTED_KEY --
+      # this compose file had neither, so api-gateway crashed at startup
+      # the first time this stack was actually brought up end-to-end
+      # (evidenceSigning.ts's own doc: "Local dev/tests use the plaintext
+      # EVIDENCE_SIGNING_PRIVATE_KEY path"). Dev-only throwaway Ed25519
+      # key, base64 PKCS8 PEM, generated for this compose file only.
+      EVIDENCE_SIGNING_PRIVATE_KEY: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1DNENBUUF3QlFZREsyVndCQ0lFSU4ra2hOM212QmNiL0FtZ1FzSEpINXV1VHdjOTczdGxhakhid2JVb1hTMG4KLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=
       # No KMS_HOST here on purpose -- wrapKey() (custodial wallet
       # provisioning at signup) is client-side only, no live KMS server
       # needed; nothing in this compose stack calls unwrapKey(). See the
@@ -246,6 +283,16 @@ services:
       # Dev-only secret, fine to hardcode here -- never use this for a real
       # deployment (see apps/delivery-gateway/README.md).
       DELIVERY_SIGNING_SECRET: dev-compose-signing-secret-not-for-production
+    volumes:
+      # asset_versions.storageUri (asset-service's own DB) points at
+      # protection-svc's own output path (e.g. /app/out/<jobId>/
+      # watermarked.png -- protection-svc's own protection_out volume,
+      # mounted at /app/out there) -- render_asset() reads that path
+      # directly off local disk, not through protection-svc's API. Without
+      # this mount every real image request 404'd with "variant file
+      # missing on disk" even though the DB row and asset-service were both
+      # fine -- found live testing a real upload end-to-end.
+      - protection_out:/app/out:ro
     depends_on:
       asset-service:
         condition: service_healthy

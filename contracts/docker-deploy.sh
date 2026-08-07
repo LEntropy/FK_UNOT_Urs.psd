@@ -21,11 +21,18 @@ done
 cd /contracts
 forge build
 
+# --constructor-args must come last -- it's variadic (consumes every
+# following token), so a flag placed after it (like --broadcast) gets
+# swallowed as a second constructor arg instead of being parsed as a
+# flag. Found live: "Error: Constructor argument count mismatch:
+# expected 1 but got 2" with the old --constructor-args ... --broadcast
+# ordering, even though OwnershipRegistry's constructor only takes one
+# address.
 DEPLOY_OUTPUT=$(forge create src/OwnershipRegistry.sol:OwnershipRegistry \
   --rpc-url "$RPC_URL" \
   --private-key "$PRIVATE_KEY" \
-  --constructor-args "$DEPLOYER_ADDRESS" \
-  --broadcast)
+  --broadcast \
+  --constructor-args "$DEPLOYER_ADDRESS")
 
 REGISTRY_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" | cut -d' ' -f3)
 if [ -z "$REGISTRY_ADDRESS" ]; then

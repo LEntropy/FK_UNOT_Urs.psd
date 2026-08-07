@@ -96,8 +96,17 @@ def _run_score_protection(job_input: dict, tmp: str) -> dict:
             "--train-steps", str(job_input.get("train_steps", 150)),
             "--num-samples", str(job_input.get("num_samples", 2)),
         ],
-        check=True, capture_output=True, text=True,
+        capture_output=True, text=True,
     )
+    if result.returncode != 0:
+        # subprocess.CalledProcessError's own str() doesn't include
+        # stdout/stderr -- surfacing them explicitly here is the only way
+        # to see protection_score.py's real traceback in RunPod's job
+        # error output (found live: the first real smoke test only showed
+        # "exit status 2" with no further detail without this).
+        raise RuntimeError(
+            f"protection_score.py exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
     # protection_score.py's CLI writes progress to stderr and exactly one
     # JSON document to stdout (see its own module doc) -- stdout should
     # have nothing else on it, but .strip() guards against a stray

@@ -1,1 +1,16 @@
-out/
+# Per-job runtime output (apps/protection-svc/out/<jobId>/...), not
+# checked in -- purely generated per protect() call.
+/out/
+
+# ml-engine/out/ is mostly local scratch (manual test runs' cloaked.png
+# etc.) EXCEPT style_target.png, which orchestrate.py's protect() falls
+# back to as the *default* style target for every real upload that
+# doesn't pass its own styleTargetUri (i.e. every real upload today --
+# see remote_gpu.py's own comment: "the fixed default asset is what
+# every real protect() job actually compared against"). That makes it a
+# required source asset, not a job artifact, even though it lives in
+# this otherwise-ignored directory -- found the hard way when the
+# Docker image built without it and every protect() job failed with
+# "No such file or directory: '.../ml-engine/out/style_target.png'".
+/ml-engine/out/*
+!/ml-engine/out/style_target.png

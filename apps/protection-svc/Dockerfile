@@ -28,8 +28,14 @@ COPY ml-engine/requirements.txt ./ml-engine/requirements.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision \
     && pip install --no-cache-dir -r ml-engine/requirements.txt
 
-COPY orchestrate.py server.py remote_gpu.py ./
+COPY orchestrate.py server.py remote_gpu.py jobs_db.py ./
 COPY ml-engine/src ./ml-engine/src
+# The default style-target asset every real upload's protect() call
+# actually falls back to (no per-artwork styleTargetUri is ever passed
+# in production) -- gitignored everywhere else under ml-engine/out/ except
+# this one file (see apps/protection-svc/.gitignore's own comment), but
+# still a required source asset, not a build artifact.
+COPY ml-engine/out/style_target.png ./ml-engine/out/style_target.png
 
 # orchestrate.py's default RUST_CORE_BIN candidates already look for
 # rust-core/target/release/rust-core (no extension, Linux naming).

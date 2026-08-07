@@ -222,3 +222,102 @@ def test_remote_detect_model_leak_joins_multiple_prompts_with_pipe(monkeypatch):
 
     run_call = next(c for c in calls if c[0] == "ssh" and "model_leak_detect.py" in c[-1])
     assert "--prompts 'prompt one|prompt two'" in run_call[-1]
+
+
+@pytest.fixture(autouse=True)
+def _serverless_env(monkeypatch):
+    monkeypatch.setenv("RUNPOD_API_KEY", "fake-runpod-key-for-tests")
+    monkeypatch.setenv("RUNPOD_STRONGPROTECT_ENDPOINT_ID", "fake-endpoint-id")
+
+
+class _FakeHttpResponse:
+    def __init__(self, body, status_code=200):
+        self._body = body
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
+
+            raise httpx.HTTPStatusError("error", request=None, response=self)
+
+    def json(self):
+        return self._body
+
+
+def test_serverless_dual_arch_cloak_submits_then_polls_until_completed(monkeypatch, tmp_path):
+    import base64
+
+    import httpx
+
+    original = tmp_path / "original.png"
+    original.write_bytes(b"fake image bytes")
+    output_path = tmp_path / "output.png"
+
+    posts = []
+    gets = []
+    statuses = iter(["IN_QUEUE", "IN_PROGRESS", "COMPLETED"])
+
+    def fake_post(url, headers, json, timeout):
+        posts.append((url, headers, json))
+        return _FakeHttpResponse({"id": "job_abc123", "status": "IN_QUEUE"})
+
+    def fake_get(url, headers, timeout):
+        gets.append((url, headers))
+        status = next(statuses)
+        if status == "COMPLETED":
+            output_b64 = base64.b64encode(b"fake protected image bytes").decode()
+            return _FakeHttpResponse({"id": "job_abc123", "status": "COMPLETED", "output": {"output_b64": output_b64}})
+        return _FakeHttpResponse({"id": "job_abc123", "status": status})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    # poll_interval_seconds=0 -- time.sleep(0) between polls is a real but
+    # effectively instant call, no need to mock it out (time is imported
+    # locally inside serverless_dual_arch_cloak, matching this module's own
+    # convention elsewhere, so there's no module-level remote_gpu.time to
+    # monkeypatch anyway).
+    remote_gpu.serverless_dual_arch_cloak(str(original), str(output_path), "a painting", poll_interval_seconds=0)
+
+    assert output_path.read_bytes() == b"fake protected image bytes"
+
+    assert len(posts) == 1
+    post_url, post_headers, post_body = posts[0]
+    assert post_url == "https://api.runpod.ai/v2/fake-endpoint-id/run"
+    assert post_headers["Authorization"] == "Bearer fake-runpod-key-for-tests"
+    assert post_body["input"]["prompt"] == "a painting"
+    assert base64.b64decode(post_body["input"]["image_b64"]) == b"fake image bytes"
+
+    assert len(gets) == 3  # IN_QUEUE, IN_PROGRESS, COMPLETED
+    assert all(url == "https://api.runpod.ai/v2/fake-endpoint-id/status/job_abc123" for url, _ in gets)
+
+
+def test_serverless_dual_arch_cloak_raises_on_a_failed_job(monkeypatch, tmp_path):
+    import httpx
+
+    original = tmp_path / "original.png"
+    original.write_bytes(b"fake image bytes")
+
+    monkeypatch.setattr(httpx, "post", lambda url, headers, json, timeout: _FakeHttpResponse({"id": "job_x", "status": "IN_QUEUE"}))
+    monkeypatch.setattr(
+        httpx, "get", lambda url, headers, timeout: _FakeHttpResponse({"id": "job_x", "status": "FAILED", "error": "worker crashed"})
+    )
+
+    with pytest.raises(RuntimeError, match="worker crashed"):
+        remote_gpu.serverless_dual_arch_cloak(str(original), str(tmp_path / "out.png"), "a painting", poll_interval_seconds=0)
+
+
+def test_serverless_dual_arch_cloak_raises_on_timeout(monkeypatch, tmp_path):
+    import httpx
+
+    original = tmp_path / "original.png"
+    original.write_bytes(b"fake image bytes")
+
+    monkeypatch.setattr(httpx, "post", lambda url, headers, json, timeout: _FakeHttpResponse({"id": "job_x", "status": "IN_QUEUE"}))
+    monkeypatch.setattr(httpx, "get", lambda url, headers, timeout: _FakeHttpResponse({"id": "job_x", "status": "IN_PROGRESS"}))
+
+    with pytest.raises(RuntimeError, match="did not complete within"):
+        remote_gpu.serverless_dual_arch_cloak(
+            str(original), str(tmp_path / "out.png"), "a painting", poll_interval_seconds=0, timeout_seconds=0
+        )

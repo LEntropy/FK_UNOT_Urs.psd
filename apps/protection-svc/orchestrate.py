@@ -83,19 +83,27 @@ if USE_REMOTE_GPU:
 else:
     from style_cloak import cloak
 
-# strong_protection (PHASE4_SCOPING.md §6) always dispatches to the
-# dedicated A40-class pod regardless of USE_REMOTE_GPU -- it needs more
+# strong_protection (PHASE4_SCOPING.md §6) always dispatches to a
+# dedicated A40-class worker regardless of USE_REMOTE_GPU -- it needs more
 # VRAM than any local machine this project runs on has, GPU PC included --
-# so this import is unconditional; remote_dual_arch_cloak() itself only
-# gets called when a caller actually opts in (see protect()'s
-# strong_protection branch below), and only touches MULTIARCH_GPU_HOST
-# (raises if unset) at that point, not at import time. Uses
-# remote_dual_arch_cloak() (sequential SD1.5-then-SDXL, each attacked
-# independently), not remote_multiarch_cloak() (joint attack) -- PHASE4_
-# SCOPING.md §6's follow-up finding was that the joint design suppresses
-# SDXL's own effect to nothing, while attacking it separately clears the
-# same validation bar SD1.5 already had.
-from remote_gpu import remote_dual_arch_cloak
+# so this import is unconditional; serverless_dual_arch_cloak() itself
+# only touches RUNPOD_API_KEY/RUNPOD_STRONGPROTECT_ENDPOINT_ID (raises if
+# unset) when a caller actually opts in (see protect()'s strong_protection
+# branch below), not at import time. Uses the sequential SD1.5-then-SDXL
+# chain (each architecture attacked independently), not a joint attack --
+# PHASE4_SCOPING.md §6's follow-up finding was that the joint design
+# suppresses SDXL's own effect to nothing, while attacking it separately
+# clears the same validation bar SD1.5 already had.
+#
+# RunPod Serverless (serverless_dual_arch_cloak), not the SSH-to-an-
+# always-on-pod path (remote_dual_arch_cloak, still in remote_gpu.py for
+# manual/debugging use against a hand-started pod) -- PHASE4_SCOPING.md
+# §6's 2026-08-07 empirical comparison found essentially identical
+# execution time (685s vs 719s, one A40 job) but Serverless scales to
+# zero automatically, removing the "someone has to remember an idle pod
+# is running" failure mode a real production deployment can't tolerate
+# (this session found and deleted a pod that had sat idle for 4.5 hours).
+from remote_gpu import serverless_dual_arch_cloak
 
 from Crypto.Hash import keccak  # noqa: E402
 
@@ -335,23 +343,25 @@ def protect(
     # rather than stacking on top of it -- this project's own hybrid_attack
     # experiment already found combining multiple attack objectives makes
     # things worse, not better. Runs SD1.5 and SDXL attacks independently
-    # and sequentially (remote_dual_arch_cloak), each cleared through this
-    # project's own n=30-plus-replication validation bar on its own -- not
-    # the joint multiarch_ensemble_attack(), which was found to measurably
-    # suppress SDXL's effect to nothing when both architectures share one
-    # epsilon budget (PHASE4_SCOPING.md §6). Falls back to style_cloak on
-    # any failure (pod unreachable, MULTIARCH_GPU_HOST unset, etc.) rather
-    # than publishing an unprotected image -- a real upload succeeding with
-    # the proven mechanism beats a failed upload.
+    # and sequentially (serverless_dual_arch_cloak, via RunPod Serverless
+    # -- see this module's own import-time comment for why Serverless over
+    # the SSH-to-a-pod path), each cleared through this project's own
+    # n=30-plus-replication validation bar on its own -- not the joint
+    # multiarch_ensemble_attack(), which was found to measurably suppress
+    # SDXL's effect to nothing when both architectures share one epsilon
+    # budget (PHASE4_SCOPING.md §6). Falls back to style_cloak on any
+    # failure (endpoint unreachable, RUNPOD_API_KEY unset, job failed,
+    # etc.) rather than publishing an unprotected image -- a real upload
+    # succeeding with the proven mechanism beats a failed upload.
     used_strong_protection = False
     if strong_protection:
         print(
             "[orchestrate] 1/4 style-cloak (dual-arch SD1.5+SDXL, sequential, "
-            "see PHASE4_SCOPING.md §6) ...",
+            "RunPod Serverless, see PHASE4_SCOPING.md §6) ...",
             flush=True,
         )
         try:
-            remote_dual_arch_cloak(
+            serverless_dual_arch_cloak(
                 original_path=input_path,
                 output_path=str(cloaked_path),
                 prompt=title,

@@ -786,3 +786,26 @@ by construction. `docker/strongprotect-serverless/Dockerfile` and
 `orchestrate.py`/`remote_gpu.py` (that integration -- calling the endpoint's
 `run`/`status` URLs instead of SSH -- is real future work, not done as
 part of this comparison).
+
+**Update (2026-08-07) -- wired into production; this is now
+`strong_protection`'s real mechanism, not just a comparison artifact.**
+Created a persistent Serverless endpoint (`dontai-strongprotect`, id
+`wtutl0miby687b`, `AMPERE_48`/A40, `workersMin=0`/`workersMax=2`,
+`idleTimeout=60s`, from the already-pushed
+`lentropy/dontai-strongprotect-serverless:latest` image) via
+`create-endpoint`, and live-smoke-tested it end to end with a real job
+(fast `L1_PREVIEW`/`CALIBRATION` presets, not the full production ones --
+this was a wiring/connectivity check, not another effect-size
+measurement): submitted, worker cold-started in ~17s, completed in 148s,
+returned a real, valid 1024x1024 PNG. `remote_gpu.py` gained
+`serverless_dual_arch_cloak()` (submits to `.../run`, polls `.../status/{id}`
+until `COMPLETED`/`FAILED`/`CANCELLED`/`TIMED_OUT` -- same two-phase job
+shape as every other polling loop in this project, not `runsync`, since
+a real production job runs several minutes) and `orchestrate.py`'s
+`strong_protection` branch now calls it instead of the SSH-based
+`remote_dual_arch_cloak()` (still in `remote_gpu.py`, kept for manual/
+debugging use against a hand-started pod, just no longer production's
+default path). Needs `RUNPOD_API_KEY` and `RUNPOD_STRONGPROTECT_ENDPOINT_ID`
+set wherever protection-svc actually runs -- falls back to `style_cloak`
+on any failure (missing env vars, endpoint unreachable, job failed), same
+as the SSH path always did.

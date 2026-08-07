@@ -365,6 +365,83 @@ def remote_dual_arch_cloak(
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
 
 
+def serverless_dual_arch_cloak(
+    original_path: str,
+    output_path: str,
+    prompt: str,
+    sd15_preset: str = "L3_ANTI_TRAIN",
+    sdxl_preset: str = "SDXL_FULL",
+    poll_interval_seconds: float = 5.0,
+    timeout_seconds: float = 1800.0,
+) -> None:
+    """RunPod Serverless counterpart to remote_dual_arch_cloak() -- calls
+    the `dontai-strongprotect` Serverless endpoint (docker/
+    strongprotect-serverless/handler.py, same aspl_attack.py ->
+    aspl_attack_sdxl_only.py chain, just invoked through RunPod's job
+    queue instead of SSH+subprocess against an always-on pod).
+
+    Why this replaces remote_dual_arch_cloak() as strong_protection's real
+    production path (PHASE4_SCOPING.md §6's 2026-08-07 update): pure
+    execution time is a wash (Serverless 685.1s vs Pods 718.8s, one A40
+    job, same attack), but Serverless scales to zero automatically --
+    remote_dual_arch_cloak()'s SSH target assumes a pod that's already
+    running, which in practice meant either paying for one sitting idle
+    24/7 or it simply not being up when a real request needed it (this
+    session found and deleted a pod idle for 4.5 hours before anyone
+    noticed, for exactly this reason). Serverless removes that failure
+    mode by construction -- a worker only exists while a job is actually
+    running.
+
+    Two-phase HTTP job protocol (not runsync -- this job runs several
+    minutes, well past what a single blocking HTTP call should be relied
+    on for): POST .../run submits and returns immediately with a job id;
+    this then polls GET .../status/{id} until COMPLETED/FAILED/CANCELLED/
+    TIMED_OUT, same shape as every other job-polling loop in this project
+    (jobs_db, asset-service's pollProtectJob, detection-svc's
+    poll_leak_detection_job).
+    """
+    import base64
+    import time
+
+    import httpx
+
+    api_key = _env("RUNPOD_API_KEY")
+    endpoint_id = _env("RUNPOD_STRONGPROTECT_ENDPOINT_ID")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+
+    with open(original_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    submit = httpx.post(
+        f"{base_url}/run",
+        headers=headers,
+        json={"input": {"image_b64": image_b64, "prompt": prompt, "sd15_preset": sd15_preset, "sdxl_preset": sdxl_preset}},
+        timeout=30.0,
+    )
+    submit.raise_for_status()
+    job_id = submit.json()["id"]
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+        status_resp.raise_for_status()
+        body = status_resp.json()
+        status = body["status"]
+
+        if status == "COMPLETED":
+            output_b64 = body["output"]["output_b64"]
+            with open(output_path, "wb") as f:
+                f.write(base64.b64decode(output_b64))
+            return
+        if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+            raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+
+        time.sleep(poll_interval_seconds)
+
+    raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+
+
 def remote_detect_model_leak(
     original_path: str,
     suspect_lora_path: str,

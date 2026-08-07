@@ -86,11 +86,16 @@ else:
 # strong_protection (PHASE4_SCOPING.md §6) always dispatches to the
 # dedicated A40-class pod regardless of USE_REMOTE_GPU -- it needs more
 # VRAM than any local machine this project runs on has, GPU PC included --
-# so this import is unconditional; remote_multiarch_cloak() itself only
+# so this import is unconditional; remote_dual_arch_cloak() itself only
 # gets called when a caller actually opts in (see protect()'s
 # strong_protection branch below), and only touches MULTIARCH_GPU_HOST
-# (raises if unset) at that point, not at import time.
-from remote_gpu import remote_multiarch_cloak
+# (raises if unset) at that point, not at import time. Uses
+# remote_dual_arch_cloak() (sequential SD1.5-then-SDXL, each attacked
+# independently), not remote_multiarch_cloak() (joint attack) -- PHASE4_
+# SCOPING.md §6's follow-up finding was that the joint design suppresses
+# SDXL's own effect to nothing, while attacking it separately clears the
+# same validation bar SD1.5 already had.
+from remote_gpu import remote_dual_arch_cloak
 
 from Crypto.Hash import keccak  # noqa: E402
 
@@ -329,30 +334,31 @@ def protect(
     # concept_misalign_target_path below): replaces style-cloak entirely
     # rather than stacking on top of it -- this project's own hybrid_attack
     # experiment already found combining multiple attack objectives makes
-    # things worse, not better, and multiarch_ensemble_attack was validated
-    # as a standalone perturbation, not as a layer on top of style_cloak's
-    # output. SD1.5-training protection only (see remote_multiarch_cloak's
-    # own doc) -- a caller opting in is accepting that scope, not getting a
-    # strictly-strictly-stronger version of the default. Falls back to
-    # style_cloak on any failure (pod unreachable, MULTIARCH_GPU_HOST
-    # unset, etc.) rather than publishing an unprotected image -- a real
-    # upload succeeding with the proven mechanism beats a failed upload.
+    # things worse, not better. Runs SD1.5 and SDXL attacks independently
+    # and sequentially (remote_dual_arch_cloak), each cleared through this
+    # project's own n=30-plus-replication validation bar on its own -- not
+    # the joint multiarch_ensemble_attack(), which was found to measurably
+    # suppress SDXL's effect to nothing when both architectures share one
+    # epsilon budget (PHASE4_SCOPING.md §6). Falls back to style_cloak on
+    # any failure (pod unreachable, MULTIARCH_GPU_HOST unset, etc.) rather
+    # than publishing an unprotected image -- a real upload succeeding with
+    # the proven mechanism beats a failed upload.
     used_strong_protection = False
     if strong_protection:
         print(
-            "[orchestrate] 1/4 style-cloak (multiarch SD1.5+SDXL, EXPERIMENTAL -- "
-            "SD1.5-training protection only, see PHASE4_SCOPING.md §6) ...",
+            "[orchestrate] 1/4 style-cloak (dual-arch SD1.5+SDXL, sequential, "
+            "see PHASE4_SCOPING.md §6) ...",
             flush=True,
         )
         try:
-            remote_multiarch_cloak(
+            remote_dual_arch_cloak(
                 original_path=input_path,
                 output_path=str(cloaked_path),
                 prompt=title,
             )
             used_strong_protection = True
         except Exception as exc:  # noqa: BLE001 -- fall back to the proven mechanism rather than publish unprotected
-            print(f"[orchestrate] strong_protection requested but multiarch cloak failed ({exc}) -- falling back to style_cloak", flush=True)
+            print(f"[orchestrate] strong_protection requested but dual-arch cloak failed ({exc}) -- falling back to style_cloak", flush=True)
 
     if not used_strong_protection:
         mode = "remote GPU" if USE_REMOTE_GPU else "local"
@@ -404,13 +410,13 @@ def protect(
     protection_metrics: dict = {}
     if used_strong_protection:
         # style_cloak's VGG19-Gram-matrix style-drift-vs-target metric
-        # doesn't apply here -- multiarch_ensemble_attack has no
-        # style_target_path input and optimizes a genuinely different
+        # doesn't apply here -- aspl_attack/aspl_attack_sdxl_only have no
+        # style_target_path input and optimize a genuinely different
         # (denoising-loss-based) objective, so this metric would compare
         # against a target the cloak step never actually used. Left empty
         # rather than computed-and-mislabeled; a real CLIP-similarity-based
         # metric for this mechanism is real future work, not a quick swap.
-        print("[orchestrate] 1c/4 skipping style-drift metric (not meaningful for multiarch strong_protection)", flush=True)
+        print("[orchestrate] 1c/4 skipping style-drift metric (not meaningful for dual-arch strong_protection)", flush=True)
     else:
         try:
             print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)

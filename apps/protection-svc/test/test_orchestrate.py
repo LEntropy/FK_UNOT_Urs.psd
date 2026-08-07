@@ -244,11 +244,11 @@ def test_strong_protection_falls_back_to_style_cloak_on_failure(monkeypatch, tmp
         style_cloak_calls.append(output_path)
         Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)
 
-    def failing_remote_multiarch_cloak(original_path, output_path, prompt, preset_name="MULTIARCH_FULL"):
+    def failing_remote_dual_arch_cloak(original_path, output_path, prompt, sd15_preset="L3_ANTI_TRAIN", sdxl_preset="SDXL_FULL"):
         raise RuntimeError("MULTIARCH_GPU_HOST not set")
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
-    monkeypatch.setattr(orchestrate, "remote_multiarch_cloak", failing_remote_multiarch_cloak)
+    monkeypatch.setattr(orchestrate, "remote_dual_arch_cloak", failing_remote_dual_arch_cloak)
     monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
     monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
     monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
@@ -272,7 +272,7 @@ def test_strong_protection_falls_back_to_style_cloak_on_failure(monkeypatch, tmp
 
 
 def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
-    """When the multiarch pod succeeds, style_cloak (and its style-drift
+    """When the dual-arch pod call succeeds, style_cloak (and its style-drift
     metric, which doesn't apply to a mechanism with no style_target_path
     input) should not run at all -- strong_protection replaces style-cloak,
     it doesn't stack with it (this project's own hybrid_attack experiment
@@ -283,17 +283,17 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     Image.new("RGB", (64, 64), (200, 200, 200)).save(style_target_path)
 
     style_cloak_calls = []
-    multiarch_calls = []
+    dual_arch_calls = []
 
     def fake_cloak(*args, **kwargs):
         style_cloak_calls.append(True)
 
-    def fake_remote_multiarch_cloak(original_path, output_path, prompt, preset_name="MULTIARCH_FULL"):
-        multiarch_calls.append((original_path, prompt))
+    def fake_remote_dual_arch_cloak(original_path, output_path, prompt, sd15_preset="L3_ANTI_TRAIN", sdxl_preset="SDXL_FULL"):
+        dual_arch_calls.append((original_path, prompt))
         Image.new("RGB", (64, 64), (90, 90, 90)).save(output_path)
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
-    monkeypatch.setattr(orchestrate, "remote_multiarch_cloak", fake_remote_multiarch_cloak)
+    monkeypatch.setattr(orchestrate, "remote_dual_arch_cloak", fake_remote_dual_arch_cloak)
     monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
     monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
     monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
@@ -313,7 +313,7 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     )
 
     assert result["status"] == "completed"
-    assert len(multiarch_calls) == 1
-    assert multiarch_calls[0][0] == str(input_path)
-    assert multiarch_calls[0][1] == "My Artwork"  # title used as the prompt proxy
+    assert len(dual_arch_calls) == 1
+    assert dual_arch_calls[0][0] == str(input_path)
+    assert dual_arch_calls[0][1] == "My Artwork"  # title used as the prompt proxy
     assert style_cloak_calls == []  # style_cloak never ran

@@ -665,3 +665,55 @@ alongside `remote_cloak()`, per item 2's original design) is unchanged by
 this -- it dispatches over SSH to whatever `MULTIARCH_GPU_HOST` currently
 points at, whether that's a long-lived pod or a freshly-created one; only
 which of those a caller creates first changed.
+
+**Update (2026-08-06, continued) -- the "SDXL has no effect" conclusion above was
+only true for the *joint* attack; isolated, SDXL passes too.** Built
+`ml-engine/src/aspl_attack_sdxl_only.py` (reuses `ensemble_attack_multiarch.py`'s
+`SDXLBranch`, otherwise structured exactly like `aspl_attack.py`'s single-
+architecture ASPL loop -- same clamp/projection logic, `SDXL_FULL` preset
+matching `MULTIARCH_FULL`'s iteration counts) specifically to test whether
+SDXL is unresponsive to this attack class, or was merely losing out to SD1.5
+for a shared epsilon/optimization budget in the joint design (the same
+failure mode §5's `hybrid_attack` already demonstrated once: combining
+objectives made things worse, not better). It was the latter. Validated on
+RunPod A40 x3 pods in parallel, same methodology/CLIP-scoring as every prior
+experiment (see [[lora-protection-research]] memory for full numbers):
+original 10-image n=30 (+0.0479, 95% CI [+0.0216,+0.0742]), robust to
+removing 1 or 2 outlier images (n=27: +0.0334 [+0.0105,+0.0563]; n=24:
++0.0411 [+0.0174,+0.0647]), and an independent n=12 replication on 4 brand
+new images (+0.0539, [+0.0076,+0.1002]) -- **all four checks exclude zero**,
+clearing this project's own "don't conclude before replication" bar the same
+way the SD1.5 result did. Net effect size (+0.033 to +0.054) matches or
+slightly exceeds SD1.5's own validated range.
+
+**Production design implication**: SD1.5 and SDXL must be attacked
+**separately** (two independent calls -- `aspl_attack.py` for SD1.5,
+`aspl_attack_sdxl_only.py` for SDXL -- each with its own full epsilon
+budget), not jointly via `multiarch_ensemble_attack()`. Joint attack is now
+a known-worse design, not just an unvalidated one: it measurably suppresses
+SDXL's own effect without improving SD1.5's. This roughly doubles per-image
+attack time/cost (~10min each vs ~15min combined) but is the only design
+that has actually cleared validation for both architectures. The "SD1.5
+only, SDXL is an open question" caveat two paragraphs up is now stale --
+replace with "both SD1.5 and SDXL are covered, attacked independently" once
+this is wired into `remote_multiarch_cloak()`/`orchestrate.py` (not done
+yet as of this update -- current `strong_protection` path still calls the
+joint `multiarch_ensemble_attack()`).
+
+**Note on RunPod's pod-creation API (2026-08-06)**: this update's pods were
+all created manually via the RunPod console, not via this project's usual
+`mcp__plugin_runpod_runpod__create-pod` tool -- that tool's REST v2 call
+failed with "no instances available" on every GPU type/cloud/image/template
+combination tried, while the console (GraphQL-backed) worked normally the
+whole time and the account balance/API key were both confirmed fine. Root
+cause not fully pinned down (looks like a v2 REST pods-endpoint issue,
+possibly specific to this MCP tool's parameter mapping -- its `gpuTypeIds`
+array param doesn't match the real v2 schema's single `gpu: {id, count}`
+object, discovered by fetching `api.runpod.io/v2/openapi.json` directly).
+**This directly undercuts the "spin up a pod per request" architecture
+item 2 above assumed** -- if pod creation is this brittle from server-side
+automated calls, a real per-request `strong_protection` job could fail the
+same way. Worth checking RunPod **Serverless/Endpoints** (a different
+product, purpose-built for "spin up a worker per request, scale to zero")
+as the actual production mechanism instead of driving the Pods API directly,
+before building this out further.

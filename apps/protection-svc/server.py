@@ -93,12 +93,13 @@ class ProtectRequest(BaseModel):
     # that want a specific processing size on purpose.
     size: Optional[int] = None
     # Opt-in only, off by default -- PHASE4_SCOPING.md §6: replaces
-    # style-cloak with the multiarch SD1.5+SDXL ASPL attack (validated
-    # SD1.5-training protection effect; SDXL is not a covered case).
-    # Several minutes per job on a dedicated A40-class pod (MULTIARCH_GPU_*
-    # env vars, see remote_gpu.py's remote_multiarch_cloak) instead of the
-    # GPU PC -- falls back to normal style-cloak if that pod is unreachable
-    # or unconfigured, so this never turns "protected" into "unprotected".
+    # style-cloak with dual-arch ASPL attacks -- SD1.5 and SDXL, each
+    # attacked independently and sequentially, both validated protection
+    # effects (see PHASE4_SCOPING.md §6). Several minutes per job on a
+    # dedicated A40-class pod (MULTIARCH_GPU_* env vars, see remote_gpu.py's
+    # remote_dual_arch_cloak) instead of the GPU PC -- falls back to normal
+    # style-cloak if that pod is unreachable or unconfigured, so this never
+    # turns "protected" into "unprotected".
     strongProtection: bool = False
 
 

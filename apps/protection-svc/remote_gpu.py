@@ -292,6 +292,76 @@ def remote_multiarch_cloak(
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
 
 
+def remote_dual_arch_cloak(
+    original_path: str,
+    output_path: str,
+    prompt: str,
+    sd15_preset: str = "L3_ANTI_TRAIN",
+    sdxl_preset: str = "SDXL_FULL",
+) -> None:
+    """Runs aspl_attack.py (SD1.5) then aspl_attack_sdxl_only.py (SDXL) on
+    the same dedicated A40-class pod remote_multiarch_cloak() uses --
+    sequential single-architecture attacks, not the joint
+    multiarch_ensemble_attack(). PHASE4_SCOPING.md §6's follow-up finding:
+    attacking SD1.5 and SDXL *jointly* (sharing one epsilon budget across
+    both backbones each PGD step) measurably suppresses SDXL's own effect
+    to nothing, while attacking SDXL *alone* with the same mechanism clears
+    the same 4-way validation bar (original n=30, two outlier-robustness
+    checks, independent n=12 replication) SD1.5 already had. So this
+    function replaces the joint call as strong_protection's mechanism:
+    each architecture gets its own full attack, chained (SD1.5 attacks the
+    original, SDXL then attacks *that* output) so the final image reflects
+    both.
+
+    Caveat worth being explicit about: each stage's protective effect was
+    validated independently (attacking a pristine original), not this
+    specific chained composition (SDXL attacking an already-SD1.5-attacked
+    image). That's a reasonable low-risk extension -- neither attack
+    function cares whether its input is pristine or already perturbed --
+    but it hasn't itself been run through the same n=30-plus-replication
+    validation the two stages individually have. Revisit if a future
+    validation pass specifically targets the chained output.
+
+    Takes roughly 2x remote_multiarch_cloak()'s time (two full ~10min
+    single-architecture attacks instead of one ~15min joint one) -- still
+    an async-job-queue candidate, same as remote_multiarch_cloak().
+    """
+    gpu_remote_dir, remote, ssh_opts, scp_opts = _multiarch_connection()
+    multiarch_python = _env("MULTIARCH_KOHYA_PYTHON", "/usr/bin/python3")
+    sd15_checkpoint = _env("MULTIARCH_SD15_CHECKPOINT", "/workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors")
+    sdxl_checkpoint = _env("MULTIARCH_SDXL_CHECKPOINT", "/workspace/checkpoints/Illustrious-XL-v0.1.safetensors")
+
+    remote_input = f"{gpu_remote_dir}/out/_remote_dual_original{os.path.splitext(original_path)[1]}"
+    remote_intermediate = f"{gpu_remote_dir}/out/_remote_dual_sd15.png"
+    remote_output = f"{gpu_remote_dir}/out/_remote_dual_final.png"
+
+    _run("ssh", *ssh_opts, remote, f"mkdir -p '{gpu_remote_dir}/out'")
+
+    # 1. Upload the input image.
+    _run("scp", *scp_opts, original_path, f"{remote}:{remote_input}")
+
+    escaped_prompt = prompt.replace("'", "'\\''")
+
+    # 2. SD1.5 attack on the original.
+    sd15_cmd = (
+        f"{multiarch_python} '{gpu_remote_dir}/ml-engine/src/aspl_attack.py' "
+        f"--original '{remote_input}' --checkpoint '{sd15_checkpoint}' "
+        f"--prompt '{escaped_prompt}' --output '{remote_intermediate}' --preset {sd15_preset}"
+    )
+    _run("ssh", *ssh_opts, remote, sd15_cmd)
+
+    # 3. SDXL attack chained on the SD1.5-attacked output.
+    sdxl_cmd = (
+        f"{multiarch_python} '{gpu_remote_dir}/ml-engine/src/aspl_attack_sdxl_only.py' "
+        f"--original '{remote_intermediate}' --sdxl-checkpoint '{sdxl_checkpoint}' "
+        f"--prompt '{escaped_prompt}' --output '{remote_output}' --preset {sdxl_preset}"
+    )
+    _run("ssh", *ssh_opts, remote, sdxl_cmd)
+
+    # 4. Download the final result.
+    _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+
+
 def remote_detect_model_leak(
     original_path: str,
     suspect_lora_path: str,

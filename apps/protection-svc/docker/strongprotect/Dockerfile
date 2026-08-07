@@ -58,12 +58,17 @@ RUN pip install --no-cache-dir --break-system-packages \
 
 # Checkpoints -- SD1.5 is a public HF mirror (no auth), SDXL is
 # Illustrious-XL from Civitai (gated behind an account, needs the token).
+# --http1.1 --retry 5 --retry-all-errors: a multi-GB transfer inside a
+# Docker build hit a transient HTTP/2 stream error (curl exit 92) once
+# during this project's own build -- these two flags avoid depending on
+# HTTP/2 framing surviving a large single-connection transfer and retry
+# through any other transient network blip instead of failing the build.
 RUN mkdir -p /workspace/checkpoints && \
-    curl -sL -o /workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors \
+    curl -sL --http1.1 --retry 5 --retry-all-errors -o /workspace/checkpoints/v1-5-pruned-emaonly-fp16.safetensors \
       "https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors"
 
 RUN --mount=type=secret,id=civitai_token \
-    curl -sL -H "Authorization: Bearer $(cat /run/secrets/civitai_token)" \
+    curl -sL --http1.1 --retry 5 --retry-all-errors -H "Authorization: Bearer $(cat /run/secrets/civitai_token)" \
       -o /workspace/checkpoints/Illustrious-XL-v0.1.safetensors \
       "https://civitai.com/api/download/models/889818"
 
@@ -71,9 +76,15 @@ RUN --mount=type=secret,id=civitai_token \
 # top-level import), plus model_leak_detect.py (detection-svc's model-leak
 # report pathway, remote_gpu.py's remote_detect_model_leak) -- it only
 # imports diffusers/transformers/PIL/torch, all already installed above,
-# no new dependency needed for it. Still not the whole ml-engine tree.
+# no new dependency needed for it. aspl_attack.py (SD1.5) and
+# aspl_attack_sdxl_only.py (SDXL, reuses ensemble_attack_multiarch.py's
+# SDXLBranch) are the two single-architecture attacks remote_dual_arch_cloak()
+# runs sequentially -- PHASE4_SCOPING.md §6's finding that the joint
+# multiarch_ensemble_attack() suppresses SDXL's own effect, so production
+# now runs each architecture's attack independently instead. Still not the
+# whole ml-engine tree.
 RUN mkdir -p /workspace/dontai-protection-svc/ml-engine/src
-COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py /workspace/dontai-protection-svc/ml-engine/src/
+COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py aspl_attack.py aspl_attack_sdxl_only.py /workspace/dontai-protection-svc/ml-engine/src/
 
 # Sanity checks baked into the build itself -- fail the build (not a later
 # pod boot) if a checkpoint download silently truncated, or the attack
@@ -83,4 +94,4 @@ RUN sd15_size=$(stat -c%s /workspace/checkpoints/v1-5-pruned-emaonly-fp16.safete
     echo "SD1.5: ${sd15_size} bytes, SDXL: ${sdxl_size} bytes" && \
     [ "$sd15_size" -gt 2000000000 ] && [ "$sdxl_size" -gt 6000000000 ]
 RUN cd /workspace/dontai-protection-svc/ml-engine/src && \
-    python3 -c "import ensemble_attack_multiarch; print('import OK')"
+    python3 -c "import ensemble_attack_multiarch, aspl_attack, aspl_attack_sdxl_only; print('import OK')"

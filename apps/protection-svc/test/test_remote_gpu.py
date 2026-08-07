@@ -321,3 +321,76 @@ def test_serverless_dual_arch_cloak_raises_on_timeout(monkeypatch, tmp_path):
         remote_gpu.serverless_dual_arch_cloak(
             str(original), str(tmp_path / "out.png"), "a painting", poll_interval_seconds=0, timeout_seconds=0
         )
+
+
+def test_serverless_score_protection_submits_both_images_then_returns_the_parsed_output(monkeypatch, tmp_path):
+    import base64
+
+    import httpx
+
+    original = tmp_path / "original.png"
+    original.write_bytes(b"fake original bytes")
+    protected = tmp_path / "protected.png"
+    protected.write_bytes(b"fake protected bytes")
+
+    posts = []
+    gets = []
+    statuses = iter(["IN_QUEUE", "IN_PROGRESS", "COMPLETED"])
+
+    fake_output = {
+        "sd15": {"baselineSimilarity": 0.9, "protectedSimilarity": 0.7, "delta": 0.2, "verdict": "PROTECTED",
+                  "baselineSamples": [], "protectedSamples": []},
+        "sdxl": {"baselineSimilarity": 0.9, "protectedSimilarity": 0.88, "delta": 0.02, "verdict": "NOT_PROTECTED",
+                  "baselineSamples": [], "protectedSamples": []},
+        "threshold": 0.03,
+    }
+
+    def fake_post(url, headers, json, timeout):
+        posts.append((url, headers, json))
+        return _FakeHttpResponse({"id": "scorejob_abc", "status": "IN_QUEUE"})
+
+    def fake_get(url, headers, timeout):
+        gets.append((url, headers))
+        status = next(statuses)
+        if status == "COMPLETED":
+            return _FakeHttpResponse({"id": "scorejob_abc", "status": "COMPLETED", "output": fake_output})
+        return _FakeHttpResponse({"id": "scorejob_abc", "status": status})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    result = remote_gpu.serverless_score_protection(
+        str(original), str(protected), "a painting", poll_interval_seconds=0
+    )
+
+    assert result == fake_output
+
+    assert len(posts) == 1
+    post_url, post_headers, post_body = posts[0]
+    assert post_url == "https://api.runpod.ai/v2/fake-endpoint-id/run"
+    assert post_headers["Authorization"] == "Bearer fake-runpod-key-for-tests"
+    assert post_body["input"]["action"] == "score_protection"
+    assert post_body["input"]["prompt"] == "a painting"
+    assert base64.b64decode(post_body["input"]["original_b64"]) == b"fake original bytes"
+    assert base64.b64decode(post_body["input"]["protected_b64"]) == b"fake protected bytes"
+
+    assert len(gets) == 3
+
+
+def test_serverless_score_protection_raises_on_a_failed_job(monkeypatch, tmp_path):
+    import httpx
+
+    original = tmp_path / "original.png"
+    original.write_bytes(b"fake original bytes")
+    protected = tmp_path / "protected.png"
+    protected.write_bytes(b"fake protected bytes")
+
+    monkeypatch.setattr(httpx, "post", lambda url, headers, json, timeout: _FakeHttpResponse({"id": "job_x", "status": "IN_QUEUE"}))
+    monkeypatch.setattr(
+        httpx, "get", lambda url, headers, timeout: _FakeHttpResponse({"id": "job_x", "status": "FAILED", "error": "OOM"})
+    )
+
+    with pytest.raises(RuntimeError, match="OOM"):
+        remote_gpu.serverless_score_protection(
+            str(original), str(protected), "a painting", poll_interval_seconds=0
+        )

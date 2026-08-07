@@ -119,6 +119,51 @@ export async function remeasureProtection(id: string): Promise<RemeasureResult> 
   return body;
 }
 
+/** Per-architecture (SD1.5/SDXL) result of the Test Lab's real-LoRA-training
+ * score -- matches asset-service's (and protection_score.py's) shape
+ * exactly. Sample images are base64-encoded PNGs. */
+export interface ScoreProtectionArchResult {
+  baselineSimilarity: number;
+  protectedSimilarity: number;
+  delta: number;
+  verdict: "PROTECTED" | "WEAK" | "NOT_PROTECTED";
+  baselineSamples: string[];
+  protectedSamples: string[];
+}
+
+export interface ScoreProtectionJob {
+  status: "queued" | "processing" | "completed" | "failed";
+  sd15?: ScoreProtectionArchResult;
+  sdxl?: ScoreProtectionArchResult;
+  threshold?: number;
+  error?: string;
+}
+
+/** Thin pass-through to asset-service's own POST /:id/score-protection --
+ * kicks off the Test Lab's real-LoRA-training score job and returns
+ * immediately with a jobId (this job runs minutes on RunPod, unlike
+ * remeasureProtection above). */
+export async function createScoreProtectionJob(id: string): Promise<{ jobId: string }> {
+  const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/${encodeURIComponent(id)}/score-protection`, {
+    method: "POST",
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    throw new AssetServiceError(res.status, body);
+  }
+  return body;
+}
+
+/** Thin pass-through to asset-service's own GET /score-protection-jobs/:jobId. */
+export async function getScoreProtectionJob(jobId: string): Promise<ScoreProtectionJob> {
+  const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/score-protection-jobs/${encodeURIComponent(jobId)}`);
+  const body = await res.json();
+  if (!res.ok) {
+    throw new AssetServiceError(res.status, body);
+  }
+  return body;
+}
+
 export async function getArtwork(id: string) {
   const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/${encodeURIComponent(id)}`);
   const body = await res.json();

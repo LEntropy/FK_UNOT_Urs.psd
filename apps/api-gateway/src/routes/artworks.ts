@@ -9,6 +9,8 @@ import {
   listArtworks,
   suggestTags,
   remeasureProtection,
+  createScoreProtectionJob,
+  getScoreProtectionJob,
   AssetServiceError,
 } from "../clients/assetService.js";
 import { signRenderUrl } from "../clients/deliveryGateway.js";
@@ -130,6 +132,39 @@ export function artworksRouter(): Router {
         return res.status(403).json({ error: "not this artwork's creator" });
       }
       res.json(await remeasureProtection(req.params.id));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Test Lab's real-LoRA-training protection score -- same creator-only
+  // gating as remeasure-protection above (this triggers a real, several-
+  // minutes RunPod Serverless job, not free to spam). Job-based: this
+  // route only kicks the job off and returns its jobId; the poll route
+  // below is what the frontend actually repeats.
+  router.post("/:id/score-protection", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.status(202).json(await createScoreProtectionJob(req.params.id));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Re-checks creator ownership on every poll, not just at job creation --
+  // cheap (one extra getArtwork call) and closes the gap where a jobId
+  // could otherwise be guessed/replayed by a different authenticated user
+  // to read another creator's score results.
+  router.get("/:id/score-protection/:jobId", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.json(await getScoreProtectionJob(req.params.jobId));
     } catch (err) {
       forwardAssetServiceError(err, res);
     }

@@ -406,3 +406,121 @@ def test_detect_model_leak_failure_is_reported_as_failed_status_not_a_500(client
     final = wait_for_model_leak_terminal_status(client, create.json()["jobId"])
     assert final["status"] == "failed"
     assert "GPU exploded" in final["error"]
+
+
+@pytest.fixture
+def protected_image(tmp_path):
+    # Same "real image, fake content is fine" posture as real_image/
+    # suspect_lora above -- server.py's endpoint only Path.exists()-checks
+    # this before handing off to the (mocked, in these tests) scoring
+    # function.
+    from PIL import Image
+
+    p = tmp_path / "protected.png"
+    Image.new("RGB", (64, 48), (10, 200, 10)).save(p)
+    return str(p)
+
+
+def wait_for_score_protection_terminal_status(client, job_id, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/score-protection/{job_id}").json()
+        if body["status"] in ("completed", "failed"):
+            return body
+        time.sleep(0.02)
+    raise TimeoutError(f"job {job_id} never reached a terminal status")
+
+
+def test_score_protection_rejects_missing_original_image(client, protected_image):
+    res = client.post(
+        "/score-protection",
+        json={"originalImageUri": "C:/nope.png", "protectedImageUri": protected_image, "prompt": "artwork"},
+    )
+    assert res.status_code == 400
+    assert "originalImageUri" in res.json()["detail"]
+
+
+def test_score_protection_rejects_missing_protected_image(client, real_image):
+    res = client.post(
+        "/score-protection",
+        json={"originalImageUri": real_image, "protectedImageUri": "C:/nope.png", "prompt": "artwork"},
+    )
+    assert res.status_code == 400
+    assert "protectedImageUri" in res.json()["detail"]
+
+
+def test_score_protection_unknown_job_404s(client):
+    res = client.get("/score-protection/scorejob_doesnotexist")
+    assert res.status_code == 404
+
+
+def test_score_protection_without_remote_gpu_fails_honestly_not_silently(client, real_image, protected_image, monkeypatch):
+    # This test env's USE_REMOTE_GPU is False (no RunPod configured) -- same
+    # as every other test in this file. Unlike /detect-model-leak, this
+    # feature has no local-GPU fallback (see _run_score_protection_job's own
+    # comment on why), so the realistic outcome here is a "failed" job with
+    # an honest error, not a silent no-op or a 500.
+    monkeypatch.setattr(server, "USE_REMOTE_GPU", False)
+
+    create = client.post(
+        "/score-protection",
+        json={"originalImageUri": real_image, "protectedImageUri": protected_image, "prompt": "artwork"},
+    )
+    assert create.status_code == 202
+    assert create.json()["jobId"].startswith("scorejob_")
+
+    final = wait_for_score_protection_terminal_status(client, create.json()["jobId"])
+    assert final["status"] == "failed"
+    assert "USE_REMOTE_GPU" in final["error"]
+
+
+def test_score_protection_happy_path_reaches_completed(client, real_image, protected_image, monkeypatch):
+    captured = {}
+
+    def fake_score(**kwargs):
+        captured.update(kwargs)
+        return {
+            "sd15": {"baselineSimilarity": 0.9, "protectedSimilarity": 0.6, "delta": 0.3, "verdict": "PROTECTED",
+                      "baselineSamples": [], "protectedSamples": []},
+            "sdxl": {"baselineSimilarity": 0.9, "protectedSimilarity": 0.85, "delta": 0.05, "verdict": "WEAK",
+                      "baselineSamples": [], "protectedSamples": []},
+            "threshold": 0.03,
+        }
+
+    monkeypatch.setattr(server, "USE_REMOTE_GPU", True)
+    monkeypatch.setattr(server, "serverless_score_protection", fake_score, raising=False)
+
+    create = client.post(
+        "/score-protection",
+        json={"originalImageUri": real_image, "protectedImageUri": protected_image, "prompt": "a painting", "seed": 7},
+    )
+    assert create.status_code == 202
+    job_id = create.json()["jobId"]
+    assert job_id.startswith("scorejob_")
+
+    final = wait_for_score_protection_terminal_status(client, job_id)
+    assert final["status"] == "completed"
+    assert final["sd15"]["verdict"] == "PROTECTED"
+    assert final["sdxl"]["verdict"] == "WEAK"
+    assert captured["original_path"] == real_image
+    assert captured["protected_path"] == protected_image
+    assert captured["prompt"] == "a painting"
+    assert captured["seed"] == 7
+
+
+def test_score_protection_failure_is_reported_as_failed_status_not_a_500(client, real_image, protected_image, monkeypatch):
+    def fake_score(**kwargs):
+        raise RuntimeError("worker OOM")
+
+    monkeypatch.setattr(server, "USE_REMOTE_GPU", True)
+    monkeypatch.setattr(server, "serverless_score_protection", fake_score, raising=False)
+
+    create = client.post(
+        "/score-protection",
+        json={"originalImageUri": real_image, "protectedImageUri": protected_image, "prompt": "artwork"},
+    )
+    assert create.status_code == 202
+
+    final = wait_for_score_protection_terminal_status(client, create.json()["jobId"])
+    assert final["status"] == "failed"
+    assert "worker OOM" in final["error"]

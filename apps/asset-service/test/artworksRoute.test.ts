@@ -2,13 +2,24 @@ import { existsSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
 vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
-vi.mock("../src/clients/protectionSvc.js", () => ({ suggestTags: vi.fn(), remeasureProtection: vi.fn() }));
+vi.mock("../src/clients/protectionSvc.js", () => ({
+  suggestTags: vi.fn(),
+  remeasureProtection: vi.fn(),
+  createScoreProtectionJob: vi.fn(),
+  getScoreProtectionJob: vi.fn(),
+  // Fire-and-forget in the real route (see routes/artworks.ts's own note) --
+  // defaults to an already-resolved promise so tests that don't care about
+  // the cleanup path don't need to stub this themselves just to avoid a
+  // synchronous "cannot read .catch of undefined" from the route's
+  // `void pollScoreProtectionJob(jobId).catch(...).finally(...)` call.
+  pollScoreProtectionJob: vi.fn(() => Promise.resolve({ status: "completed" })),
+}));
 // encryptImageAtRest stays real (existing upload tests exercise it directly,
 // no live KMS server needed for wrapKey -- client-side only). Only
 // decryptToTempFile/cleanupTempFile are mocked: decryptToTempFile makes a
@@ -20,7 +31,8 @@ vi.mock("../src/crypto/imageEncryption.js", async (importOriginal) => {
 });
 
 const { createApp } = await import("../src/app.js");
-const { suggestTags, remeasureProtection } = await import("../src/clients/protectionSvc.js");
+const { suggestTags, remeasureProtection, createScoreProtectionJob, getScoreProtectionJob, pollScoreProtectionJob } =
+  await import("../src/clients/protectionSvc.js");
 const { decryptToTempFile, cleanupTempFile } = await import("../src/crypto/imageEncryption.js");
 
 function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof artworks.$inferInsert> = {}) {
@@ -351,5 +363,98 @@ describe("POST /artworks/:id/remeasure-protection", () => {
 
     expect(res.status).toBe(502);
     expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
+  });
+});
+
+describe("POST /artworks/:id/score-protection", () => {
+  // This file's mocks are never auto-cleared between tests (no vitest
+  // config `clearMocks`, unlike some projects' default) -- the preceding
+  // remeasure-protection describe block above already exercised
+  // decryptToTempFile several times, which would otherwise leak into this
+  // block's own "not.toHaveBeenCalled()" assertions.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pollScoreProtectionJob).mockResolvedValue({ status: "completed" });
+  });
+
+  it("404s for an unknown artwork", async () => {
+    const db = createTestDb();
+    const res = await request(createApp(db)).post("/artworks/ast_missing/score-protection");
+    expect(res.status).toBe(404);
+    expect(decryptToTempFile).not.toHaveBeenCalled();
+  });
+
+  it("400s when strong_protection didn't actually run on this artwork", async () => {
+    const db = createTestDb();
+    seed(db, { protectedImageUri: "/out/job_x/watermarked.png" }); // usedStrongProtection defaults to false
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/score-protection");
+    expect(res.status).toBe(400);
+    expect(decryptToTempFile).not.toHaveBeenCalled();
+  });
+
+  it("kicks off a protection-svc job and returns its jobId immediately, without waiting for it to finish", async () => {
+    const db = createTestDb();
+    seed(db, { protectedImageUri: "/out/job_x/watermarked.png", usedStrongProtection: true, title: "낙엽" });
+
+    vi.mocked(decryptToTempFile).mockResolvedValue("/tmp/dontai-decrypted-ast_1.png");
+    vi.mocked(createScoreProtectionJob).mockResolvedValue({ jobId: "scorejob_abc", status: "queued" });
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/score-protection");
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ jobId: "scorejob_abc" });
+    expect(createScoreProtectionJob).toHaveBeenCalledWith({
+      originalImageUri: "/tmp/dontai-decrypted-ast_1.png",
+      protectedImageUri: "/out/job_x/watermarked.png",
+      prompt: "낙엽",
+    });
+    // Cleanup is deferred to the background poll, not this response --
+    // pollScoreProtectionJob's default mock resolves immediately (pure
+    // microtasks, no real I/O), so by the time supertest's request settles
+    // the fire-and-forget .finally() has already run.
+    expect(pollScoreProtectionJob).toHaveBeenCalledWith("scorejob_abc");
+    expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
+  });
+
+  it("cleans up the decrypted temp file synchronously when job creation itself fails", async () => {
+    const db = createTestDb();
+    seed(db, { protectedImageUri: "/out/job_x/watermarked.png", usedStrongProtection: true });
+
+    vi.mocked(decryptToTempFile).mockResolvedValue("/tmp/dontai-decrypted-ast_1.png");
+    vi.mocked(createScoreProtectionJob).mockRejectedValue(new Error("RunPod endpoint unreachable"));
+
+    const res = await request(createApp(db)).post("/artworks/ast_1/score-protection");
+
+    expect(res.status).toBe(502);
+    expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
+    expect(pollScoreProtectionJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /artworks/score-protection-jobs/:jobId", () => {
+  it("proxies protection-svc's job status", async () => {
+    const db = createTestDb();
+    vi.mocked(getScoreProtectionJob).mockResolvedValue({
+      status: "completed",
+      sd15: { baselineSimilarity: 0.9, protectedSimilarity: 0.6, delta: 0.3, verdict: "PROTECTED", baselineSamples: [], protectedSamples: [] },
+      sdxl: { baselineSimilarity: 0.9, protectedSimilarity: 0.85, delta: 0.05, verdict: "WEAK", baselineSamples: [], protectedSamples: [] },
+      threshold: 0.03,
+    });
+
+    const res = await request(createApp(db)).get("/artworks/score-protection-jobs/scorejob_abc");
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("completed");
+    expect(res.body.sd15.verdict).toBe("PROTECTED");
+    expect(getScoreProtectionJob).toHaveBeenCalledWith("scorejob_abc");
+  });
+
+  it("502s when protection-svc lookup fails", async () => {
+    const db = createTestDb();
+    vi.mocked(getScoreProtectionJob).mockRejectedValue(new Error("no job scorejob_missing"));
+
+    const res = await request(createApp(db)).get("/artworks/score-protection-jobs/scorejob_missing");
+    expect(res.status).toBe(502);
   });
 });

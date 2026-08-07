@@ -74,7 +74,14 @@ export function TestLabPage() {
             hasVariants={selected.assetVersions.length > 0}
             className="mb-6 max-h-80 w-full rounded border border-neutral-800 object-contain"
           />
-          {tab === "protection" ? <ProtectionTest artwork={selected} /> : <DetectionTest artwork={selected} />}
+          {tab === "protection" ? (
+            <>
+              <ProtectionTest artwork={selected} />
+              {selected.usedStrongProtection && <RealLoraScoreTest artwork={selected} />}
+            </>
+          ) : (
+            <DetectionTest artwork={selected} />
+          )}
         </>
       )}
     </div>
@@ -204,6 +211,151 @@ function MeasurementCard({
           {typeof styleSimilarityToOriginal === "number" ? styleSimilarityToOriginal.toFixed(4) : "측정 안 됨"}
         </dd>
       </dl>
+    </div>
+  );
+}
+
+const SCORE_VERDICT_LABEL: Record<protection.ScoreProtectionArchResult["verdict"], string> = {
+  PROTECTED: "보호됨",
+  WEAK: "약한 효과",
+  NOT_PROTECTED: "효과 없음",
+};
+
+/**
+ * Test Lab's on-demand real-LoRA-training protection score -- only rendered
+ * for artworks strong_protection actually ran on (see this file's own
+ * TestLabPage gating above). Unlike ProtectionTest's remeasure button (a
+ * fast proxy-metric re-run), this triggers a real several-minutes RunPod
+ * Serverless job that trains four LoRAs (SD1.5/SDXL x baseline/protected)
+ * and shows the actual generated samples side by side -- the same kind of
+ * evidence this project's own n=30 dual_arch_validation used internally,
+ * just run once against this specific artwork instead of n=30 images for a
+ * statistical claim (see protection_score.py's module doc).
+ */
+function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
+  const [jobId, setJobId] = useState<string | null>(null);
+
+  const start = useMutation({
+    mutationFn: () => protection.createScoreProtectionJob(artwork.id),
+    onSuccess: (res) => setJobId(res.jobId),
+  });
+
+  const jobQuery = useQuery({
+    queryKey: ["scoreProtectionJob", artwork.id, jobId],
+    queryFn: () => protection.getScoreProtectionJob(artwork.id, jobId!),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) =>
+      query.state.data && (query.state.data.status === "completed" || query.state.data.status === "failed")
+        ? false
+        : 5000,
+    // Same reasoning as DetectionTest's caseQuery above -- this job takes
+    // minutes, a user tabbing away shouldn't freeze the progress display.
+    refetchIntervalInBackground: true,
+  });
+
+  const job = jobQuery.data;
+
+  return (
+    <div className="mt-6 rounded border border-neutral-800 bg-neutral-950/40 px-4 py-4">
+      <p className="mb-1 text-sm font-medium">실제 LoRA 재학습 테스트</p>
+      <p className="mb-4 text-sm text-neutral-400">
+        이 작품은 강력 보호(실제 GPU에서 LoRA를 학습시켜 검증하는 방식)가 실제로 적용됐어요. 같은 방식으로 지금 직접
+        재학습을 돌려서, 보호되지 않은 원본으로 학습했을 때와 보호본으로 학습했을 때 AI가 이 작품을 얼마나 다르게
+        흉내내는지 눈으로 직접 비교할 수 있어요. 실제 GPU 작업이라 결과가 나오기까지 10분 이상 걸려요.
+      </p>
+
+      {!jobId && (
+        <button
+          onClick={() => start.mutate()}
+          disabled={start.isPending}
+          className="rounded bg-neutral-100 px-3 py-2 text-sm font-medium text-neutral-900 disabled:opacity-50"
+        >
+          {start.isPending ? "요청 중..." : "지금 실제로 재학습해서 테스트"}
+        </button>
+      )}
+
+      {start.isError && (
+        <p className="mt-3 text-sm text-red-400">
+          시작하지 못했습니다 ({start.error instanceof Error ? start.error.message : "알 수 없는 오류"}).
+        </p>
+      )}
+
+      {jobId && (!job || job.status === "queued" || job.status === "processing") && (
+        <p className="text-sm text-neutral-400">
+          {job?.status === "processing" ? "LoRA 재학습 진행 중..." : "대기 중..."} (자동으로 갱신돼요, 몇 분 정도
+          걸려요)
+        </p>
+      )}
+
+      {job?.status === "failed" && (
+        <p className="rounded border border-red-900 bg-red-950/40 px-3 py-3 text-sm text-red-300">
+          {job.error ?? "테스트에 실패했습니다."}
+        </p>
+      )}
+
+      {job?.status === "completed" && (
+        <div className="flex flex-col gap-4">
+          {job.sd15 && <ArchScoreCard title="SD1.5" result={job.sd15} />}
+          {job.sdxl && <ArchScoreCard title="SDXL" result={job.sdxl} />}
+          <button
+            onClick={() => setJobId(null)}
+            className="self-start text-xs text-neutral-500 underline hover:text-neutral-300"
+          >
+            새로 테스트
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArchScoreCard({ title, result }: { title: string; result: protection.ScoreProtectionArchResult }) {
+  const color =
+    result.verdict === "PROTECTED"
+      ? "bg-green-900/40 text-green-300"
+      : result.verdict === "WEAK"
+        ? "bg-amber-900/40 text-amber-300"
+        : "bg-neutral-800 text-neutral-400";
+
+  return (
+    <div className="rounded border border-neutral-800 px-3 py-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-medium">{title}</span>
+        <span className={`rounded px-2 py-0.5 text-xs font-medium ${color}`}>{SCORE_VERDICT_LABEL[result.verdict]}</span>
+      </div>
+      <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+        <dt className="text-neutral-500">원본으로 학습한 LoRA의 유사도</dt>
+        <dd className="font-mono text-neutral-300">{result.baselineSimilarity.toFixed(4)}</dd>
+        <dt className="text-neutral-500">보호본으로 학습한 LoRA의 유사도</dt>
+        <dd className="font-mono text-neutral-300">{result.protectedSimilarity.toFixed(4)}</dd>
+        <dt className="text-neutral-500">차이 (delta, 클수록 보호 효과가 큼)</dt>
+        <dd className="font-mono text-neutral-300">
+          {result.delta >= 0 ? "+" : ""}
+          {result.delta.toFixed(4)}
+        </dd>
+      </dl>
+      <div className="grid grid-cols-2 gap-3">
+        <SampleGrid label="원본으로 학습 → 생성된 이미지" samples={result.baselineSamples} />
+        <SampleGrid label="보호본으로 학습 → 생성된 이미지" samples={result.protectedSamples} />
+      </div>
+    </div>
+  );
+}
+
+function SampleGrid({ label, samples }: { label: string; samples: string[] }) {
+  return (
+    <div>
+      <p className="mb-1 text-xs text-neutral-500">{label}</p>
+      <div className="grid grid-cols-2 gap-1">
+        {samples.map((b64, i) => (
+          <img
+            key={i}
+            src={`data:image/png;base64,${b64}`}
+            alt={`${label} 샘플 ${i + 1}`}
+            className="aspect-square w-full rounded border border-neutral-800 object-cover"
+          />
+        ))}
+      </div>
     </div>
   );
 }

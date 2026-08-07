@@ -162,3 +162,84 @@ export async function pollProtectJob(
   }
   throw new Error(`protection-svc job ${jobId} did not complete within ${timeoutMs}ms`);
 }
+
+export interface ScoreProtectionRequest {
+  originalImageUri: string;
+  protectedImageUri: string;
+  prompt: string;
+}
+
+/** Per-architecture (SD1.5/SDXL) result of the Test Lab's real-LoRA-training
+ * score -- matches protection_score.py's return shape exactly. Sample
+ * images are base64-encoded PNGs, meant to be turned into data: URLs
+ * client-side (apps/web's TestLabPage), never persisted server-side. */
+export interface ScoreProtectionArchResult {
+  baselineSimilarity: number;
+  protectedSimilarity: number;
+  delta: number;
+  verdict: "PROTECTED" | "WEAK" | "NOT_PROTECTED";
+  baselineSamples: string[];
+  protectedSamples: string[];
+}
+
+export interface ScoreProtectionJob {
+  status: "queued" | "processing" | "completed" | "failed";
+  sd15?: ScoreProtectionArchResult;
+  sdxl?: ScoreProtectionArchResult;
+  threshold?: number;
+  error?: string;
+}
+
+/**
+ * Test Lab's on-demand real-LoRA-training protection score (see
+ * protection-svc/docker/strongprotect/protection_score.py's module doc).
+ * Job-based like createProtectJob, not synchronous like remeasureProtection
+ * -- this trains four LoRAs on RunPod Serverless, the slowest job class
+ * this project exposes.
+ */
+export async function createScoreProtectionJob(req: ScoreProtectionRequest): Promise<{ jobId: string; status: string }> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/score-protection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (res.status !== 202) {
+      throw new Error(`protection-svc POST /score-protection failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
+export async function getScoreProtectionJob(jobId: string): Promise<ScoreProtectionJob> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/score-protection/${jobId}`);
+    if (!res.ok) {
+      throw new Error(`protection-svc GET /score-protection/${jobId} failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
+/**
+ * Fire-and-forget cleanup helper, not a user-facing poll -- see
+ * routes/artworks.ts's /:id/score-protection handler. That route returns
+ * the jobId to the caller immediately (this job runs many minutes on
+ * RunPod), but the decrypted original image temp file it handed to
+ * protection-svc as originalImageUri must stay on disk until protection-svc
+ * has actually finished reading it. This polls the same job in the
+ * background (uncoupled from any HTTP response) purely to know when it's
+ * safe to delete that temp file.
+ */
+export async function pollScoreProtectionJob(
+  jobId: string,
+  { intervalMs = 5000, timeoutMs = 30 * 60 * 1000 }: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<ScoreProtectionJob> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await getScoreProtectionJob(jobId);
+    if (job.status === "completed" || job.status === "failed") return job;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`protection-svc job ${jobId} did not complete within ${timeoutMs}ms`);
+}

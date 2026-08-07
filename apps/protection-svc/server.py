@@ -49,7 +49,7 @@ from orchestrate import ML_ENGINE_DIR, PRESETS, USE_REMOTE_GPU, choose_processin
 import jobs_db  # noqa: E402
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_detect_model_leak, remote_measure_existing_images
+    from remote_gpu import remote_detect_model_leak, remote_measure_existing_images, serverless_score_protection
 
 sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 from tag_suggest import suggest_tags  # noqa: E402
@@ -177,6 +177,40 @@ def _run_model_leak_job(job_id: str, req: DetectModelLeakRequest) -> None:
         result["status"] = "completed"
         jobs_db.set_completed(_jobs_conn, job_id, result)
     except Exception as exc:  # noqa: BLE001 -- report failure via job status, mirrors _run_job
+        jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
+
+
+class ScoreProtectionRequest(BaseModel):
+    originalImageUri: str
+    protectedImageUri: str
+    prompt: str = "artwork"
+    seed: int = 1
+    trainSteps: int = 150
+    numSamples: int = 2
+
+
+def _run_score_protection_job(job_id: str, req: ScoreProtectionRequest) -> None:
+    jobs_db.set_processing(_jobs_conn, job_id)
+    try:
+        if not USE_REMOTE_GPU:
+            # This feature only ever runs against strong_protection artworks
+            # (asset-service gates it to usedStrongProtection == true), which
+            # itself only ever completed via the RunPod Serverless path --
+            # there's no local-GPU fallback to reach for here, unlike
+            # /detect-model-leak's dual local/remote code paths.
+            raise RuntimeError("score-protection requires USE_REMOTE_GPU (RunPod Serverless) to be configured")
+
+        result = serverless_score_protection(
+            original_path=req.originalImageUri,
+            protected_path=req.protectedImageUri,
+            prompt=req.prompt,
+            seed=req.seed,
+            train_steps=req.trainSteps,
+            num_samples=req.numSamples,
+        )
+        result["status"] = "completed"
+        jobs_db.set_completed(_jobs_conn, job_id, result)
+    except Exception as exc:  # noqa: BLE001 -- report failure via job status, mirrors _run_model_leak_job
         jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
 
 
@@ -311,6 +345,36 @@ def create_detect_model_leak_job(req: DetectModelLeakRequest):
 
 @app.get("/detect-model-leak/{job_id}")
 def get_detect_model_leak_job(job_id: str):
+    job = jobs_db.get_job(_jobs_conn, job_id)
+    if job is None:
+        raise HTTPException(404, f"no job {job_id!r}")
+    return job
+
+
+@app.post("/score-protection", status_code=202)
+def create_score_protection_job(req: ScoreProtectionRequest):
+    """Test Lab's on-demand real-LoRA-training protection score (see
+    protection_score.py's module doc for the mechanism). Job-based like
+    /protect and /detect-model-leak, not synchronous like /remeasure --
+    this trains four LoRAs (SD1.5/SDXL x baseline/protected), the
+    slowest job class this service exposes, submitted to the same
+    single-worker executor so it never contends with an in-flight
+    /protect or /detect-model-leak job for the same GPU.
+    """
+    if not Path(req.originalImageUri).exists():
+        raise HTTPException(400, f"originalImageUri {req.originalImageUri!r} not found")
+    if not Path(req.protectedImageUri).exists():
+        raise HTTPException(400, f"protectedImageUri {req.protectedImageUri!r} not found")
+
+    job_id = f"scorejob_{uuid.uuid4().hex[:12]}"
+    jobs_db.create_job(_jobs_conn, job_id, req.model_dump())
+
+    _executor.submit(_run_score_protection_job, job_id, req)
+    return {"jobId": job_id, "status": "queued"}
+
+
+@app.get("/score-protection/{job_id}")
+def get_score_protection_job(job_id: str):
     job = jobs_db.get_job(_jobs_conn, job_id)
     if job is None:
         raise HTTPException(404, f"no job {job_id!r}")

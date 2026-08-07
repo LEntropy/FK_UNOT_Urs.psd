@@ -9,3 +9,33 @@ export interface RemeasureResult {
 
 export const remeasureProtection = (artworkId: string) =>
   api.post<RemeasureResult>(`/artworks/${artworkId}/remeasure-protection`);
+
+/** Per-architecture (SD1.5/SDXL) result of the Test Lab's real-LoRA-training
+ * score -- see apps/protection-svc/docker/strongprotect/protection_score.py's
+ * module doc for the mechanism. Sample images are base64-encoded PNGs,
+ * meant to be turned into `data:image/png;base64,...` src URLs directly. */
+export interface ScoreProtectionArchResult {
+  baselineSimilarity: number;
+  protectedSimilarity: number;
+  delta: number;
+  verdict: "PROTECTED" | "WEAK" | "NOT_PROTECTED";
+  baselineSamples: string[];
+  protectedSamples: string[];
+}
+
+export interface ScoreProtectionJob {
+  status: "queued" | "processing" | "completed" | "failed";
+  sd15?: ScoreProtectionArchResult;
+  sdxl?: ScoreProtectionArchResult;
+  threshold?: number;
+  error?: string;
+}
+
+/** Kicks off the real-LoRA-training score job -- several minutes on RunPod
+ * Serverless, unlike remeasureProtection above. Returns immediately with a
+ * jobId; callers poll getScoreProtectionJob. */
+export const createScoreProtectionJob = (artworkId: string) =>
+  api.post<{ jobId: string }>(`/artworks/${artworkId}/score-protection`);
+
+export const getScoreProtectionJob = (artworkId: string, jobId: string) =>
+  api.get<ScoreProtectionJob>(`/artworks/${artworkId}/score-protection/${jobId}`);

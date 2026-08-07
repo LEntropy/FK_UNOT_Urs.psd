@@ -442,6 +442,86 @@ def serverless_dual_arch_cloak(
     raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
 
 
+def serverless_score_protection(
+    original_path: str,
+    protected_path: str,
+    prompt: str,
+    seed: int = 1,
+    train_steps: int = 150,
+    num_samples: int = 2,
+    poll_interval_seconds: float = 5.0,
+    timeout_seconds: float = 1800.0,
+) -> dict:
+    """Test Lab's on-demand real-LoRA-training protection score (PHASE4_
+    SCOPING.md §6 follow-up: give users the same kind of evidence this
+    project's own n=30 dual_arch_validation used, for their own artwork,
+    not just a proxy VGG19-feature-distance number). Calls the same
+    `dontai-strongprotect` Serverless endpoint serverless_dual_arch_cloak()
+    uses, with `action: "score_protection"` in the job input so the
+    handler (docker/strongprotect-serverless/handler.py) dispatches to
+    protection_score.py instead of the attack chain.
+
+    Same submit-then-poll two-phase protocol as serverless_dual_arch_
+    cloak() -- this is slower, not faster (four LoRA trainings: SD1.5
+    baseline/protected, SDXL baseline/protected), so the default timeout
+    matches that function's.
+
+    Unlike serverless_dual_arch_cloak() (which writes its result to a
+    local file), this returns the parsed result dict directly -- the
+    caller wants the whole JSON (per-architecture delta/verdict/sample
+    images as base64), not a single output image.
+    """
+    import base64
+    import time
+
+    import httpx
+
+    api_key = _env("RUNPOD_API_KEY")
+    endpoint_id = _env("RUNPOD_STRONGPROTECT_ENDPOINT_ID")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+
+    with open(original_path, "rb") as f:
+        original_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(protected_path, "rb") as f:
+        protected_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    submit = httpx.post(
+        f"{base_url}/run",
+        headers=headers,
+        json={
+            "input": {
+                "action": "score_protection",
+                "original_b64": original_b64,
+                "protected_b64": protected_b64,
+                "prompt": prompt,
+                "seed": seed,
+                "train_steps": train_steps,
+                "num_samples": num_samples,
+            }
+        },
+        timeout=30.0,
+    )
+    submit.raise_for_status()
+    job_id = submit.json()["id"]
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+        status_resp.raise_for_status()
+        body = status_resp.json()
+        status = body["status"]
+
+        if status == "COMPLETED":
+            return body["output"]
+        if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+            raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+
+        time.sleep(poll_interval_seconds)
+
+    raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+
+
 def remote_detect_model_leak(
     original_path: str,
     suspect_lora_path: str,

@@ -9,7 +9,13 @@ import type { Db } from "../db/client.js";
 import { artworks, assetVersions, ownershipRecords } from "../db/schema.js";
 import { runUploadPipeline } from "../orchestration.js";
 import { encryptImageAtRest, decryptToTempFile, cleanupTempFile } from "../crypto/imageEncryption.js";
-import { suggestTags, remeasureProtection } from "../clients/protectionSvc.js";
+import {
+  suggestTags,
+  remeasureProtection,
+  createScoreProtectionJob,
+  getScoreProtectionJob,
+  pollScoreProtectionJob,
+} from "../clients/protectionSvc.js";
 import { env } from "../env.js";
 import { attachAssetVersions } from "../lib/attachAssetVersions.js";
 
@@ -252,6 +258,76 @@ export function artworksRouter(db: Db): Router {
       res.status(502).json({ error: `re-measurement failed: ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       if (decryptedTempPath) cleanupTempFile(decryptedTempPath);
+    }
+  });
+
+  // Test Lab's real-LoRA-training protection score -- gated to
+  // usedStrongProtection artworks only (the one tier this project has
+  // actually validated by training a real LoRA against; every other tier
+  // only has the proxy VGG19-feature-distance measurement remeasure-
+  // protection above surfaces). Unlike remeasure-protection, this is
+  // job-based, not synchronous: protection-svc trains four LoRAs on
+  // RunPod Serverless, minutes not milliseconds (see protection_score.py's
+  // module doc). Returns the jobId immediately -- callers poll GET
+  // /score-protection-jobs/:jobId, same shape as detection-svc's
+  // case-based polling the web UI already uses for scan/report.
+  router.post("/:id/score-protection", async (req, res) => {
+    const artwork = db.select().from(artworks).where(eq(artworks.id, req.params.id)).get();
+    if (!artwork) {
+      return res.status(404).json({ error: `no artwork ${req.params.id}` });
+    }
+    if (!artwork.usedStrongProtection) {
+      return res
+        .status(400)
+        .json({ error: "score-protection is only available for artworks strong_protection actually ran on" });
+    }
+    if (!artwork.protectedImageUri) {
+      return res.status(400).json({ error: "artwork has no protected image yet" });
+    }
+
+    let decryptedTempPath: string | undefined;
+    try {
+      decryptedTempPath = await decryptToTempFile(
+        {
+          encryptedImagePath: artwork.encryptedImagePath,
+          encryptedDekBase64: artwork.encryptedDekBase64,
+          encryptionIv: artwork.encryptionIv,
+          encryptionAuthTag: artwork.encryptionAuthTag,
+        },
+        artwork.id,
+      );
+      const { jobId } = await createScoreProtectionJob({
+        originalImageUri: decryptedTempPath,
+        protectedImageUri: artwork.protectedImageUri,
+        prompt: artwork.title,
+      });
+
+      // Fire-and-forget: the decrypted temp file must outlive this HTTP
+      // response (protection-svc's background job reads it well after
+      // this request returns), so cleanup can't happen in a `finally`
+      // here the way remeasure-protection's synchronous flow does above.
+      // Mirrors this file's own `void runUploadPipeline(db, id)` pattern --
+      // a poll failure just means the temp file leaks until the next
+      // process restart's tmp-dir cleanup, not worth crashing over.
+      void pollScoreProtectionJob(jobId)
+        .catch(() => undefined)
+        .finally(() => cleanupTempFile(decryptedTempPath!));
+
+      res.status(202).json({ jobId });
+    } catch (err) {
+      if (decryptedTempPath) cleanupTempFile(decryptedTempPath);
+      res.status(502).json({ error: `score-protection failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  router.get("/score-protection-jobs/:jobId", async (req, res) => {
+    try {
+      const job = await getScoreProtectionJob(req.params.jobId);
+      res.json(job);
+    } catch (err) {
+      res
+        .status(502)
+        .json({ error: `score-protection job lookup failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 

@@ -10,6 +10,8 @@ vi.mock("../src/clients/assetService.js", () => ({
   getArtwork: vi.fn(),
   suggestTags: vi.fn(),
   remeasureProtection: vi.fn(),
+  createScoreProtectionJob: vi.fn(),
+  getScoreProtectionJob: vi.fn(),
   AssetServiceError: class AssetServiceError extends Error {
     constructor(public status: number, public body: unknown) {
       super("asset-service request failed");
@@ -18,7 +20,17 @@ vi.mock("../src/clients/assetService.js", () => ({
 }));
 vi.mock("../src/clients/deliveryGateway.js", () => ({ signRenderUrl: vi.fn() }));
 
-const { createArtwork, createArtworkWithFile, listArtworks, getArtwork, suggestTags, remeasureProtection, AssetServiceError } = await import("../src/clients/assetService.js");
+const {
+  createArtwork,
+  createArtworkWithFile,
+  listArtworks,
+  getArtwork,
+  suggestTags,
+  remeasureProtection,
+  createScoreProtectionJob,
+  getScoreProtectionJob,
+  AssetServiceError,
+} = await import("../src/clients/assetService.js");
 const { signRenderUrl } = await import("../src/clients/deliveryGateway.js");
 
 beforeEach(() => {
@@ -285,5 +297,94 @@ describe("POST /artworks/:id/remeasure-protection", () => {
       .set("Authorization", `Bearer ${accessToken}`);
 
     expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /artworks/:id/score-protection", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).post("/artworks/ast_1/score-protection");
+    expect(res.status).toBe(401);
+    expect(createScoreProtectionJob).not.toHaveBeenCalled();
+  });
+
+  it("403s when the caller isn't this artwork's creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app).post("/artworks/ast_1/score-protection").set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(403);
+    expect(createScoreProtectionJob).not.toHaveBeenCalled();
+  });
+
+  it("kicks off a job for the artwork's own creator and returns its jobId", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(createScoreProtectionJob).mockResolvedValue({ jobId: "scorejob_abc" });
+
+    const res = await request(app).post("/artworks/ast_1/score-protection").set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ jobId: "scorejob_abc" });
+    expect(createScoreProtectionJob).toHaveBeenCalledWith("ast_1");
+  });
+
+  it("forwards asset-service errors with the same status code", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(createScoreProtectionJob).mockRejectedValue(
+      new AssetServiceError(400, { error: "score-protection is only available for artworks strong_protection actually ran on" }),
+    );
+
+    const res = await request(app).post("/artworks/ast_1/score-protection").set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /artworks/:id/score-protection/:jobId", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).get("/artworks/ast_1/score-protection/scorejob_abc");
+    expect(res.status).toBe(401);
+    expect(getScoreProtectionJob).not.toHaveBeenCalled();
+  });
+
+  it("403s when the caller isn't this artwork's creator, even with a valid jobId", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .get("/artworks/ast_1/score-protection/scorejob_abc")
+      .set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(403);
+    expect(getScoreProtectionJob).not.toHaveBeenCalled();
+  });
+
+  it("returns the job status for the artwork's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(getScoreProtectionJob).mockResolvedValue({
+      status: "completed",
+      sd15: { baselineSimilarity: 0.9, protectedSimilarity: 0.6, delta: 0.3, verdict: "PROTECTED", baselineSamples: [], protectedSamples: [] },
+      sdxl: { baselineSimilarity: 0.9, protectedSimilarity: 0.85, delta: 0.05, verdict: "WEAK", baselineSamples: [], protectedSamples: [] },
+      threshold: 0.03,
+    });
+
+    const res = await request(app)
+      .get("/artworks/ast_1/score-protection/scorejob_abc")
+      .set("Authorization", `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("completed");
+    expect(res.body.sd15.verdict).toBe("PROTECTED");
+    expect(getScoreProtectionJob).toHaveBeenCalledWith("scorejob_abc");
   });
 });

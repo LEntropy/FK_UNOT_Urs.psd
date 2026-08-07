@@ -33,6 +33,7 @@ export function createTestDb() {
       style_drift_score REAL,
       style_similarity_to_original REAL,
       perceptual_psnr_db REAL,
+      used_strong_protection INTEGER NOT NULL DEFAULT 0,
       published_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL

@@ -1,0 +1,1 @@
+ALTER TABLE `artworks` ADD `used_strong_protection` integer DEFAULT false NOT NULL;

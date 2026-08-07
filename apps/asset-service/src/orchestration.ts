@@ -43,13 +43,22 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
       artworkId,
     );
 
+    // protection-svc has no "STRONG_PROTECTION" preset -- it's a separate
+    // strongProtection flag on top of one of the three real style_cloak
+    // presets (used as the fallback tier if the dual-arch attack fails).
+    // L3_ANTI_TRAIN as that fallback matches this tier's own intent: if
+    // strong protection can't run, fall back to this project's strongest
+    // *style_cloak* tier, not a weaker one.
+    const isStrongProtection = artwork.protectionProfile === "STRONG_PROTECTION";
+
     const { jobId } = await createProtectJob({
       imageUri: decryptedTempPath,
-      protectionProfile: artwork.protectionProfile,
+      protectionProfile: isStrongProtection ? "L3_ANTI_TRAIN" : artwork.protectionProfile,
       title: artwork.title,
       creatorId: artwork.creatorId,
       allowAiTraining: artwork.allowAiTraining,
       watermarkPayloadHex: artwork.watermarkPayloadHex,
+      strongProtection: isStrongProtection,
     });
 
     db.update(artworks).set({ protectJobId: jobId, updatedAt: new Date() }).where(eq(artworks.id, artworkId)).run();
@@ -69,6 +78,11 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
         styleDriftScore: job.styleDriftScore ?? null,
         styleSimilarityToOriginal: job.styleSimilarityToOriginal ?? null,
         perceptualPsnrDb: job.perceptualPsnrDb ?? null,
+        // What actually ran (job.usedStrongProtection), not what this
+        // artwork's protectionProfile requested -- the dual-arch attack
+        // can fail and fall back to style_cloak (see createProtectJob's
+        // own call above).
+        usedStrongProtection: job.usedStrongProtection ?? false,
         updatedAt: new Date(),
       })
       .where(eq(artworks.id, artworkId))

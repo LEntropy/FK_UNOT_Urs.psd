@@ -9,7 +9,7 @@ import { env } from "../env.js";
 export interface CreateArtworkRequest {
   title: string;
   sourceImageUri: string;
-  protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN";
+  protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN" | "STRONG_PROTECTION";
   allowAiTraining?: boolean;
   tags?: string[];
 }
@@ -29,7 +29,7 @@ export async function createArtwork(req: CreateArtworkRequest, creatorId: string
 
 export interface CreateArtworkWithFileRequest {
   title: string;
-  protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN";
+  protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN" | "STRONG_PROTECTION";
   allowAiTraining?: boolean;
   tags?: string[];
   file: { buffer: Buffer; originalname: string; mimetype: string };

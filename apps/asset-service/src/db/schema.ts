@@ -84,6 +84,19 @@ export const artworks = sqliteTable("artworks", {
   styleSimilarityToOriginal: real("style_similarity_to_original"),
   perceptualPsnrDb: real("perceptual_psnr_db"),
 
+  // Distinct from protectionProfile === "STRONG_PROTECTION" (what the
+  // creator *requested*) -- protection-svc's dual-arch Serverless attack
+  // can fail and fall back to plain style_cloak rather than fail the
+  // whole upload (orchestrate.py's own strong_protection branch), so this
+  // is what actually ran, set from the protect job's own usedStrongProtection
+  // field. Gates the Test Lab's real-LoRA-effect-test button: only a
+  // strong_protection artwork has cleared this project's own
+  // n=30-plus-replication real-effect validation
+  // (PHASE4_SCOPING.md §6) -- showing that test for a plain style_cloak
+  // upload would likely surface a near-zero/negative delta, per this
+  // project's own multi-mechanism validation history.
+  usedStrongProtection: integer("used_strong_protection", { mode: "boolean" }).notNull().default(false),
+
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });

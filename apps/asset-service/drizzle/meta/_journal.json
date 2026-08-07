@@ -43,6 +43,13 @@
       "when": 1784732238146,
       "tag": "0005_uneven_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786095532019,
+      "tag": "0006_many_polaris",
+      "breakpoints": true
     }
   ]
 }

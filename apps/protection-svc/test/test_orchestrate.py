@@ -268,6 +268,7 @@ def test_strong_protection_falls_back_to_style_cloak_on_failure(monkeypatch, tmp
     )
 
     assert result["status"] == "completed"
+    assert result["usedStrongProtection"] is False
     assert len(style_cloak_calls) == 1  # fell back to style_cloak exactly once
 
 
@@ -313,6 +314,7 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     )
 
     assert result["status"] == "completed"
+    assert result["usedStrongProtection"] is True
     assert len(dual_arch_calls) == 1
     assert dual_arch_calls[0][0] == str(input_path)
     assert dual_arch_calls[0][1] == "My Artwork"  # title used as the prompt proxy

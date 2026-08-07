@@ -117,6 +117,73 @@ describe("runUploadPipeline", () => {
     expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/fake-decrypted.png");
   });
 
+  it("STRONG_PROTECTION artworks request the strongProtection flag and persist what actually ran", async () => {
+    const db = createTestDb();
+    seedArtwork(db, { protectionProfile: "STRONG_PROTECTION" });
+
+    vi.mocked(createProtectJob).mockResolvedValue({ jobId: "job_strong", status: "queued" });
+    vi.mocked(pollProtectJob).mockResolvedValue({
+      jobId: "job_strong",
+      status: "completed",
+      protectedImageUri: "out/job_strong/watermarked.png",
+      perceptualHash: "0xaaaa",
+      metadataHash: "0xbbbb",
+      appliedPreset: "L3_ANTI_TRAIN",
+      usedStrongProtection: true,
+      eotUsed: false,
+      variants: [],
+    });
+    vi.mocked(registerAsset).mockResolvedValue({
+      contentHash: "0xcccc",
+      ownerAddress: OWNER,
+      doNotTrain: true,
+      txHash: "0xdeadbeef",
+      blockNumber: 123,
+    });
+
+    await runUploadPipeline(db, "ast_test1");
+
+    // protection-svc has no "STRONG_PROTECTION" preset -- it's a separate
+    // flag on top of the L3_ANTI_TRAIN fallback tier.
+    expect(createProtectJob).toHaveBeenCalledWith(
+      expect.objectContaining({ protectionProfile: "L3_ANTI_TRAIN", strongProtection: true }),
+    );
+
+    const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_test1")).get()!;
+    expect(artwork.usedStrongProtection).toBe(true);
+  });
+
+  it("persists usedStrongProtection: false when the dual-arch attack silently fell back to style_cloak", async () => {
+    const db = createTestDb();
+    seedArtwork(db, { protectionProfile: "STRONG_PROTECTION" });
+
+    vi.mocked(createProtectJob).mockResolvedValue({ jobId: "job_fallback", status: "queued" });
+    vi.mocked(pollProtectJob).mockResolvedValue({
+      jobId: "job_fallback",
+      status: "completed",
+      protectedImageUri: "out/job_fallback/watermarked.png",
+      perceptualHash: "0xaaaa",
+      metadataHash: "0xbbbb",
+      appliedPreset: "L3_ANTI_TRAIN",
+      usedStrongProtection: false, // orchestrate.py fell back to style_cloak
+      eotUsed: false,
+      variants: [],
+    });
+    vi.mocked(registerAsset).mockResolvedValue({
+      contentHash: "0xcccc",
+      ownerAddress: OWNER,
+      doNotTrain: true,
+      txHash: "0xdeadbeef",
+      blockNumber: 123,
+    });
+
+    await runUploadPipeline(db, "ast_test1");
+
+    const artwork = db.select().from(artworks).where(eq(artworks.id, "ast_test1")).get()!;
+    expect(artwork.status).toBe("PUBLISHED"); // still succeeds -- fallback isn't a failure
+    expect(artwork.usedStrongProtection).toBe(false);
+  });
+
   it("marks the artwork FAILED when the protect job fails", async () => {
     const db = createTestDb();
     seedArtwork(db);

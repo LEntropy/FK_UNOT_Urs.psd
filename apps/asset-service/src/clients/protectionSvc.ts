@@ -12,6 +12,13 @@ export interface ProtectRequest {
   allowAiTraining: boolean;
   watermarkPayloadHex?: string;
   size?: number;
+  // Independent of protectionProfile (which stays one of the three
+  // style_cloak presets, used as the fallback tier if this fails) --
+  // protection-svc's own ProtectRequest keeps these as two separate
+  // fields, not a fourth protectionProfile enum value, since strong
+  // protection is a different mechanism entirely (dual-arch RunPod
+  // Serverless attack), not another style_cloak preset.
+  strongProtection?: boolean;
 }
 
 export interface VariantResult {
@@ -29,6 +36,11 @@ export interface ProtectJob {
   perceptualHash?: string;
   metadataHash?: string;
   appliedPreset?: string;
+  // What actually ran, distinct from the strongProtection request flag --
+  // orchestrate.py's dual-arch attack can fail and fall back to plain
+  // style_cloak rather than fail the whole job. See schema.ts's
+  // usedStrongProtection column doc for why this matters downstream.
+  usedStrongProtection?: boolean;
   eotUsed?: boolean;
   size?: number;
   sizeValidated?: boolean;

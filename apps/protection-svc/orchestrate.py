@@ -605,6 +605,15 @@ def protect(
         "perceptualHash": perceptual_hash,
         "metadataHash": metadata_hash,
         "appliedPreset": preset_name,
+        # Distinct from "strong_protection was requested" -- serverless_dual_arch_cloak()
+        # can fail (endpoint unreachable, job failed) and fall back to
+        # style_cloak silently rather than fail the whole upload (see
+        # this function's own strong_protection branch above). Callers
+        # (asset-service, gating the Test Lab's real-LoRA-effect-test
+        # button) need to know what actually ran, not just what was asked
+        # for -- only a strong_protection artwork has cleared this
+        # project's own n=30-plus-replication real-effect validation bar.
+        "usedStrongProtection": used_strong_protection,
         "eotUsed": eot,
         "size": size,
         "sizeValidated": size == 256,  # see the `size` param's doc comment above

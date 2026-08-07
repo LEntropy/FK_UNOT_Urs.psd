@@ -24,7 +24,14 @@ const createArtworkSchema = z.object({
   sourceImageUri: z.string().min(1).optional(),
   creatorId: z.string().min(1),
   ownerWalletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "must be a 20-byte hex address"),
-  protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN"]).default("L3_ANTI_TRAIN"),
+  // STRONG_PROTECTION dispatches to protection-svc's dual-arch (SD1.5+SDXL)
+  // RunPod Serverless attack (orchestration.ts) instead of style_cloak --
+  // the only tier with a real, statistically-validated protection effect
+  // (n=30-plus-replication, PHASE4_SCOPING.md §6). Real GPU cost/time per
+  // upload (minutes, not the ~seconds-to-a-minute the other three tiers
+  // take), which is why it's a fourth, separately-priced-in-spirit option
+  // rather than folded into L3_ANTI_TRAIN's existing meaning.
+  protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN", "STRONG_PROTECTION"]).default("L3_ANTI_TRAIN"),
   // multipart/form-data fields arrive as strings, never real booleans, so
   // this needs to accept both shapes -- a real boolean from a JSON body,
   // or "true"/"false" from a multipart field. Deliberately NOT

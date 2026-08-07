@@ -6,6 +6,10 @@ const PRESETS = [
   { value: "L1_PREVIEW", label: "L1 · 미리보기 (약한 보호)" },
   { value: "L2_PORTFOLIO", label: "L2 · 포트폴리오 (중간 보호)" },
   { value: "L3_ANTI_TRAIN", label: "L3 · 학습 방지 우선 (강한 보호)" },
+  // 실제 LoRA 재학습 테스트로 검증된 유일한 등급(SD1.5+SDXL 순차 공격,
+  // PHASE4_SCOPING.md §6) -- 다른 세 등급보다 훨씬 오래 걸림(수 분, 실제
+  // GPU 작업)이라는 걸 라벨에서부터 명시.
+  { value: "STRONG_PROTECTION", label: "강력 보호 · 실제 검증됨 (처리에 수 분 소요)" },
 ];
 
 interface SuggestedTag {
@@ -174,6 +178,12 @@ export function UploadPage() {
               </option>
             ))}
           </select>
+          {protectionProfile === "STRONG_PROTECTION" && (
+            <p className="text-xs text-yellow-400">
+              실제 GPU에서 LoRA 공격을 두 번(SD1.5, SDXL) 순차로 돌리는 방식이라 업로드 처리에 10분 이상 걸릴 수 있어요.
+              일시적으로 실패하면 자동으로 L3 단계로 대체 처리됩니다.
+            </p>
+          )}
         </label>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={allowAiTraining} onChange={(e) => setAllowAiTraining(e.target.checked)} />

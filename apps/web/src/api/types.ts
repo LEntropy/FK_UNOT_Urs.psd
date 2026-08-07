@@ -13,7 +13,7 @@ export interface Artwork {
   sourceImageUri: string;
   creatorId: string;
   ownerWalletAddress: string;
-  protectionProfile: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN";
+  protectionProfile: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN" | "STRONG_PROTECTION";
   allowAiTraining: boolean;
   visibility: "public" | "followers" | "private";
   status: "UPLOADED" | "PROTECTING" | "REGISTERING" | "PUBLISHED" | "FAILED";
@@ -26,6 +26,11 @@ export interface Artwork {
   styleDriftScore: number | null;
   styleSimilarityToOriginal: number | null;
   perceptualPsnrDb: number | null;
+  // What actually ran, distinct from protectionProfile === "STRONG_PROTECTION"
+  // (what was requested) -- the dual-arch attack can fail and fall back to
+  // plain style_cloak. Only true here is this project's own real-LoRA-
+  // effect-test validated as protective (PHASE4_SCOPING.md §6).
+  usedStrongProtection: boolean;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;

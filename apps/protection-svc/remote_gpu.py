@@ -313,14 +313,17 @@ def remote_dual_arch_cloak(
     original, SDXL then attacks *that* output) so the final image reflects
     both.
 
-    Caveat worth being explicit about: each stage's protective effect was
-    validated independently (attacking a pristine original), not this
-    specific chained composition (SDXL attacking an already-SD1.5-attacked
-    image). That's a reasonable low-risk extension -- neither attack
-    function cares whether its input is pristine or already perturbed --
-    but it hasn't itself been run through the same n=30-plus-replication
-    validation the two stages individually have. Revisit if a future
-    validation pass specifically targets the chained output.
+    This exact chained composition (SDXL attacking an already-SD1.5-attacked
+    image, not a pristine original) has itself been validated at n=30
+    (ml-engine/experiments/dual_arch_validation/run_dual_arch_n30.py,
+    2026-08-07): SD1.5 mean delta +0.1655, 95% CI [+0.1341, +0.1968] --
+    roughly 4-5x the single-stage effect, the compounding perturbation
+    acting like a much larger effective epsilon budget rather than the two
+    stages fighting each other. SDXL mean delta +0.0446, 95% CI
+    [+0.0211, +0.0681], robust to removing 1-2 outlier images -- comparable
+    to (if anything slightly better than) its own single-stage validation.
+    Neither architecture's effect is suppressed by the chaining; SD1.5's is
+    amplified. See [[lora-protection-research]] memory for full numbers.
 
     Takes roughly 2x remote_multiarch_cloak()'s time (two full ~10min
     single-architecture attacks instead of one ~15min joint one) -- still

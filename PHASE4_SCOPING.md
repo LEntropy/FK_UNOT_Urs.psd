@@ -717,3 +717,72 @@ same way. Worth checking RunPod **Serverless/Endpoints** (a different
 product, purpose-built for "spin up a worker per request, scale to zero")
 as the actual production mechanism instead of driving the Pods API directly,
 before building this out further.
+
+**Update (2026-08-07) -- wired into production and verified live; the
+chained composition itself is now validated too, not just each stage
+alone.** `remote_gpu.py` gained `remote_dual_arch_cloak()` (runs
+`aspl_attack.py` on the original, then `aspl_attack_sdxl_only.py` on that
+output) and `orchestrate.py`'s `strong_protection` branch now calls it
+instead of the joint `remote_multiarch_cloak()` -- the "SD1.5 only" caveat
+above is stale, both architectures are covered. `docker/strongprotect/
+Dockerfile` rebuilt with both attack scripts baked in, pushed, and live-
+tested end to end against a fresh pod (718.8s, valid output). Separately,
+ran `ml-engine/experiments/dual_arch_validation/run_dual_arch_n30.py`
+(n=30, same 10-image set) to check whether the *chained* image -- not just
+each single-stage attack on a pristine original -- still protects both
+architectures: **SD1.5 mean delta +0.1655, 95% CI [+0.1341, +0.1968]**
+(4-5x the single-stage effect -- the compounding perturbation behaves like
+a much larger effective epsilon budget, not two objectives fighting each
+other), **SDXL mean delta +0.0446, 95% CI [+0.0211, +0.0681]**, robust to
+removing 1-2 outlier images. Neither effect is suppressed by chaining;
+SD1.5's is amplified. Full numbers in [[lora-protection-research]] memory.
+
+**RunPod pod-creation workaround found**: the REST v2 `create-pod` bug
+above is real and still unresolved, but GraphQL's `podFindAndDeployOnDemand`
+mutation (`https://api.runpod.io/graphql`) works reliably where REST v2
+doesn't -- confirmed by manually curling it with `templateId` pointed at
+this project's `dontai-strongprotect` template. Filed as a support request
+to RunPod with the reproduction details. For any future on-demand-pod
+automation, prefer the GraphQL mutation over the REST v2 Pods endpoint
+until RunPod confirms a fix. (Practical note: this requires a raw RunPod
+API key in the request URL -- store it as a local machine env var, e.g.
+`RUNPOD_API_KEY`, referenced inline in commands, rather than pasting it
+into chat -- a full-account-scope credential shouldn't be typed into a
+conversation transcript.)
+
+**Update (2026-08-07) -- tested RunPod Serverless empirically against the
+Pods approach; Serverless wins for this workload, not just Pods'
+create-pod bug.** Built `docker/strongprotect-serverless/` (thin layer on
+`lentropy/dontai-strongprotect:latest` -- adds the `runpod` SDK and a
+`handler.py` wrapping the same dual-arch attack `remote_dual_arch_cloak()`
+runs over SSH), pushed it, and ran a real job through `create-endpoint`/
+`run-endpoint` (both worked fine via the REST v2 API -- the create-pod bug
+above is specific to the Pods endpoint, not RunPod's v2 API generally).
+
+Real measured numbers, one A40 job, same dual-arch attack:
+- Pure execution time: Serverless 685.1s vs Pods 718.8s -- essentially the
+  same (Serverless if anything slightly faster).
+- Total time for a request when the image is already cached on the host
+  but the worker had scaled down: Serverless ~11.6min (11s queue delay +
+  685s execution -- just a container restart, no image re-pull) vs Pods
+  ~15-20min (full pod creation, networking, SSH setup every time -- Pods
+  has no "warm but scaled down" state, only "exists" or "doesn't").
+- **Idle-cost risk**: Serverless scales to zero automatically
+  (`idleTimeout`, tested at 60s) -- structurally cannot leak a forgotten
+  idle resource. Pods requires us to remember to delete every one --
+  this session found and deleted a pod that had been sitting idle for
+  4.5 hours before anyone noticed, for exactly this reason.
+- **API reliability**: `create-endpoint`/`run-endpoint`/`get-job-status`
+  all worked on the first try, no GraphQL workaround needed (unlike
+  `create-pod`).
+
+**Recommendation**: build any future on-demand `strong_protection`
+automation on Serverless (`create-endpoint` + `run-endpoint`/`runsync-endpoint`),
+not the Pods API -- better matches this project's own "sporadic, low-volume,
+cost-sensitive" traffic pattern (item 2/3's own framing above), avoids the
+Pods create-pod bug entirely, and removes the idle-pod-cleanup failure mode
+by construction. `docker/strongprotect-serverless/Dockerfile` and
+`handler.py` are a working starting point, not yet wired into
+`orchestrate.py`/`remote_gpu.py` (that integration -- calling the endpoint's
+`run`/`status` URLs instead of SSH -- is real future work, not done as
+part of this comparison).

@@ -58,6 +58,15 @@ export function ProtectionSummary({ artwork }: { artwork: Artwork }) {
   const strength = TIER_STRENGTH[displayTier];
   const hasOwnershipRecord = artwork.ownershipRecords.length > 0;
   const hasMeasuredEffect = typeof artwork.styleDriftScore === "number" && artwork.styleDriftScore > 0;
+  // STRONG_PROTECTION's SD1.5->SDXL chained attack was validated at n=30
+  // to *amplify* the SD1.5-stage effect (~4-5x single-stage, see
+  // remote_dual_arch_cloak()'s docstring / [[lora-protection-research]]) --
+  // that's the mechanism's actual protective value, but it also means the
+  // output visibly departs from the original, unlike the subtle L1-L3
+  // perturbations. Showing the same "looks nearly identical" claim here
+  // would overclaim on a tier that, when it actually ran, looks visibly
+  // different -- so this tier gets its own honest fact instead.
+  const isVisiblyStrong = displayTier === "STRONG_PROTECTION";
 
   return (
     <div className="mb-6 rounded border border-neutral-800 bg-neutral-950/40 px-4 py-4">
@@ -85,7 +94,13 @@ export function ProtectionSummary({ artwork }: { artwork: Artwork }) {
       )}
 
       <ul className="mb-3 space-y-1.5 text-sm">
-        <ProtectionFact done>사람 눈에는 원본과 거의 똑같아 보이도록 처리했어요</ProtectionFact>
+        {isVisiblyStrong ? (
+          <ProtectionFact done>
+            방어 효과를 극대화하는 방식이라 원본과 눈에 띄게 달라 보일 수 있어요 (색 번짐/왜곡)
+          </ProtectionFact>
+        ) : (
+          <ProtectionFact done>사람 눈에는 원본과 거의 똑같아 보이도록 처리했어요</ProtectionFact>
+        )}
         <ProtectionFact done>AI가 그림을 오해하도록 픽셀을 미세하게 바꿨어요</ProtectionFact>
         <ProtectionFact done>보이지 않는 워터마크를 심어 나중에 무단 사용을 추적할 수 있어요</ProtectionFact>
         <ProtectionFact done={hasOwnershipRecord}>블록체인에 소유권을 등록해 제작 시점을 증명해요</ProtectionFact>

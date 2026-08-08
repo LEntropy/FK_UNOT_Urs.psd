@@ -106,6 +106,46 @@ pub fn generate_variants(source: &RgbImage, specs: &[VariantSpec]) -> Vec<Varian
         .collect()
 }
 
+/// Feed/gallery thumbnail resolution, generated from the *original*
+/// (pre-protection) image rather than the protected one. Unlike
+/// DELIVERY_VARIANTS above, the defense here isn't the cloak surviving a
+/// resize (this image was never cloaked) -- it's sheer information loss: a
+/// LoRA trainer fed a file this small has to upscale it back up to its own
+/// training resolution (512px+ for SD1.5, see protection_score.py) first,
+/// discarding almost all real detail before training even starts. Picked
+/// well below any DELIVERY_VARIANTS entry (smallest there is 150px) for
+/// margin.
+///
+/// NOT empirically validated the way DELIVERY_VARIANTS' Safe/Unknown/Unsafe
+/// grid is (that required a real measured LoRA-training run per scale,
+/// see this module's own doc above) -- this is a reasoned default, not a
+/// proven bound. Treat "raises the bar" as the honest claim here, not
+/// "prevents training" -- a real score_protection-style run at this exact
+/// resolution would be needed before claiming more.
+pub const FEED_THUMBNAIL_MAX_DIMENSION: u32 = 128;
+
+/// Downscales `source` to FEED_THUMBNAIL_MAX_DIMENSION on its long edge,
+/// preserving aspect ratio. Unlike generate_variants, never skips (a
+/// feed thumbnail is always wanted) -- returns the source unchanged if it's
+/// already smaller than the target (no upscaling, same reasoning as
+/// generate_variants).
+pub fn generate_feed_thumbnail(source: &RgbImage) -> RgbImage {
+    let (src_w, src_h) = source.dimensions();
+    let src_max_dim = src_w.max(src_h);
+    if src_max_dim <= FEED_THUMBNAIL_MAX_DIMENSION {
+        return source.clone();
+    }
+
+    let scale = FEED_THUMBNAIL_MAX_DIMENSION as f32 / src_max_dim as f32;
+    let (w, h) = if src_w >= src_h {
+        (FEED_THUMBNAIL_MAX_DIMENSION, (src_h as f32 * scale).round() as u32)
+    } else {
+        ((src_w as f32 * scale).round() as u32, FEED_THUMBNAIL_MAX_DIMENSION)
+    };
+
+    image::imageops::resize(source, w.max(1), h.max(1), FilterType::Lanczos3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +188,20 @@ mod tests {
         assert_eq!(ProtectionStatus::from_scale(0.26), ProtectionStatus::Unknown);
         assert_eq!(ProtectionStatus::from_scale(0.25), ProtectionStatus::Unsafe);
         assert_eq!(ProtectionStatus::from_scale(0.1), ProtectionStatus::Unsafe);
+    }
+
+    #[test]
+    fn feed_thumbnail_downscales_to_max_dimension_preserving_aspect() {
+        let source = test_image(1000, 500); // 2:1
+        let thumb = generate_feed_thumbnail(&source);
+        assert_eq!(thumb.width(), FEED_THUMBNAIL_MAX_DIMENSION);
+        assert_eq!(thumb.height(), FEED_THUMBNAIL_MAX_DIMENSION / 2);
+    }
+
+    #[test]
+    fn feed_thumbnail_never_upscales() {
+        let source = test_image(64, 64);
+        let thumb = generate_feed_thumbnail(&source);
+        assert_eq!((thumb.width(), thumb.height()), (64, 64));
     }
 }

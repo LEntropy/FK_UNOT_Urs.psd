@@ -319,6 +319,25 @@ def protect(
 
     style_target_path = _maybe_auto_select_style_target(input_path, style_target_path, size)
 
+    # Feed/gallery thumbnail, generated from the real ORIGINAL image (not
+    # the protected one) at rust-core variants.rs's FEED_THUMBNAIL_MAX_
+    # DIMENSION -- see that module's own doc for why sourcing from the
+    # original is safe here (information loss, not the cloak, is the
+    # defense). Runs first and unconditionally: doesn't depend on which
+    # cloak path below succeeds, or even on the upload finishing protection
+    # at all, so a slow/failed cloak shouldn't block this. Best-effort like
+    # every other enrichment step in this function -- a missing thumbnail
+    # variant just means the feed falls back to a larger one, not a failed
+    # upload.
+    feed_thumbnail_path = out / "feed_thumbnail.png"
+    feed_thumbnail_ready = False
+    print("[orchestrate] 0/4 feed thumbnail (from original, pre-protection) ...", flush=True)
+    try:
+        run_rust_core("feed-thumbnail", "--input", input_path, "--output", str(feed_thumbnail_path))
+        feed_thumbnail_ready = True
+    except Exception as exc:  # noqa: BLE001 -- a real upload succeeding matters more than this
+        print(f"[orchestrate] feed thumbnail generation failed, continuing without it: {exc}", flush=True)
+
     # Matches apps/protection-svc/INTEGRATION.md's preset->params table:
     # L1_PREVIEW skips EOT (cheap tier, not worth the ~4x compute cost);
     # L2/L3 use it. `eot=None` (the CLI/default case) applies that rule;
@@ -590,6 +609,34 @@ def protect(
     print("[orchestrate] 3/4 resolution variants ...", flush=True)
     variants_output = run_rust_core("variants", "--input", str(watermarked_path), "--out-dir", str(variants_dir))
     variants = parse_variants_output(variants_output)
+    # rust-core's `variants` subcommand already wrote each of these to its
+    # own file under variants_dir (main.rs: `result.image.save(&out_path)`)
+    # -- report that real path so callers (asset-service's orchestration.ts)
+    # can store a distinct storageUri per variant instead of every tier
+    # pointing at the same full-size watermarked_path (a previously-known
+    # stub, see orchestration.ts's old comment "rust-core variants aren't
+    # uploaded anywhere separate yet").
+    for v in variants:
+        v["path"] = str(variants_dir / f"{v['name']}.png")
+
+    if feed_thumbnail_ready:
+        from PIL import Image as _Image3
+
+        fw, fh = _Image3.open(feed_thumbnail_path).size
+        variants.append(
+            {
+                "name": "feed_thumbnail_original",
+                "width": fw,
+                "height": fh,
+                # Not comparable to DELIVERY_VARIANTS' scale-vs-protected-
+                # source semantics (this variant is sourced from the
+                # original, not watermarked_path) -- 0.0 is a placeholder,
+                # not a real measurement.
+                "scaleVsSource": 0.0,
+                "protectionStatus": "INFO_LOSS_ONLY (from original, unvalidated resolution floor -- see rust-core variants.rs)",
+                "path": str(feed_thumbnail_path),
+            }
+        )
 
     print("[orchestrate] 4/4 metadataHash ...", flush=True)
 

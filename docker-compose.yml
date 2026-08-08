@@ -229,6 +229,12 @@ services:
       DATABASE_URL: /apps/api-gateway/data/api-gateway.db
       PORT: "4000"
       ASSET_SERVICE_URL: http://asset-service:3002
+      # env.ts defaults this to http://localhost:8003, which inside this
+      # container means "this container", not detection-svc -- every
+      # detection route (/scan, /report, /report-model-leak, DMCA) 502'd
+      # until this was set explicitly. Found live testing the Test Lab's
+      # 추적·증빙 테스트 tab end-to-end.
+      DETECTION_SERVICE_URL: http://detection-svc:8003
       # This gateway is the only trusted caller of delivery-gateway's
       # /internal/sign -- see apps/delivery-gateway/README.md.
       DELIVERY_GATEWAY_URL: http://delivery-gateway:4500

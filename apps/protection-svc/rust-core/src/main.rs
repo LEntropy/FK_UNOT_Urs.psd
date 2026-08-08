@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use image::{ImageBuffer, Rgb, RgbImage};
 use rust_core::robustness::named_transforms;
-use rust_core::variants::{generate_variants, DELIVERY_VARIANTS};
+use rust_core::variants::{generate_feed_thumbnail, generate_variants, DELIVERY_VARIANTS};
 use rust_core::watermark::{apply_new_y, rgb_to_y, Watermarker};
 
 #[derive(Parser)]
@@ -94,6 +94,17 @@ enum Commands {
         /// Directory to write variant files into (created if missing).
         #[arg(long)]
         out_dir: String,
+    },
+    /// Generates a single small thumbnail from the *original* (unprotected)
+    /// image, for fast feed/gallery loading -- see variants.rs's
+    /// generate_feed_thumbnail doc for why this is safe to source from the
+    /// original rather than the protected image (a resolution floor, not
+    /// the cloak, is the defense here).
+    FeedThumbnail {
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        output: String,
     },
 }
 
@@ -283,6 +294,28 @@ fn main() {
                 result.image.save(&out_path).expect("failed to save variant");
             }
             println!("[variants] wrote {} variant(s) to {out_dir}", results.len());
+        }
+
+        Commands::FeedThumbnail { input, output } => {
+            // Sniffs actual file content instead of trusting the path's
+            // extension (unlike the other commands' plain image::open,
+            // which is fine for them -- they only ever see files this
+            // pipeline itself just wrote as real .png). This one reads the
+            // real user upload, whose decrypted temp file gets a hardcoded
+            // ".png" extension regardless of its real format (asset-
+            // service's imageEncryption.ts extname() -- a known "PoC"
+            // stub, see that function's own comment) -- a real JPEG upload
+            // would otherwise fail here with a misleading PNG-decode error.
+            let img = image::ImageReader::open(&input)
+                .expect("failed to open input image")
+                .with_guessed_format()
+                .expect("failed to read input image")
+                .decode()
+                .expect("failed to decode input image")
+                .to_rgb8();
+            let thumb = generate_feed_thumbnail(&img);
+            thumb.save(&output).expect("failed to save feed thumbnail");
+            println!("[feed-thumbnail] {}x{} -> {output}", thumb.width(), thumb.height());
         }
     }
 }

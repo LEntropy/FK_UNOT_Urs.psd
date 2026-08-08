@@ -27,6 +27,13 @@ export interface VariantResult {
   height: number;
   scaleVsSource: number;
   protectionStatus: string;
+  // Real per-variant file path under protection-svc's own out/<jobId>/
+  // tree (protection_out volume, mounted at the same absolute path in
+  // delivery-gateway too -- see docker-compose.yml's comment on that
+  // mount). Optional only for backward compatibility with jobs run before
+  // orchestrate.py started reporting this -- orchestration.ts falls back
+  // to protectedImageUri when absent.
+  path?: string;
 }
 
 export interface ProtectJob {

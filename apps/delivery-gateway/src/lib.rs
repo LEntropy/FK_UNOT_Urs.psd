@@ -120,15 +120,22 @@ enum Viewer {
 
 impl Viewer {
     /// PROJECT_DESIGN.md \u{00a7}3-5: "비로그인 → 1280px, 로그인 유저 → 2048px".
-    /// `Thumbnail` isn't in the original design text but reuses rust-core's
-    /// already-built grid_thumbnail_512 variant for gallery views -- not a
-    /// new capability, just exposing an existing variant through this gate
-    /// too instead of leaving it unreachable.
+    /// `Thumbnail` isn't in the original design text -- used by the feed/
+    /// gallery grid, where fast loading matters more than resolution.
+    /// Points at feed_thumbnail_original (rust-core variants.rs's
+    /// generate_feed_thumbnail: a small, original-sourced image, not a
+    /// downscale of the protected one -- see that function's own doc for
+    /// why serving the original is safe at this resolution) rather than
+    /// grid_thumbnail_512, which is both bigger (slower to load in a grid
+    /// of many artworks) and, for STRONG_PROTECTION artworks specifically,
+    /// visibly distorted (a known issue, tracked separately).
+    /// render_asset's own fallback-to-largest-available logic below still
+    /// covers artworks from before this variant existed.
     fn variant(self) -> &'static str {
         match self {
             Viewer::Anonymous => "public_preview_1280",
             Viewer::LoggedIn => "public_preview_2048",
-            Viewer::Thumbnail => "grid_thumbnail_512",
+            Viewer::Thumbnail => "feed_thumbnail_original",
         }
     }
 }

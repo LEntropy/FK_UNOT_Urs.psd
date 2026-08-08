@@ -263,6 +263,13 @@ function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
         재학습을 돌려서, 보호되지 않은 원본으로 학습했을 때와 보호본으로 학습했을 때 AI가 이 작품을 얼마나 다르게
         흉내내는지 눈으로 직접 비교할 수 있어요. 실제 GPU 작업이라 결과가 나오기까지 10분 이상 걸려요.
       </p>
+      <p className="mb-4 rounded border border-neutral-800 bg-neutral-900 px-3 py-3 text-xs text-neutral-500">
+        아래 이미지들은 원본을 그대로 보여주는 게 아니라, 학습이 끝난 LoRA가 그때그때 노이즈에서 새로 그려낸
+        샘플이에요. 이 작품의 제목("{artwork.title}")을 프롬프트 삼아 학습·생성 양쪽에 똑같이 사용하기 때문에,
+        제목이 그림 내용을 잘 설명할수록 결과가 원본과 더 닮아 보여요 — 제목이 내용과 무관하면 두 그룹(원본 학습 vs
+        보호본 학습) 모두 원본과 달라 보일 수 있어요. 이 경우에도 두 그룹의 결과가 서로 얼마나 다른지(delta)는 보호
+        효과를 그대로 반영합니다.
+      </p>
 
       {!jobId && (
         <button

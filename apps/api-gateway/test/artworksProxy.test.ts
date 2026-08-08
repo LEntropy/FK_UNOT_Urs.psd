@@ -177,7 +177,7 @@ describe("GET /artworks/:id/render-url", () => {
   it("passes through the thumbnail variant when requested", async () => {
     const app = createApp(createTestDb());
     const { accessToken } = await signupAndGetToken(app);
-    vi.mocked(signRenderUrl).mockResolvedValue("http://localhost:4500/asset/ast_1/render?variant=grid_thumbnail_512&exp=1&sig=a");
+    vi.mocked(signRenderUrl).mockResolvedValue("http://localhost:4500/asset/ast_1/render?variant=feed_thumbnail_original&exp=1&sig=a");
 
     const res = await request(app)
       .get("/artworks/ast_1/render-url?variant=thumbnail")

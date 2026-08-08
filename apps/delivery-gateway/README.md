@@ -26,11 +26,15 @@ shouldn't -- it "has no auth of its own").
   a different one, and stops working shortly after issuance either way.
 - **Viewer-based variant selection** (§3-5: "비로그인 → 1280px, 로그인
   유저 → 2048px"): `viewer: "anonymous" | "logged_in" | "thumbnail"` maps
-  to `public_preview_1280` / `public_preview_2048` / `grid_thumbnail_512`
-  (rust-core's already-built variant names, `apps/protection-svc/rust-core/
-  src/variants.rs`). `thumbnail` isn't in the original design text but
-  reuses an existing variant for gallery views rather than leaving it
-  unreachable through this gateway.
+  to `public_preview_1280` / `public_preview_2048` / `feed_thumbnail_original`
+  (rust-core's variant names, `apps/protection-svc/rust-core/
+  src/variants.rs`). `thumbnail` isn't in the original design text -- used
+  by the feed/gallery grid. `feed_thumbnail_original` is generated from the
+  *original* image (not the protected one) at a small, deliberately
+  conservative resolution (`variants.rs`'s `generate_feed_thumbnail` doc has
+  the reasoning) rather than downscaling the protected image, both for
+  faster grid loading and to sidestep protected-image visual distortion
+  (STRONG_PROTECTION in particular).
 - **Real access control on every render request**, in this order:
   1. Signature + expiry check.
   2. Known-AI-crawler User-Agent block (`src/crawlers.rs`: GPTBot,

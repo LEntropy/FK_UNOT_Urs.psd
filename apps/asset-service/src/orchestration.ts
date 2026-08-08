@@ -93,7 +93,13 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
         .values({
           artworkId,
           variantName: variant.name,
-          storageUri: job.protectedImageUri, // rust-core variants aren't uploaded anywhere separate yet -- see README
+          // Real per-variant file (orchestrate.py now reports each
+          // variant's own path under protection-svc's out/<jobId>/variants/
+          // -- see that module's own comment on why this replaced always
+          // pointing every tier at protectedImageUri). Falls back to
+          // protectedImageUri for jobs from before this existed, or if a
+          // variant somehow arrives without one.
+          storageUri: variant.path ?? job.protectedImageUri,
           width: variant.width,
           height: variant.height,
           scaleVsSource: variant.scaleVsSource,

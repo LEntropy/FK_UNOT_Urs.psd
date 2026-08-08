@@ -18,7 +18,7 @@ import { signRenderUrl } from "../clients/deliveryGateway.js";
 const createArtworkSchema = z.object({
   title: z.string().min(1),
   sourceImageUri: z.string().min(1).optional(),
-  protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN"]).optional(),
+  protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN", "STRONG_PROTECTION"]).optional(),
   // Not z.coerce.boolean() -- Boolean("false") is true in JS, so a real
   // "false" multipart field would coerce to true. See asset-service's
   // identical fix (routes/artworks.ts) for the live bug this was caught

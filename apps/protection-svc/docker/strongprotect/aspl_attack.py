@@ -31,7 +31,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from style_cloak import load_image_tensor, save_tensor_image
+from style_cloak import compute_perceptual_mask, load_image_tensor, save_tensor_image
 
 
 @dataclass
@@ -127,6 +127,9 @@ def aspl_attack(
     preset_name: str,
     size: int = 512,
     seed: int = 0,
+    perceptual_mask: bool = False,
+    mask_low: float = 0.3,
+    mask_high: float = 1.7,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     preset = ASPL_PRESETS[preset_name]
@@ -137,12 +140,27 @@ def aspl_attack(
     original = load_image_tensor(original_path, size, device).to(attacker.dtype)
     delta = torch.zeros_like(original, requires_grad=True)
 
+    # Same redistribution style_cloak.py's cloak() already uses (see
+    # compute_perceptual_mask's doc): spend the *same total* epsilon budget
+    # unevenly -- more in already-textured regions a human doesn't scrutinize,
+    # less in flat regions (sky, skin, background) where noise is most
+    # visible -- instead of a flat clamp everywhere. Not tried on the ASPL
+    # attacks before this (only style_cloak's own Gram-matrix attack used
+    # it); the goal here is to see whether the SD1.5-then-SDXL chained
+    # attack's real distortion (PHASE4_SCOPING.md SS6, [[strong-protection-
+    # visual-honesty]]) can look less destructive at the same nominal
+    # epsilon, not just by shrinking epsilon (which trades away signal
+    # directly, and hasn't been shown to be *necessary* the way redistributing
+    # the same budget might not be).
+    epsilon_budget = compute_perceptual_mask(original, mask_low, mask_high) * preset.epsilon if perceptual_mask else preset.epsilon
+
     surrogate = attacker.build_surrogate()
     lora_params = [p for p in surrogate.parameters() if p.requires_grad]
 
     print(
         f"[aspl_attack] preset={preset_name} epsilon={preset.epsilon} outer_iters={preset.outer_iters} "
         f"surrogate_steps={preset.surrogate_steps} pgd_steps={preset.pgd_steps} reset_every={preset.reset_every}"
+        f"{' perceptual_mask=on mask_low=' + str(mask_low) + ' mask_high=' + str(mask_high) if perceptual_mask else ''}"
     )
 
     surrogate_loss_val = float("nan")
@@ -178,7 +196,7 @@ def aspl_attack(
             pgd_loss_val = loss.item()
 
             with torch.no_grad():
-                delta.clamp_(-preset.epsilon, preset.epsilon)
+                delta.clamp_(-epsilon_budget, epsilon_budget)
                 delta.copy_(((original + delta).clamp(0, 1) - original))
 
         if outer % 5 == 0 or outer == preset.outer_iters - 1:
@@ -198,6 +216,9 @@ if __name__ == "__main__":
     parser.add_argument("--preset", default="L3_ANTI_TRAIN", choices=list(ASPL_PRESETS.keys()))
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--perceptual-mask", action="store_true")
+    parser.add_argument("--mask-low", type=float, default=0.3)
+    parser.add_argument("--mask-high", type=float, default=1.7)
     args = parser.parse_args()
 
     aspl_attack(
@@ -208,4 +229,7 @@ if __name__ == "__main__":
         preset_name=args.preset,
         size=args.size,
         seed=args.seed,
+        perceptual_mask=args.perceptual_mask,
+        mask_low=args.mask_low,
+        mask_high=args.mask_high,
     )

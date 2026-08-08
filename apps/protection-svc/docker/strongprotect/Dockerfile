@@ -78,17 +78,21 @@ RUN --mount=type=secret,id=civitai_token \
 # imports diffusers/transformers/PIL/torch, all already installed above,
 # no new dependency needed for it. aspl_attack.py (SD1.5) and
 # aspl_attack_sdxl_only.py (SDXL, reuses ensemble_attack_multiarch.py's
-# SDXLBranch) are the two single-architecture attacks remote_dual_arch_cloak()
-# runs sequentially -- PHASE4_SCOPING.md §6's finding that the joint
-# multiarch_ensemble_attack() suppresses SDXL's own effect, so production
-# now runs each architecture's attack independently instead. Still not the
-# whole ml-engine tree. protection_score.py (Test Lab's on-demand real-
-# LoRA-training score) reuses aspl_attack.py's ASPLAttacker and
+# SDXLBranch) are the two single-architecture pixel-space attacks.
+# aspl_attack_latent.py / aspl_attack_sdxl_only_latent.py (2026-08-08,
+# same reuse pattern in latent space) and hybrid_protect.py (2026-08-08)
+# are the four-stage latent-then-pixel composition strong_protection now
+# runs -- see hybrid_protect.py's own module doc for why stage order and
+# per-stage epsilon are load-bearing, and its STATUS note: this is
+# n=1-validated (SD1.5 only), not the n=30+replication bar every other
+# mechanism in this codebase cleared before shipping. Still not the whole
+# ml-engine tree. protection_score.py (Test Lab's on-demand real-LoRA-
+# training score) reuses aspl_attack.py's ASPLAttacker and
 # ensemble_attack_multiarch.py's SDXLBranch directly -- same reasoning,
 # no new dependency (peft/transformers/diffusers all already installed
 # above for the attack scripts).
 RUN mkdir -p /workspace/dontai-protection-svc/ml-engine/src
-COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py aspl_attack.py aspl_attack_sdxl_only.py protection_score.py /workspace/dontai-protection-svc/ml-engine/src/
+COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py aspl_attack.py aspl_attack_sdxl_only.py aspl_attack_latent.py aspl_attack_sdxl_only_latent.py hybrid_protect.py protection_score.py /workspace/dontai-protection-svc/ml-engine/src/
 
 # Sanity checks baked into the build itself -- fail the build (not a later
 # pod boot) if a checkpoint download silently truncated, or the attack
@@ -98,4 +102,4 @@ RUN sd15_size=$(stat -c%s /workspace/checkpoints/v1-5-pruned-emaonly-fp16.safete
     echo "SD1.5: ${sd15_size} bytes, SDXL: ${sdxl_size} bytes" && \
     [ "$sd15_size" -gt 2000000000 ] && [ "$sdxl_size" -gt 6000000000 ]
 RUN cd /workspace/dontai-protection-svc/ml-engine/src && \
-    python3 -c "import ensemble_attack_multiarch, aspl_attack, aspl_attack_sdxl_only, protection_score; print('import OK')"
+    python3 -c "import ensemble_attack_multiarch, aspl_attack, aspl_attack_sdxl_only, aspl_attack_latent, aspl_attack_sdxl_only_latent, hybrid_protect, protection_score; print('import OK')"

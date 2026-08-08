@@ -369,28 +369,32 @@ def serverless_dual_arch_cloak(
     original_path: str,
     output_path: str,
     prompt: str,
-    sd15_preset: str = "L3_ANTI_TRAIN",
-    sdxl_preset: str = "SDXL_FULL",
+    hybrid_preset: str = "HYBRID_FULL",
     poll_interval_seconds: float = 5.0,
-    timeout_seconds: float = 1800.0,
+    timeout_seconds: float = 2400.0,
 ) -> None:
     """RunPod Serverless counterpart to remote_dual_arch_cloak() -- calls
     the `dontai-strongprotect` Serverless endpoint (docker/
-    strongprotect-serverless/handler.py, same aspl_attack.py ->
-    aspl_attack_sdxl_only.py chain, just invoked through RunPod's job
-    queue instead of SSH+subprocess against an always-on pod).
+    strongprotect-serverless/handler.py), which now runs hybrid_protect.py's
+    four-stage latent-then-pixel composition (2026-08-08) instead of the
+    original two-stage aspl_attack.py -> aspl_attack_sdxl_only.py chain --
+    see hybrid_protect.py's own module doc for the mechanism and its
+    STATUS note (n=1, SD1.5-only validated, not this project's usual
+    n=30-plus-replication bar; wired in ahead of that at the user's
+    explicit, informed 2026-08-08 decision). timeout_seconds raised from
+    the two-stage chain's 1800s since four subprocess stages roughly
+    double wall-clock time.
 
-    Why this replaces remote_dual_arch_cloak() as strong_protection's real
-    production path (PHASE4_SCOPING.md §6's 2026-08-07 update): pure
-    execution time is a wash (Serverless 685.1s vs Pods 718.8s, one A40
-    job, same attack), but Serverless scales to zero automatically --
-    remote_dual_arch_cloak()'s SSH target assumes a pod that's already
-    running, which in practice meant either paying for one sitting idle
-    24/7 or it simply not being up when a real request needed it (this
-    session found and deleted a pod idle for 4.5 hours before anyone
-    noticed, for exactly this reason). Serverless removes that failure
-    mode by construction -- a worker only exists while a job is actually
-    running.
+    Why Serverless over remote_dual_arch_cloak()'s SSH-to-a-pod path
+    (PHASE4_SCOPING.md §6's 2026-08-07 update): pure execution time was a
+    wash for the original two-stage chain (Serverless 685.1s vs Pods
+    718.8s, one A40 job), but Serverless scales to zero automatically --
+    the SSH path assumes a pod that's already running, which in practice
+    meant either paying for one sitting idle 24/7 or it simply not being
+    up when a real request needed it (this session found and deleted a
+    pod idle for 4.5 hours before anyone noticed, for exactly this
+    reason). Serverless removes that failure mode by construction -- a
+    worker only exists while a job is actually running.
 
     Two-phase HTTP job protocol (not runsync -- this job runs several
     minutes, well past what a single blocking HTTP call should be relied
@@ -416,7 +420,7 @@ def serverless_dual_arch_cloak(
     submit = httpx.post(
         f"{base_url}/run",
         headers=headers,
-        json={"input": {"image_b64": image_b64, "prompt": prompt, "sd15_preset": sd15_preset, "sdxl_preset": sdxl_preset}},
+        json={"input": {"image_b64": image_b64, "prompt": prompt, "hybrid_preset": hybrid_preset}},
         timeout=30.0,
     )
     submit.raise_for_status()

@@ -34,7 +34,7 @@ import torch
 import torch.optim as optim
 
 from ensemble_attack_multiarch import SDXLBranch
-from style_cloak import load_image_tensor, save_tensor_image
+from style_cloak import compute_perceptual_mask, load_image_tensor, save_tensor_image
 
 
 @dataclass
@@ -88,6 +88,9 @@ def aspl_attack_sdxl_only(
     output_path: str,
     preset_name: str,
     seed: int = 0,
+    perceptual_mask: bool = False,
+    mask_low: float = 0.3,
+    mask_high: float = 1.7,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     preset = SDXL_ONLY_PRESETS[preset_name]
@@ -102,10 +105,18 @@ def aspl_attack_sdxl_only(
     original = load_image_tensor(original_path, preset.size, device).to(dtype)
     delta = torch.zeros_like(original, requires_grad=True)
 
+    # See aspl_attack.py's aspl_attack() for the full rationale -- same
+    # redistribution, same style_cloak.py source, applied to this stage too
+    # so the SD1.5-then-SDXL chained image (aspl_attack_sdxl_only always
+    # runs second in that chain) doesn't get a second independent flat-clamp
+    # perturbation stacked on top of the first.
+    epsilon_budget = compute_perceptual_mask(original, mask_low, mask_high) * preset.epsilon if perceptual_mask else preset.epsilon
+
     print(
         f"[aspl_attack_sdxl_only] preset={preset_name} epsilon={preset.epsilon} "
         f"outer_iters={preset.outer_iters} surrogate_steps={preset.surrogate_steps} "
         f"pgd_steps={preset.pgd_steps} reset_every={preset.reset_every}"
+        f"{' perceptual_mask=on mask_low=' + str(mask_low) + ' mask_high=' + str(mask_high) if perceptual_mask else ''}"
     )
 
     loss_val = float("nan")
@@ -140,7 +151,7 @@ def aspl_attack_sdxl_only(
             loss_val = loss.item()
 
             with torch.no_grad():
-                delta.clamp_(-preset.epsilon, preset.epsilon)
+                delta.clamp_(-epsilon_budget, epsilon_budget)
                 delta.copy_(((original + delta).clamp(0, 1) - original))
 
         if outer % 5 == 0 or outer == preset.outer_iters - 1:
@@ -159,6 +170,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True)
     parser.add_argument("--preset", default="SDXL_FULL", choices=list(SDXL_ONLY_PRESETS.keys()))
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--perceptual-mask", action="store_true")
+    parser.add_argument("--mask-low", type=float, default=0.3)
+    parser.add_argument("--mask-high", type=float, default=1.7)
     args = parser.parse_args()
 
     aspl_attack_sdxl_only(
@@ -168,4 +182,7 @@ if __name__ == "__main__":
         output_path=args.output,
         preset_name=args.preset,
         seed=args.seed,
+        perceptual_mask=args.perceptual_mask,
+        mask_low=args.mask_low,
+        mask_high=args.mask_high,
     )

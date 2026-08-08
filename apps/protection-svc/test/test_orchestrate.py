@@ -244,7 +244,7 @@ def test_strong_protection_falls_back_to_style_cloak_on_failure(monkeypatch, tmp
         style_cloak_calls.append(output_path)
         Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)
 
-    def failing_serverless_dual_arch_cloak(original_path, output_path, prompt, sd15_preset="L3_ANTI_TRAIN", sdxl_preset="SDXL_FULL"):
+    def failing_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="HYBRID_FULL"):
         raise RuntimeError("RUNPOD_API_KEY not set")
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
@@ -289,7 +289,7 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     def fake_cloak(*args, **kwargs):
         style_cloak_calls.append(True)
 
-    def fake_serverless_dual_arch_cloak(original_path, output_path, prompt, sd15_preset="L3_ANTI_TRAIN", sdxl_preset="SDXL_FULL"):
+    def fake_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="HYBRID_FULL"):
         dual_arch_calls.append((original_path, prompt))
         Image.new("RGB", (64, 64), (90, 90, 90)).save(output_path)
 

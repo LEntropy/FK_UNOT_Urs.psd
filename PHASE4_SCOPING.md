@@ -809,3 +809,37 @@ default path). Needs `RUNPOD_API_KEY` and `RUNPOD_STRONGPROTECT_ENDPOINT_ID`
 set wherever protection-svc actually runs -- falls back to `style_cloak`
 on any failure (missing env vars, endpoint unreachable, job failed), same
 as the SSH path always did.
+
+**Update (2026-08-08) -- the pixel-space chained attack's real distortion
+(above) turned out to contradict this project's own UI copy; explored
+whether that's fixable without giving up the validated effect.** Live
+browser testing found STRONG_PROTECTION's output visibly unrecognizable,
+contradicting the "looks nearly identical to the original" claim shown for
+every tier. Fixed the immediate honesty problem (UI copy only, no mechanism
+change -- see [[strong-protection-visual-honesty]] memory) in a separate
+session, then used this session to actually search for a mechanism that
+keeps the validated effect *and* looks more like the original -- not
+settling for "at least the copy is honest now."
+
+Tried three parameter variations on the existing pixel-space chain first
+(`compute_perceptual_mask` redistribution at two strengths, reduced flat
+epsilon, reduced surrogate-training depth) -- none of them meaningfully
+helped, and reduced surrogate depth made the visible distortion worse (see
+[[lora-protection-research]] memory, 11th experiment, for the full pilot).
+
+The mechanism that actually worked: attacking in **VAE latent space**
+instead of pixel space (`ml-engine/src/aspl_attack_latent.py` /
+`aspl_attack_sdxl_only_latent.py`, new) -- every prior mechanism in this
+project's 9-experiment history bounded delta as an L-infinity ball on raw
+RGB pixels; this is the first to bound it on the VAE-encoded latent
+instead, decoding back to pixels only once at the end. Visually the result
+reads as natural brushwork variation rather than an overlaid decorative
+pattern, and a same-day n=1 real-training check (chained SD1.5-then-SDXL,
+same methodology as every other check in this project) found **both**
+architectures still clear a real positive delta -- SD1.5 +0.0725, SDXL
++0.0720 (the SDXL number is larger than the validated pixel-space chain's
++0.0446). Not yet validated at scale (n=1 only) -- the next real step is
+the same n=30-plus-replication process every other validated mechanism in
+this project went through, not adopting this into production off one data
+point. See [[lora-protection-research]] memory, 12th experiment, for full
+numbers and the calibration data (z0 latent statistics) needed to run it.

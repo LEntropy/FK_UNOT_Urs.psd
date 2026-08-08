@@ -342,22 +342,23 @@ def protect(
     # concept_misalign_target_path below): replaces style-cloak entirely
     # rather than stacking on top of it -- this project's own hybrid_attack
     # experiment already found combining multiple attack objectives makes
-    # things worse, not better. Runs SD1.5 and SDXL attacks independently
-    # and sequentially (serverless_dual_arch_cloak, via RunPod Serverless
-    # -- see this module's own import-time comment for why Serverless over
-    # the SSH-to-a-pod path), each cleared through this project's own
-    # n=30-plus-replication validation bar on its own -- not the joint
-    # multiarch_ensemble_attack(), which was found to measurably suppress
-    # SDXL's effect to nothing when both architectures share one epsilon
-    # budget (PHASE4_SCOPING.md §6). Falls back to style_cloak on any
+    # things worse, not better. Runs hybrid_protect.py's four-stage
+    # latent-then-pixel composition (serverless_dual_arch_cloak, via
+    # RunPod Serverless -- see this module's own import-time comment for
+    # why Serverless over the SSH-to-a-pod path). CAVEAT (2026-08-08):
+    # unlike the two-stage pixel-only chain it replaced (which cleared
+    # this project's usual n=30-plus-replication bar), this composition
+    # is validated at n=1, SD1.5-only -- see hybrid_protect.py's own
+    # module doc. Wired in ahead of full validation at the user's
+    # explicit, informed decision. Falls back to style_cloak on any
     # failure (endpoint unreachable, RUNPOD_API_KEY unset, job failed,
     # etc.) rather than publishing an unprotected image -- a real upload
     # succeeding with the proven mechanism beats a failed upload.
     used_strong_protection = False
     if strong_protection:
         print(
-            "[orchestrate] 1/4 style-cloak (dual-arch SD1.5+SDXL, sequential, "
-            "RunPod Serverless, see PHASE4_SCOPING.md §6) ...",
+            "[orchestrate] 1/4 style-cloak (hybrid latent+pixel, SD1.5+SDXL, "
+            "RunPod Serverless, see hybrid_protect.py) ...",
             flush=True,
         )
         try:

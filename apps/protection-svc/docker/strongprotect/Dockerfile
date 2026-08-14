@@ -54,7 +54,8 @@ WORKDIR /workspace
 RUN pip install --no-cache-dir --break-system-packages \
       torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128 && \
     pip install --no-cache-dir --break-system-packages \
-      diffusers==0.32.2 transformers==4.54.1 peft pillow numpy
+      diffusers==0.32.2 transformers==4.54.1 peft pillow numpy \
+      onnxruntime huggingface_hub
 
 # Checkpoints -- SD1.5 is a public HF mirror (no auth), SDXL is
 # Illustrious-XL from Civitai (gated behind an account, needs the token).
@@ -90,9 +91,15 @@ RUN --mount=type=secret,id=civitai_token \
 # training score) reuses aspl_attack.py's ASPLAttacker and
 # ensemble_attack_multiarch.py's SDXLBranch directly -- same reasoning,
 # no new dependency (peft/transformers/diffusers all already installed
-# above for the attack scripts).
+# above for the attack scripts). caption_image.py (2026-08-08) generates
+# a content-based prompt (BLIP, already covered by the transformers pin
+# above -- no new dependency) instead of trusting a caller-supplied
+# title, which was found live to break both the attack's own denoising
+# loss and protection_score.py's baseline measurement when a title
+# doesn't describe the image (see that module's own doc for the
+# real-deployment incident that surfaced this).
 RUN mkdir -p /workspace/dontai-protection-svc/ml-engine/src
-COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py aspl_attack.py aspl_attack_sdxl_only.py aspl_attack_latent.py aspl_attack_sdxl_only_latent.py hybrid_protect.py protection_score.py /workspace/dontai-protection-svc/ml-engine/src/
+COPY ensemble_attack_multiarch.py style_cloak.py model.py model_leak_detect.py aspl_attack.py aspl_attack_sdxl_only.py aspl_attack_latent.py aspl_attack_sdxl_only_latent.py hybrid_protect.py caption_image.py protection_score.py lora_generate.py controlnet_condition.py native_eot_attack.py native_lowfreq_attack.py native_aspl_sdxl_attack.py vae_uncertainty_attack.py clean_protect.py /workspace/dontai-protection-svc/ml-engine/src/
 
 # Sanity checks baked into the build itself -- fail the build (not a later
 # pod boot) if a checkpoint download silently truncated, or the attack
@@ -102,4 +109,4 @@ RUN sd15_size=$(stat -c%s /workspace/checkpoints/v1-5-pruned-emaonly-fp16.safete
     echo "SD1.5: ${sd15_size} bytes, SDXL: ${sdxl_size} bytes" && \
     [ "$sd15_size" -gt 2000000000 ] && [ "$sdxl_size" -gt 6000000000 ]
 RUN cd /workspace/dontai-protection-svc/ml-engine/src && \
-    python3 -c "import ensemble_attack_multiarch, aspl_attack, aspl_attack_sdxl_only, aspl_attack_latent, aspl_attack_sdxl_only_latent, hybrid_protect, protection_score; print('import OK')"
+    python3 -c "import ensemble_attack_multiarch, aspl_attack, aspl_attack_sdxl_only, aspl_attack_latent, aspl_attack_sdxl_only_latent, hybrid_protect, caption_image, protection_score, lora_generate, controlnet_condition, native_eot_attack, native_lowfreq_attack, native_aspl_sdxl_attack, vae_uncertainty_attack, clean_protect; print('import OK')"

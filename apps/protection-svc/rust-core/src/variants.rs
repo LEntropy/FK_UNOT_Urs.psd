@@ -122,7 +122,15 @@ pub fn generate_variants(source: &RgbImage, specs: &[VariantSpec]) -> Vec<Varian
 /// proven bound. Treat "raises the bar" as the honest claim here, not
 /// "prevents training" -- a real score_protection-style run at this exact
 /// resolution would be needed before claiming more.
-pub const FEED_THUMBNAIL_MAX_DIMENSION: u32 = 128;
+///
+/// Raised from 128 to 256 (2026-08-08, user request after live review --
+/// 128px felt too illegible in the feed grid) purely for visual
+/// legibility -- this widens the margin below any real LoRA training
+/// resolution (512px+) less than 128 did, but the tradeoff was never
+/// re-measured at this specific value. Tracked as a follow-up: run a real
+/// score_protection-style test at 256px before treating "raises the bar"
+/// as anything more than a restated assumption.
+pub const FEED_THUMBNAIL_MAX_DIMENSION: u32 = 256;
 
 /// Downscales `source` to FEED_THUMBNAIL_MAX_DIMENSION on its long edge,
 /// preserving aspect ratio. Unlike generate_variants, never skips (a

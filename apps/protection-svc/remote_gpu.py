@@ -17,7 +17,9 @@ hardcoding the GPU PC's LAN address here.
 
 import os
 import subprocess
+import threading
 import uuid
+from typing import Callable
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -25,6 +27,53 @@ def _env(name: str, default: str | None = None) -> str:
     if value is None:
         raise RuntimeError(f"remote_gpu.py: required env var {name} is not set")
     return value
+
+
+# 2026-08-14: local (this-process) concurrency gate per RunPod Serverless
+# endpoint, added on top of protection-svc/server.py's own ThreadPoolExecutor
+# caps. Why that alone isn't enough: server.py's _executor (max_workers=1)
+# and _cloud_executor (max_workers=4) both fan into the SAME two RunPod
+# endpoints below -- e.g. a /protect job (strongProtection), a /score-
+# protection job, and a /lora-jobs job can all be in flight at once, all
+# three calling functions in *this* module that submit to
+# RUNPOD_STRONGPROTECT_ENDPOINT_ID, which itself is only configured for
+# workers.max=2 (see the dontai-strongprotect endpoint's own RunPod config).
+# Without a gate here, this process could have 5 concurrent submit+poll
+# loops racing for 2 real GPU workers -- RunPod's own QUEUE_DELAY
+# autoscaler doesn't reject the extra requests, it just queues them
+# endpoint-side, so nothing crashes, but a job stuck behind 2 others for
+# the endpoint's actual worker capacity can burn most or all of its own
+# client-side timeout_seconds just waiting for a worker, and report a
+# false "did not complete within Ns" failure for a job that would have
+# succeeded given more time -- exactly the failure mode
+# serverless_dual_arch_cloak's own timeout_seconds bump (2026-08-13) was
+# reacting to from a different cause (server-side executionTimeoutMs).
+# Bounding concurrency to each endpoint's real workers.max here means
+# extra requests wait in this Python process (still shown as "processing"
+# in jobs_db, which is honest -- they genuinely are queued) instead of
+# piling an unbounded number of simultaneous jobs onto 2 physical workers.
+_ENDPOINT_GATES: dict[str, threading.Semaphore] = {}
+_ENDPOINT_GATES_LOCK = threading.Lock()
+
+
+def _endpoint_gate(endpoint_id: str, max_concurrent_env: str, default_max_concurrent: int = 2) -> threading.Semaphore:
+    """Returns the shared semaphore for one RunPod endpoint, sized from
+    max_concurrent_env (falls back to default_max_concurrent, which
+    matches both the dontai-strongprotect and dontai-stylecloak endpoints'
+    current workers.max=2 -- see RUNPOD_STRONGPROTECT_MAX_CONCURRENT /
+    RUNPOD_STYLECLOAK_MAX_CONCURRENT below). Keyed by endpoint_id, not the
+    env var name, so this still works correctly if RunPod's own workers.max
+    ever changes without a matching env var edit landing here at the same
+    time -- worst case the gate is looser or tighter than the real cap by
+    a bit, never silently pointed at the wrong endpoint.
+    """
+    with _ENDPOINT_GATES_LOCK:
+        gate = _ENDPOINT_GATES.get(endpoint_id)
+        if gate is None:
+            limit = max(1, int(os.environ.get(max_concurrent_env, str(default_max_concurrent))))
+            gate = threading.Semaphore(limit)
+            _ENDPOINT_GATES[endpoint_id] = gate
+        return gate
 
 
 def _connection():
@@ -365,25 +414,73 @@ def remote_dual_arch_cloak(
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
 
 
+def cancel_runpod_job(endpoint_id: str, runpod_job_id: str) -> bool:
+    """Best-effort direct RunPod job cancel (2026-08-14, cancel-upload
+    feature) -- used by server.py's /protect/{job_id}/cancel route once it
+    has a runpod_job_id on file (set via on_submitted below). Returns
+    False on any failure (job already finished, network error, etc.)
+    rather than raising -- cancellation is inherently racy against a job
+    that might complete in the same instant, and the caller (jobs_db's
+    request_cancel) has already marked the job cancelled locally either
+    way, so a failed RunPod-side cancel just means slightly wasted GPU
+    time, not an inconsistent job state."""
+    import httpx
+
+    api_key = _env("RUNPOD_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        resp = httpx.post(
+            f"https://api.runpod.ai/v2/{endpoint_id}/cancel/{runpod_job_id}", headers=headers, timeout=15.0
+        )
+        return resp.status_code < 400
+    except httpx.HTTPError:
+        return False
+
+
 def serverless_dual_arch_cloak(
     original_path: str,
     output_path: str,
     prompt: str,
-    hybrid_preset: str = "HYBRID_FULL",
+    hybrid_preset: str = "CLEAN_FULL",
+    latent_epsilon: float | None = None,
+    pixel_epsilon: float | None = None,
     poll_interval_seconds: float = 5.0,
-    timeout_seconds: float = 2400.0,
+    timeout_seconds: float = 3300.0,
+    on_submitted: Callable[[str, str], None] | None = None,
 ) -> None:
     """RunPod Serverless counterpart to remote_dual_arch_cloak() -- calls
     the `dontai-strongprotect` Serverless endpoint (docker/
-    strongprotect-serverless/handler.py), which now runs hybrid_protect.py's
-    four-stage latent-then-pixel composition (2026-08-08) instead of the
-    original two-stage aspl_attack.py -> aspl_attack_sdxl_only.py chain --
-    see hybrid_protect.py's own module doc for the mechanism and its
-    STATUS note (n=1, SD1.5-only validated, not this project's usual
-    n=30-plus-replication bar; wired in ahead of that at the user's
-    explicit, informed 2026-08-08 decision). timeout_seconds raised from
-    the two-stage chain's 1800s since four subprocess stages roughly
-    double wall-clock time.
+    strongprotect-serverless/handler.py), which as of 2026-08-13 defaults
+    to clean_protect.py's four-stage native pixel-space-only chain (no
+    VAE-decode latent stage) instead of hybrid_protect.py's latent-then-
+    pixel composition -- see clean_protect.py's own module doc for why:
+    hybrid_protect.py's latent stage was confirmed causing real color/
+    quality damage (oil-painting-style distortion, a night sky reduced to
+    magenta/green blotches) on a real user's deployed artwork. Same
+    STATUS caveat as before this switch: n=1, single-image validated, not
+    this project's usual n=30-plus-replication bar; wired in ahead of
+    that (2026-08-13 decision) because a visually honest n=1 mechanism
+    beats a known-broken one staying live. `hybrid_preset` is now a
+    misnomer kept for API-compatibility -- it's actually a
+    clean_protect.CLEAN_PRESETS name ("CLEAN_FULL" or "CALIBRATION"), not
+    a hybrid_protect.py preset; renaming the parameter is left for a
+    follow-up since orchestrate.py's callers pass it positionally-safe
+    keyword args either way. `latent_epsilon`/`pixel_epsilon` are
+    currently NOT threaded through to clean_protect() (it has no latent
+    stage, so "latent_epsilon" has no meaning, and per-stage pixel
+    epsilon overrides aren't wired yet) -- passing them is a silent no-op
+    for now; a caller relying on the old "advanced options" epsilon
+    override will not get the effect they expect until that's built.
+    timeout_seconds raised from the four-stage hybrid chain's 2400s to
+    3300s (2026-08-13, first real deployment run): the dontai-strongprotect
+    RunPod endpoint's own executionTimeoutMs was 1800000 (30min), shorter
+    than clean_protect.py's real four-stage wall-clock time -- a live run
+    got through stage 1 (349s) into stage 2 before RunPod's own timeout
+    killed the job server-side ("executionTimeout exceeded"), independent
+    of this function's client-side poll timeout entirely. Fixed by raising
+    the endpoint's own timeout to 3000000ms (50min) via update-endpoint;
+    this function's timeout_seconds must stay >= that or the client gives
+    up and reports failure before the server would even time out.
 
     Why Serverless over remote_dual_arch_cloak()'s SSH-to-a-pod path
     (PHASE4_SCOPING.md §6's 2026-08-07 update): pure execution time was a
@@ -417,33 +514,60 @@ def serverless_dual_arch_cloak(
     with open(original_path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("ascii")
 
-    submit = httpx.post(
-        f"{base_url}/run",
-        headers=headers,
-        json={"input": {"image_b64": image_b64, "prompt": prompt, "hybrid_preset": hybrid_preset}},
-        timeout=30.0,
-    )
-    submit.raise_for_status()
-    job_id = submit.json()["id"]
+    gate = _endpoint_gate(endpoint_id, "RUNPOD_STRONGPROTECT_MAX_CONCURRENT")
+    with gate:  # see _endpoint_gate's own doc -- caps concurrent in-flight jobs to this endpoint's real worker capacity
+        submit = httpx.post(
+            f"{base_url}/run",
+            headers=headers,
+            json={
+                "input": {
+                    # "clean_cloak" (2026-08-13) -- see this function's own
+                    # doc for why it replaced the implicit "dual_arch_cloak"
+                    # default. Explicit here rather than relying on the
+                    # handler's own default so this call site's intent is
+                    # visible without cross-referencing handler.py.
+                    "action": "clean_cloak",
+                    "image_b64": image_b64,
+                    "prompt": prompt,
+                    "clean_preset": hybrid_preset,
+                    # NOT currently wired to clean_protect() -- see this
+                    # function's own doc. Sent anyway (harmlessly ignored by
+                    # the handler) so a future override implementation
+                    # doesn't also need an orchestrate.py-side change.
+                    "latent_epsilon": latent_epsilon,
+                    "pixel_epsilon": pixel_epsilon,
+                }
+            },
+            timeout=30.0,
+        )
+        submit.raise_for_status()
+        job_id = submit.json()["id"]
+        # Fires as early as possible (2026-08-14, cancel-upload feature) --
+        # server.py's callback writes this into jobs_db so a cancel request
+        # arriving seconds later can still reach the real RunPod job, not
+        # just this function's own in-memory job_id (which a cancel caller
+        # in a different process/thread has no access to otherwise).
+        if on_submitted is not None:
+            on_submitted(job_id, endpoint_id)
 
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
-        status_resp.raise_for_status()
-        body = status_resp.json()
-        status = body["status"]
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+            status_resp.raise_for_status()
+            body = status_resp.json()
+            status = body["status"]
 
-        if status == "COMPLETED":
-            output_b64 = body["output"]["output_b64"]
-            with open(output_path, "wb") as f:
-                f.write(base64.b64decode(output_b64))
-            return
-        if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
-            raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+            if status == "COMPLETED":
+                output_b64 = body["output"]["output_b64"]
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(output_b64))
+                return
+            if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
 
-        time.sleep(poll_interval_seconds)
+            time.sleep(poll_interval_seconds)
 
-    raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+        raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
 
 
 def serverless_score_protection(
@@ -476,6 +600,106 @@ def serverless_score_protection(
     images as base64), not a single output image.
     """
     import base64
+    import io
+    import time
+
+    import httpx
+    from PIL import Image
+
+    api_key = _env("RUNPOD_API_KEY")
+    endpoint_id = _env("RUNPOD_STRONGPROTECT_ENDPOINT_ID")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+
+    # protection_score.py's own LoRA training resizes everything down to
+    # 512px (SD1.5) / 1024px (SDXL) anyway (load_image_tensor) -- sending
+    # the real upload's native resolution (a real production image can be
+    # several thousand px, several MB as PNG) gains nothing and, sending
+    # *two* such images in one JSON body, is exactly what pushed a real
+    # request over RunPod's /run payload size limit (400 Bad Request, no
+    # further detail in the response body -- found live on a 2400x1800
+    # upload, ~9MB PNG each for original+protected, well past whatever
+    # the actual cap is). 1024 matches SDXL's own training resolution --
+    # not a lossy downgrade relative to what the job would use anyway.
+    def _encode_resized(path: str, max_dim: int = 1024) -> str:
+        img = Image.open(path).convert("RGB")
+        if max(img.size) > max_dim:
+            scale = max_dim / max(img.size)
+            img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    original_b64 = _encode_resized(original_path)
+    protected_b64 = _encode_resized(protected_path)
+
+    gate = _endpoint_gate(endpoint_id, "RUNPOD_STRONGPROTECT_MAX_CONCURRENT")
+    with gate:  # see _endpoint_gate's own doc -- this and serverless_dual_arch_cloak/serverless_generate_lora share one endpoint's worker capacity
+        submit = httpx.post(
+            f"{base_url}/run",
+            headers=headers,
+            json={
+                "input": {
+                    "action": "score_protection",
+                    "original_b64": original_b64,
+                    "protected_b64": protected_b64,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "train_steps": train_steps,
+                    "num_samples": num_samples,
+                }
+            },
+            timeout=30.0,
+        )
+        submit.raise_for_status()
+        job_id = submit.json()["id"]
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+            status_resp.raise_for_status()
+            body = status_resp.json()
+            status = body["status"]
+
+            if status == "COMPLETED":
+                return body["output"]
+            if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+
+            time.sleep(poll_interval_seconds)
+
+        raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+
+
+def serverless_generate_lora(
+    image_path: str,
+    output_path: str,
+    prompt: str,
+    seed: int = 1,
+    train_steps: int = 150,
+    poll_interval_seconds: float = 5.0,
+    timeout_seconds: float = 1800.0,
+) -> dict:
+    """Coin-system feature (2026-08-10): trains a real, downloadable SD1.5
+    LoRA on a single one of the user's own artworks (ml-engine/src/
+    lora_generate.py's module doc has the full mechanism -- reuses
+    protection_score.py's own `_train_lora_sd15` training loop). Calls the
+    same `dontai-strongprotect` Serverless endpoint as serverless_
+    dual_arch_cloak()/serverless_score_protection(), with `action:
+    "generate_lora"` so the handler dispatches to lora_generate.py instead.
+
+    Single training run (not four like score_protection), so timeout
+    defaults to score_protection's own bound rather than something
+    tighter -- one SD1.5 LoRA training at these settings has run well
+    under that in practice, this just isn't the place to be optimistic
+    about wall-clock time.
+
+    Writes the resulting .safetensors file to output_path (like
+    serverless_dual_arch_cloak(), unlike serverless_score_protection()
+    which returns its result inline) -- the caller wants a file on disk to
+    hand off to asset-service's own storage, not a JSON blob.
+    """
+    import base64
     import time
 
     import httpx
@@ -485,45 +709,46 @@ def serverless_score_protection(
     headers = {"Authorization": f"Bearer {api_key}"}
     base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
 
-    with open(original_path, "rb") as f:
-        original_b64 = base64.b64encode(f.read()).decode("ascii")
-    with open(protected_path, "rb") as f:
-        protected_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(image_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
 
-    submit = httpx.post(
-        f"{base_url}/run",
-        headers=headers,
-        json={
-            "input": {
-                "action": "score_protection",
-                "original_b64": original_b64,
-                "protected_b64": protected_b64,
-                "prompt": prompt,
-                "seed": seed,
-                "train_steps": train_steps,
-                "num_samples": num_samples,
-            }
-        },
-        timeout=30.0,
-    )
-    submit.raise_for_status()
-    job_id = submit.json()["id"]
+    gate = _endpoint_gate(endpoint_id, "RUNPOD_STRONGPROTECT_MAX_CONCURRENT")
+    with gate:  # see _endpoint_gate's own doc -- shares this endpoint's worker capacity with serverless_dual_arch_cloak/serverless_score_protection
+        submit = httpx.post(
+            f"{base_url}/run",
+            headers=headers,
+            json={
+                "input": {
+                    "action": "generate_lora",
+                    "image_b64": image_b64,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "train_steps": train_steps,
+                }
+            },
+            timeout=30.0,
+        )
+        submit.raise_for_status()
+        job_id = submit.json()["id"]
 
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
-        status_resp.raise_for_status()
-        body = status_resp.json()
-        status = body["status"]
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+            status_resp.raise_for_status()
+            body = status_resp.json()
+            status = body["status"]
 
-        if status == "COMPLETED":
-            return body["output"]
-        if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
-            raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+            if status == "COMPLETED":
+                output_b64 = body["output"]["output_b64"]
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(output_b64))
+                return {"outputPath": output_path, "contentPrompt": body["output"].get("contentPrompt")}
+            if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
 
-        time.sleep(poll_interval_seconds)
+            time.sleep(poll_interval_seconds)
 
-    raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+        raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
 
 
 def remote_detect_model_leak(
@@ -611,3 +836,179 @@ def remote_upscale(input_path: str, output_path: str, target_width: int, target_
     _run("ssh", *ssh_opts, remote, f'powershell -NoProfile -Command "{remote_cmd}"')
 
     _run("scp", *scp_opts, f"{remote}:{remote_output}", output_path)
+
+
+def _stylecloak_base() -> tuple[str, str, dict]:
+    """Shared connection details for the three serverless_* functions
+    below -- same RUNPOD_API_KEY as strong_protection's own serverless
+    functions, but a separate endpoint (RUNPOD_STYLECLOAK_ENDPOINT_ID):
+    a deliberately small, checkpoint-free image (docker/stylecloak/),
+    not the ~15GB dual-arch attack image -- see that Dockerfile's own doc
+    for why L1-L3 needs its own lightweight endpoint instead of reusing
+    strong_protection's. Returns endpoint_id alongside base_url/headers
+    (2026-08-14) so callers can key a per-endpoint concurrency gate off
+    it -- see _endpoint_gate's own doc."""
+    api_key = _env("RUNPOD_API_KEY")
+    endpoint_id = _env("RUNPOD_STYLECLOAK_ENDPOINT_ID")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    return f"https://api.runpod.ai/v2/{endpoint_id}", endpoint_id, headers
+
+
+def _stylecloak_submit_and_poll(
+    job_input: dict, poll_interval_seconds: float, timeout_seconds: float
+) -> dict:
+    """Same two-phase submit-then-poll protocol serverless_dual_arch_cloak/
+    serverless_score_protection already use -- see that function's own doc
+    for why (job runs longer than a single blocking HTTP call should be
+    trusted for, even though this tier is meant to be fast). Also shares
+    that function's per-endpoint concurrency gate (2026-08-14, see
+    _endpoint_gate's own doc) -- serverless_cloak/serverless_compute_metrics/
+    serverless_upscale all fan into this one helper and this one endpoint
+    (RUNPOD_STYLECLOAK_ENDPOINT_ID, workers.max=2), so without a gate here
+    the same overload risk serverless_dual_arch_cloak's gate addresses
+    would apply to this endpoint too."""
+    import time
+
+    import httpx
+
+    base_url, endpoint_id, headers = _stylecloak_base()
+
+    gate = _endpoint_gate(endpoint_id, "RUNPOD_STYLECLOAK_MAX_CONCURRENT")
+    with gate:
+        submit = httpx.post(f"{base_url}/run", headers=headers, json={"input": job_input}, timeout=30.0)
+        submit.raise_for_status()
+        job_id = submit.json()["id"]
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_resp = httpx.get(f"{base_url}/status/{job_id}", headers=headers, timeout=30.0)
+            status_resp.raise_for_status()
+            body = status_resp.json()
+            status = body["status"]
+
+            if status == "COMPLETED":
+                return body["output"]
+            if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                raise RuntimeError(f"RunPod Serverless job {job_id} ended with status {status}: {body.get('error')}")
+
+            time.sleep(poll_interval_seconds)
+
+        raise RuntimeError(f"RunPod Serverless job {job_id} did not complete within {timeout_seconds}s")
+
+
+def serverless_cloak(
+    original_path: str,
+    style_target_path: str,
+    output_path: str,
+    preset_name: str,
+    size: int = 256,
+    eot: bool = False,
+    eot_samples: int = 2,
+    perceptual_mask: bool = False,
+    use_amp: bool = False,
+    poll_interval_seconds: float = 5.0,
+    timeout_seconds: float = 600.0,
+) -> None:
+    """RunPod Serverless counterpart to remote_cloak() -- calls the
+    `dontai-stylecloak` endpoint's "cloak" action (docker/
+    stylecloak-serverless/handler.py), which runs style_cloak.py's cloak()
+    directly. Replaces the SSH-to-GPU-PC path for L1_PREVIEW/L2_PORTFOLIO/
+    L3_ANTI_TRAIN the same way serverless_dual_arch_cloak already replaced
+    it for strong_protection (PHASE4_SCOPING.md §6) -- see this module's
+    own docker/stylecloak/Dockerfile doc for why this is a separate,
+    smaller endpoint rather than reusing strong_protection's.
+    """
+    import base64
+
+    with open(original_path, "rb") as f:
+        original_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(style_target_path, "rb") as f:
+        style_target_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    output = _stylecloak_submit_and_poll(
+        {
+            "action": "cloak",
+            "original_b64": original_b64,
+            "style_target_b64": style_target_b64,
+            "preset_name": preset_name,
+            "size": size,
+            "eot": eot,
+            "eot_samples": eot_samples,
+            "perceptual_mask": perceptual_mask,
+            "use_amp": use_amp,
+        },
+        poll_interval_seconds,
+        timeout_seconds,
+    )
+
+    with open(output_path, "wb") as f:
+        f.write(base64.b64decode(output["output_b64"]))
+
+
+def serverless_compute_metrics(
+    original_path: str,
+    cloaked_path: str,
+    style_target_path: str,
+    size: int = 256,
+    poll_interval_seconds: float = 3.0,
+    timeout_seconds: float = 120.0,
+) -> dict:
+    """RunPod Serverless counterpart to remote_compute_metrics() -- calls
+    the `dontai-stylecloak` endpoint's "compute_metrics" action. Cheap
+    relative to serverless_cloak() (three VGG19 forward passes, no
+    optimization loop -- same cost class evaluate.py's own
+    compute_protection_metrics() doc already describes)."""
+    import base64
+
+    with open(original_path, "rb") as f:
+        original_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(cloaked_path, "rb") as f:
+        cloaked_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(style_target_path, "rb") as f:
+        style_target_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    return _stylecloak_submit_and_poll(
+        {
+            "action": "compute_metrics",
+            "original_b64": original_b64,
+            "cloaked_b64": cloaked_b64,
+            "style_target_b64": style_target_b64,
+            "size": size,
+        },
+        poll_interval_seconds,
+        timeout_seconds,
+    )
+
+
+def serverless_upscale(
+    input_path: str,
+    output_path: str,
+    target_width: int,
+    target_height: int,
+    poll_interval_seconds: float = 3.0,
+    timeout_seconds: float = 180.0,
+) -> None:
+    """RunPod Serverless counterpart to remote_upscale() -- calls the
+    `dontai-stylecloak` endpoint's "upscale" action. Same reasoning as
+    remote_upscale's own doc for why this step is delegated at all (a
+    resource-constrained host running the EDSR CNN locally can OOM) --
+    RunPod Serverless removes the "needs an always-on GPU PC" half of
+    that same problem too."""
+    import base64
+
+    with open(input_path, "rb") as f:
+        input_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    output = _stylecloak_submit_and_poll(
+        {
+            "action": "upscale",
+            "input_b64": input_b64,
+            "target_width": target_width,
+            "target_height": target_height,
+        },
+        poll_interval_seconds,
+        timeout_seconds,
+    )
+
+    with open(output_path, "wb") as f:
+        f.write(base64.b64decode(output["output_b64"]))

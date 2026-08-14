@@ -203,6 +203,8 @@ def hybrid_protect(
     seed: int = 0,
     work_dir: str | None = None,
     skip_pixel_stages: bool = False,
+    latent_epsilon_override: float | None = None,
+    pixel_epsilon_override: float | None = None,
 ) -> dict:
     """Runs the four-stage stack and writes the final protected image.
 
@@ -210,8 +212,25 @@ def hybrid_protect(
     configuration the n=1 check measured, kept as a first-class option so
     a validation run can A/B the pixel top-up's marginal contribution
     instead of assuming it helps.
+
+    latent_epsilon_override/pixel_epsilon_override (2026-08-08, user-
+    facing "advanced options" upload feature): let an opted-in caller pick
+    a different point on the same visibility-vs-strength tradeoff this
+    module's own doc describes, instead of only ever running at
+    HYBRID_FULL's fixed n=1-calibrated values. Same override-a-dataclass-
+    field pattern aspl_attack.py/aspl_attack_sdxl_only.py already use for
+    their own epsilon_override, not a new mechanism. Does NOT change what
+    "HYBRID_FULL" itself means -- only what an explicit override call gets.
     """
     preset = HYBRID_PRESETS[preset_name]
+    if latent_epsilon_override is not None or pixel_epsilon_override is not None:
+        from dataclasses import replace as _dc_replace
+        overrides = {}
+        if latent_epsilon_override is not None:
+            overrides["latent_epsilon"] = latent_epsilon_override
+        if pixel_epsilon_override is not None:
+            overrides["pixel_epsilon"] = pixel_epsilon_override
+        preset = _dc_replace(preset, **overrides)
     work = Path(work_dir) if work_dir else Path(output_path).parent / "_hybrid_stages"
     work.mkdir(parents=True, exist_ok=True)
 
@@ -311,6 +330,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--work-dir", default=None)
     parser.add_argument("--skip-pixel-stages", action="store_true")
+    parser.add_argument("--latent-epsilon-override", type=float, default=None)
+    parser.add_argument("--pixel-epsilon-override", type=float, default=None)
     args = parser.parse_args()
 
     hybrid_protect(
@@ -323,4 +344,6 @@ if __name__ == "__main__":
         seed=args.seed,
         work_dir=args.work_dir,
         skip_pixel_stages=args.skip_pixel_stages,
+        latent_epsilon_override=args.latent_epsilon_override,
+        pixel_epsilon_override=args.pixel_epsilon_override,
     )

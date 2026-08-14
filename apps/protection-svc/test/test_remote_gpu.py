@@ -325,13 +325,21 @@ def test_serverless_dual_arch_cloak_raises_on_timeout(monkeypatch, tmp_path):
 
 def test_serverless_score_protection_submits_both_images_then_returns_the_parsed_output(monkeypatch, tmp_path):
     import base64
+    import io
 
     import httpx
+    from PIL import Image
 
+    # Real (tiny) PNGs, not placeholder bytes -- serverless_score_protection's
+    # own _encode_resized() opens each file with PIL to downscale it before
+    # sending (see that function's own comment on the RunPod payload-size
+    # limit this was added to avoid), so a non-image placeholder file
+    # raises PIL.UnidentifiedImageError before the function ever gets to
+    # what this test is actually checking.
     original = tmp_path / "original.png"
-    original.write_bytes(b"fake original bytes")
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(original)
     protected = tmp_path / "protected.png"
-    protected.write_bytes(b"fake protected bytes")
+    Image.new("RGB", (8, 8), (40, 50, 60)).save(protected)
 
     posts = []
     gets = []
@@ -371,19 +379,32 @@ def test_serverless_score_protection_submits_both_images_then_returns_the_parsed
     assert post_headers["Authorization"] == "Bearer fake-runpod-key-for-tests"
     assert post_body["input"]["action"] == "score_protection"
     assert post_body["input"]["prompt"] == "a painting"
-    assert base64.b64decode(post_body["input"]["original_b64"]) == b"fake original bytes"
-    assert base64.b64decode(post_body["input"]["protected_b64"]) == b"fake protected bytes"
+    # Not an exact-bytes match -- _encode_resized() re-encodes through PIL
+    # (open -> optionally downscale -> re-save as PNG), so the bytes sent
+    # are never byte-identical to the source file even at the same size.
+    # Assert what actually matters: it's valid, openable PNG data of the
+    # right (untouched, since 8x8 is well under _encode_resized's 1024px
+    # cap) pixel size and color.
+    sent_original = Image.open(io.BytesIO(base64.b64decode(post_body["input"]["original_b64"])))
+    assert sent_original.size == (8, 8)
+    assert sent_original.convert("RGB").getpixel((0, 0)) == (10, 20, 30)
+    sent_protected = Image.open(io.BytesIO(base64.b64decode(post_body["input"]["protected_b64"])))
+    assert sent_protected.size == (8, 8)
+    assert sent_protected.convert("RGB").getpixel((0, 0)) == (40, 50, 60)
 
     assert len(gets) == 3
 
 
 def test_serverless_score_protection_raises_on_a_failed_job(monkeypatch, tmp_path):
     import httpx
+    from PIL import Image
 
+    # Real PNGs -- see the sibling submit-then-parse test's comment on why
+    # a non-image placeholder file breaks _encode_resized()'s PIL open.
     original = tmp_path / "original.png"
-    original.write_bytes(b"fake original bytes")
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(original)
     protected = tmp_path / "protected.png"
-    protected.write_bytes(b"fake protected bytes")
+    Image.new("RGB", (8, 8), (40, 50, 60)).save(protected)
 
     monkeypatch.setattr(httpx, "post", lambda url, headers, json, timeout: _FakeHttpResponse({"id": "job_x", "status": "IN_QUEUE"}))
     monkeypatch.setattr(

@@ -91,9 +91,19 @@ def aspl_attack_sdxl_only(
     perceptual_mask: bool = False,
     mask_low: float = 0.3,
     mask_high: float = 1.7,
+    epsilon_override: float | None = None,
+    surrogate_steps_override: int | None = None,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     preset = SDXL_ONLY_PRESETS[preset_name]
+    if epsilon_override is not None or surrogate_steps_override is not None:
+        from dataclasses import replace as _dc_replace
+        overrides = {}
+        if epsilon_override is not None:
+            overrides["epsilon"] = epsilon_override
+        if surrogate_steps_override is not None:
+            overrides["surrogate_steps"] = surrogate_steps_override
+        preset = _dc_replace(preset, **overrides)
     dtype = torch.float32
     generator = torch.Generator(device=device).manual_seed(seed)
 
@@ -173,6 +183,8 @@ if __name__ == "__main__":
     parser.add_argument("--perceptual-mask", action="store_true")
     parser.add_argument("--mask-low", type=float, default=0.3)
     parser.add_argument("--mask-high", type=float, default=1.7)
+    parser.add_argument("--epsilon-override", type=float, default=None)
+    parser.add_argument("--surrogate-steps-override", type=int, default=None)
     args = parser.parse_args()
 
     aspl_attack_sdxl_only(
@@ -185,4 +197,6 @@ if __name__ == "__main__":
         perceptual_mask=args.perceptual_mask,
         mask_low=args.mask_low,
         mask_high=args.mask_high,
+        epsilon_override=args.epsilon_override,
+        surrogate_steps_override=args.surrogate_steps_override,
     )

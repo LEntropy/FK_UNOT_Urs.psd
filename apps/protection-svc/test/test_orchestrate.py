@@ -14,6 +14,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import orchestrate  # noqa: E402
 
 
+def _fake_run_rust_core(*args: str) -> str:
+    """Stand-in for orchestrate.run_rust_core() that doesn't shell out to
+    the real rust-core binary (not built/available in every dev/CI
+    environment this test suite runs in) but still does what protect()'s
+    own downstream code actually depends on: a "feed-thumbnail" call is
+    followed by protect() opening the file at its own --output path
+    (feed_thumbnail_ready gates that), so a mock that returns successfully
+    without creating that file makes protect() crash with
+    FileNotFoundError instead of the plain no-op a bare `lambda *a, **k:
+    ""` implies. Other subcommands (variants, watermark, ...) are true
+    no-ops here -- their tests separately mock whatever reads their output
+    (e.g. parse_variants_output)."""
+    if args and args[0] == "feed-thumbnail" and "--output" in args:
+        output_path = args[args.index("--output") + 1]
+        Image.new("RGB", (64, 64), (80, 80, 80)).save(output_path)
+    return ""
+
+
 def test_returns_given_target_unchanged_when_env_var_unset(monkeypatch, tmp_path):
     monkeypatch.delenv("STYLE_TARGET_CANDIDATES_DIR", raising=False)
     result = orchestrate._maybe_auto_select_style_target("original.png", "given_target.png", 256)
@@ -101,7 +119,7 @@ def test_resolution_restoration_produces_a_fully_loadable_non_truncated_file(mon
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
     monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
-    monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
+    monkeypatch.setattr(orchestrate, "run_rust_core", _fake_run_rust_core)
     monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
     monkeypatch.setattr(orchestrate, "compute_perceptual_hash_from_path", lambda path: "deadbeef")
 
@@ -158,7 +176,7 @@ def test_c2pa_sign_is_called_with_real_pipeline_data(monkeypatch, tmp_path):
     creatorId/perceptualHash, not placeholders."""
     rust_core_calls = []
     input_path, style_target_path = _protect_with_rust_core_stub(
-        monkeypatch, tmp_path, rust_core_calls, lambda *a: ""
+        monkeypatch, tmp_path, rust_core_calls, _fake_run_rust_core
     )
 
     result = orchestrate.protect(
@@ -203,7 +221,7 @@ def test_c2pa_sign_failure_does_not_fail_the_whole_upload(monkeypatch, tmp_path)
     def flaky_run_rust_core(*args):
         if args[0] == "c2pa-sign":
             raise RuntimeError("rust-core c2pa-sign failed: simulated failure")
-        return ""
+        return _fake_run_rust_core(*args)
 
     input_path, style_target_path = _protect_with_rust_core_stub(
         monkeypatch, tmp_path, rust_core_calls, flaky_run_rust_core
@@ -244,13 +262,13 @@ def test_strong_protection_falls_back_to_style_cloak_on_failure(monkeypatch, tmp
         style_cloak_calls.append(output_path)
         Image.new("RGB", (size, size), (50, 60, 70)).save(output_path)
 
-    def failing_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="HYBRID_FULL"):
+    def failing_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="CLEAN_FULL", latent_epsilon=None, pixel_epsilon=None, on_submitted=None):
         raise RuntimeError("RUNPOD_API_KEY not set")
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
     monkeypatch.setattr(orchestrate, "serverless_dual_arch_cloak", failing_serverless_dual_arch_cloak)
     monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
-    monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
+    monkeypatch.setattr(orchestrate, "run_rust_core", _fake_run_rust_core)
     monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
     monkeypatch.setattr(orchestrate, "compute_perceptual_hash_from_path", lambda path: "deadbeef")
 
@@ -277,9 +295,24 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     metric, which doesn't apply to a mechanism with no style_target_path
     input) should not run at all -- strong_protection replaces style-cloak,
     it doesn't stack with it (this project's own hybrid_attack experiment
-    found combining attack objectives makes things worse, not better)."""
+    found combining attack objectives makes things worse, not better).
+
+    Also a regression test (2026-08-14): input_path/dual_arch's own output
+    are deliberately NON-square (400x200, 2:1) here, not the square 64x64
+    a square fixture would use -- a square fixture can't catch the real bug
+    this once had, where protect()'s post-cloak "restore the real
+    resolution" block ran unconditionally and treated clean_protect.py's
+    already-native-resolution, non-letterboxed output as if it WERE a
+    letterboxed size x size square, cropping a wrong region out of it and
+    upscaling that wrong crop back up -- invisible on a square fixture
+    (crop math degenerates to a no-op when width==height==size) but a real,
+    visually confirmed bug on a real (non-square) deployed upload. Asserts
+    both the final dimensions AND that no crop/zoom happened, by checking
+    a distinct-colored corner marker survives untouched."""
     input_path = tmp_path / "original.png"
-    Image.new("RGB", (64, 64), (10, 20, 30)).save(input_path)
+    orig_img = Image.new("RGB", (400, 200), (10, 20, 30))
+    orig_img.putpixel((399, 0), (255, 0, 0))  # top-right corner marker -- exactly what the crop bug discarded
+    orig_img.save(input_path)
     style_target_path = tmp_path / "style_target.png"
     Image.new("RGB", (64, 64), (200, 200, 200)).save(style_target_path)
 
@@ -289,14 +322,18 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     def fake_cloak(*args, **kwargs):
         style_cloak_calls.append(True)
 
-    def fake_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="HYBRID_FULL"):
+    def fake_serverless_dual_arch_cloak(original_path, output_path, prompt, hybrid_preset="CLEAN_FULL", latent_epsilon=None, pixel_epsilon=None, on_submitted=None):
         dual_arch_calls.append((original_path, prompt))
-        Image.new("RGB", (64, 64), (90, 90, 90)).save(output_path)
+        # clean_protect.py's real contract: same dimensions as the true
+        # original, delta added directly -- not a letterboxed square.
+        out_img = Image.open(original_path).convert("RGB")
+        out_img.putpixel((0, 0), (90, 90, 90))  # stand-in for a real perturbation, doesn't touch the corner marker
+        out_img.save(output_path)
 
     monkeypatch.setattr(orchestrate, "cloak", fake_cloak)
     monkeypatch.setattr(orchestrate, "serverless_dual_arch_cloak", fake_serverless_dual_arch_cloak)
     monkeypatch.setattr(orchestrate, "USE_REMOTE_GPU", False)
-    monkeypatch.setattr(orchestrate, "run_rust_core", lambda *a, **k: "")
+    monkeypatch.setattr(orchestrate, "run_rust_core", _fake_run_rust_core)
     monkeypatch.setattr(orchestrate, "parse_variants_output", lambda output: [])
     monkeypatch.setattr(orchestrate, "compute_perceptual_hash_from_path", lambda path: "deadbeef")
 
@@ -319,3 +356,7 @@ def test_strong_protection_success_skips_style_cloak(monkeypatch, tmp_path):
     assert dual_arch_calls[0][0] == str(input_path)
     assert dual_arch_calls[0][1] == "My Artwork"  # title used as the prompt proxy
     assert style_cloak_calls == []  # style_cloak never ran
+
+    cloaked = Image.open(tmp_path / "out" / "cloaked.png").convert("RGB")
+    assert cloaked.size == (400, 200)  # never went through the letterboxed-square crop/upscale path
+    assert cloaked.getpixel((399, 0)) == (255, 0, 0)  # corner marker survives -- nothing got cropped out

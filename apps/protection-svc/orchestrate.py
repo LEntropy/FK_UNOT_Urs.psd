@@ -40,6 +40,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 ML_ENGINE_DIR = Path(__file__).parent / "ml-engine"
 
@@ -79,7 +80,14 @@ from perceptual_hash import compute_perceptual_hash_from_path  # noqa: E402
 USE_REMOTE_GPU = os.environ.get("USE_REMOTE_GPU") == "1"
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_cloak, remote_compute_metrics, remote_upscale
+    # RunPod Serverless (dontai-stylecloak endpoint), not the SSH-to-a-
+    # personally-owned-GPU-PC path (remote_cloak/remote_compute_metrics/
+    # remote_upscale, still in remote_gpu.py for manual/debugging use) --
+    # same move strong_protection already made (see this module's own
+    # serverless_dual_arch_cloak import below) and for the same reason: a
+    # GPU PC reachable only over SSH has to be kept powered on and is a
+    # single point of failure Serverless removes by construction.
+    from remote_gpu import serverless_cloak, serverless_compute_metrics, serverless_upscale
 else:
     from style_cloak import cloak
 
@@ -312,6 +320,9 @@ def protect(
     eot: bool | None = None,
     concept_misalign_target_path: str | None = None,
     strong_protection: bool = False,
+    strong_protection_latent_epsilon: float | None = None,
+    strong_protection_pixel_epsilon: float | None = None,
+    on_runpod_job_submitted: Callable[[str, str], None] | None = None,
 ) -> dict:
     start = time.time()
     out = Path(out_dir)
@@ -361,23 +372,26 @@ def protect(
     # concept_misalign_target_path below): replaces style-cloak entirely
     # rather than stacking on top of it -- this project's own hybrid_attack
     # experiment already found combining multiple attack objectives makes
-    # things worse, not better. Runs hybrid_protect.py's four-stage
-    # latent-then-pixel composition (serverless_dual_arch_cloak, via
-    # RunPod Serverless -- see this module's own import-time comment for
-    # why Serverless over the SSH-to-a-pod path). CAVEAT (2026-08-08):
-    # unlike the two-stage pixel-only chain it replaced (which cleared
-    # this project's usual n=30-plus-replication bar), this composition
-    # is validated at n=1, SD1.5-only -- see hybrid_protect.py's own
-    # module doc. Wired in ahead of full validation at the user's
-    # explicit, informed decision. Falls back to style_cloak on any
-    # failure (endpoint unreachable, RUNPOD_API_KEY unset, job failed,
-    # etc.) rather than publishing an unprotected image -- a real upload
-    # succeeding with the proven mechanism beats a failed upload.
+    # things worse, not better. Runs clean_protect.py's four-stage native
+    # pixel-space-only chain (serverless_dual_arch_cloak, via RunPod
+    # Serverless -- see this module's own import-time comment for why
+    # Serverless over the SSH-to-a-pod path). CAVEAT (2026-08-13, replacing
+    # a 2026-08-08 caveat about the mechanism this one replaced): this
+    # composition is validated at n=1, single-image -- see
+    # clean_protect.py's own module doc. Wired in ahead of the usual
+    # n=30-plus-replication bar because the mechanism it replaced
+    # (hybrid_protect.py's latent-then-pixel composition) was confirmed
+    # causing real color/quality damage on a real user's deployed
+    # artwork -- a visually honest n=1 mechanism beats a known-broken one
+    # staying live. Falls back to style_cloak on any failure (endpoint
+    # unreachable, RUNPOD_API_KEY unset, job failed, etc.) rather than
+    # publishing an unprotected image -- a real upload succeeding with
+    # the proven mechanism beats a failed upload.
     used_strong_protection = False
     if strong_protection:
         print(
-            "[orchestrate] 1/4 style-cloak (hybrid latent+pixel, SD1.5+SDXL, "
-            "RunPod Serverless, see hybrid_protect.py) ...",
+            "[orchestrate] 1/4 style-cloak (native pixel-space, SD1.5+SDXL, "
+            "RunPod Serverless, see clean_protect.py) ...",
             flush=True,
         )
         try:
@@ -385,6 +399,9 @@ def protect(
                 original_path=input_path,
                 output_path=str(cloaked_path),
                 prompt=title,
+                latent_epsilon=strong_protection_latent_epsilon,
+                pixel_epsilon=strong_protection_pixel_epsilon,
+                on_submitted=on_runpod_job_submitted,
             )
             used_strong_protection = True
         except Exception as exc:  # noqa: BLE001 -- fall back to the proven mechanism rather than publish unprotected
@@ -397,7 +414,7 @@ def protect(
         use_amp = choose_use_amp(size)
         print(f"[orchestrate] 1/4 style-cloak ({mode}) preset={preset_name} eot={eot} size={size} eot_samples={eot_samples} perceptual_mask={perceptual_mask} use_amp={use_amp} ...", flush=True)
         if USE_REMOTE_GPU:
-            remote_cloak(
+            serverless_cloak(
                 original_path=input_path,
                 style_target_path=style_target_path,
                 output_path=str(cloaked_path),
@@ -451,8 +468,14 @@ def protect(
         try:
             print("[orchestrate] 1c/4 measuring protection effect (style drift vs. target, perceptual similarity to original) ...", flush=True)
             if USE_REMOTE_GPU:
-                protection_metrics = remote_compute_metrics(
+                # Unlike remote_compute_metrics (which reused files
+                # remote_cloak already left sitting on the same GPU PC),
+                # each RunPod Serverless job is a fresh, stateless worker
+                # -- cloaked_path has to be sent explicitly, it can't be
+                # inferred from a shared filesystem.
+                protection_metrics = serverless_compute_metrics(
                     original_path=input_path,
+                    cloaked_path=str(cloaked_path),
                     style_target_path=style_target_path,
                     size=size,
                 )
@@ -516,39 +539,62 @@ def protect(
     # letterbox padding back out using the *original* upload's real
     # dimensions, then use a real super-resolution model (not a naive
     # resize) to restore something close to that original resolution.
-    try:
-        from PIL import Image as _Image
-        from style_cloak import letterbox_content_box
+    #
+    # SKIPPED for strong_protection (2026-08-14 bugfix): clean_protect.py's
+    # four native pixel-space stages already write at the true original's
+    # own resolution/aspect ratio (native_lowfreq_attack.py/native_aspl_
+    # sdxl_attack.py add the delta directly to the true original, no
+    # letterbox square involved at all -- see those modules' own docs).
+    # This block used to run unconditionally and would crop cloaked_path
+    # as if it WERE a `size`x`size` letterboxed square regardless -- on a
+    # real deployment run (1920x1080 original, size=1024 from
+    # choose_processing_size) that computed letterbox_content_box(1920,
+    # 1080, 1024) = (0, 224, 1024, 800) and cropped that box out of the
+    # already-1920x1080 cloaked_path, silently keeping only a 1024x576
+    # slice of the top-left-ish region (discarding the whole right side,
+    # e.g. a rainbow that was there) before upscaling that wrong crop back
+    # to 1920x1080 -- a real, visually confirmed "zoomed into the wrong
+    # region" bug caught by the user comparing the deployed output to the
+    # original. used_strong_protection is exactly the flag that
+    # distinguishes "cloaked_path came from the letterboxed cloak() path"
+    # (needs this restoration) from "cloaked_path is already native-res"
+    # (doesn't, and must NOT go through this crop math).
+    if not used_strong_protection:
+        try:
+            from PIL import Image as _Image
+            from style_cloak import letterbox_content_box
 
-        orig_w, orig_h = _Image.open(input_path).size
-        box = letterbox_content_box(orig_w, orig_h, size)
-        # .convert("RGB") forces PIL to eagerly load pixel data now, before
-        # the save() below opens (and truncates) this same path for writing.
-        # Without it, Image.open() is lazy and .save(cloaked_path) truncates
-        # the file before .crop() ever reads from it -- hit for real on a
-        # production upload: a valid-looking PNG header but a truncated body
-        # (rust-core's embed step failed with IoError(UnexpectedEof)).
-        cropped = _Image.open(cloaked_path).convert("RGB").crop(box)
-        cropped.save(cloaked_path)
+            orig_w, orig_h = _Image.open(input_path).size
+            box = letterbox_content_box(orig_w, orig_h, size)
+            # .convert("RGB") forces PIL to eagerly load pixel data now, before
+            # the save() below opens (and truncates) this same path for writing.
+            # Without it, Image.open() is lazy and .save(cloaked_path) truncates
+            # the file before .crop() ever reads from it -- hit for real on a
+            # production upload: a valid-looking PNG header but a truncated body
+            # (rust-core's embed step failed with IoError(UnexpectedEof)).
+            cropped = _Image.open(cloaked_path).convert("RGB").crop(box)
+            cropped.save(cloaked_path)
 
-        print(f"[orchestrate] 1d/4 restoring resolution to {orig_w}x{orig_h} via super-resolution ...", flush=True)
-        if USE_REMOTE_GPU:
-            # Loading torch + the EDSR CNN and running it locally on a real
-            # near-native-resolution image (the resolution fix processes up
-            # to 1024px now, vs. the old fixed 256px) OOM-killed protection-
-            # svc's whole process for real in production on the Pi (~7.1GB
-            # resident on an ~8GB machine, no GPU) -- taking down every
-            # in-flight job, not just the one that triggered it. Delegate to
-            # the GPU PC instead, same reasoning as remote_cloak.
-            remote_upscale(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
-        else:
-            from upscale import upscale_to_size
+            print(f"[orchestrate] 1d/4 restoring resolution to {orig_w}x{orig_h} via super-resolution ...", flush=True)
+            if USE_REMOTE_GPU:
+                # Loading torch + the EDSR CNN and running it locally on a real
+                # near-native-resolution image (the resolution fix processes up
+                # to 1024px now, vs. the old fixed 256px) OOM-killed protection-
+                # svc's whole process for real in production on the Pi (~7.1GB
+                # resident on an ~8GB machine, no GPU) -- taking down every
+                # in-flight job, not just the one that triggered it. Delegate to
+                # RunPod Serverless instead, same reasoning as serverless_cloak.
+                serverless_upscale(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
+            else:
+                from upscale import upscale_to_size
 
-            used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
-            if not used_sr:
-                print("[orchestrate] (SR model unavailable or unnecessary -- used a plain resize instead)", flush=True)
-    except Exception as exc:  # noqa: BLE001 -- a small-but-real image beats a crashed upload
-        print(f"[orchestrate] resolution restoration failed, publishing at the smaller processing size instead: {exc}", flush=True)
+                used_sr = upscale_to_size(str(cloaked_path), str(cloaked_path), orig_w, orig_h)
+                if not used_sr:
+                    print("[orchestrate] (SR model unavailable or unnecessary -- used a plain resize instead)", flush=True)
+        except Exception as exc:  # noqa: BLE001 -- a small-but-real image beats a crashed upload
+            print(f"[orchestrate] resolution restoration failed, publishing at the smaller processing size instead: {exc}", flush=True)
+    else:
+        print("[orchestrate] 1d/4 skipping resolution restoration -- clean_protect.py already wrote native resolution", flush=True)
 
     watermarked_path = out / "watermarked.png"
     print("[orchestrate] 2/4 watermark ...", flush=True)
@@ -662,6 +708,13 @@ def protect(
         # for -- only a strong_protection artwork has cleared this
         # project's own n=30-plus-replication real-effect validation bar.
         "usedStrongProtection": used_strong_protection,
+        # None when the caller didn't opt into the advanced-options
+        # override -- the actual values used were HYBRID_FULL's own
+        # defaults in that case (see hybrid_protect.py's HYBRID_PRESETS),
+        # not "no protection." Surfaced so a caller can show the user
+        # what strength was actually applied, not just that some was.
+        "strongProtectionLatentEpsilon": strong_protection_latent_epsilon if used_strong_protection else None,
+        "strongProtectionPixelEpsilon": strong_protection_pixel_epsilon if used_strong_protection else None,
         "eotUsed": eot,
         "size": size,
         "sizeValidated": size == 256,  # see the `size` param's doc comment above

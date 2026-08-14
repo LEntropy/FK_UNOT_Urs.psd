@@ -45,14 +45,20 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
-from orchestrate import ML_ENGINE_DIR, PRESETS, USE_REMOTE_GPU, choose_processing_size, protect  # noqa: E402
+from orchestrate import ML_ENGINE_DIR, PRESETS, USE_REMOTE_GPU, choose_processing_size, protect, run_rust_core  # noqa: E402
 import jobs_db  # noqa: E402
 
 if USE_REMOTE_GPU:
-    from remote_gpu import remote_detect_model_leak, remote_measure_existing_images, serverless_score_protection
+    from remote_gpu import (
+        remote_detect_model_leak,
+        remote_measure_existing_images,
+        serverless_score_protection,
+        serverless_generate_lora,
+    )
 
 sys.path.insert(0, str(ML_ENGINE_DIR / "src"))
 from tag_suggest import suggest_tags  # noqa: E402
+from original_preview import make_original_preview  # noqa: E402
 
 if not USE_REMOTE_GPU:
     from evaluate import compute_protection_metrics
@@ -68,6 +74,27 @@ if not USE_REMOTE_GPU:
 app = FastAPI(title="protection-svc", version="0.1.0")
 
 _executor = ThreadPoolExecutor(max_workers=1)  # see module docstring for why
+
+# 2026-08-13: separate, higher-concurrency pool for job types that NEVER
+# touch this process's own (possibly-absent) local GPU -- score-protection
+# and lora-generation both raise immediately if USE_REMOTE_GPU isn't set
+# (see their handlers below), meaning every real execution of either is
+# 100% RunPod Serverless: this process just base64-encodes the input,
+# POSTs a job, and polls GET /status in a loop. None of that contends for
+# the single local GPU max_workers=1 exists to protect, so serializing
+# these behind /protect and /detect-model-leak jobs (which DO still touch
+# local GPU on their non-remote code paths) was pure unnecessary queueing
+# depth, not actual safety -- a Test Lab user's score request could sit
+# behind an unrelated slow local-GPU protect() job for no resource reason.
+# 4 is a deliberately modest concurrency bump, not "unbounded": still a
+# real cap (this is the queue the user asked for, sized to what RunPod's
+# own worker pool can actually take on -- see the dontai-strongprotect
+# endpoint's own workers.max=2 in its RunPod config; 4 gives headroom for
+# a second endpoint or brief bursts without flooding either one, since
+# RunPod's own QUEUE_DELAY autoscaling absorbs anything beyond what's
+# currently running rather than rejecting it).
+_cloud_executor = ThreadPoolExecutor(max_workers=4)
+
 _JOBS_DB_PATH = os.environ.get("JOBS_DB_PATH", str(Path(__file__).parent / "data" / "jobs.db"))
 _jobs_conn = jobs_db.connect(_JOBS_DB_PATH)
 
@@ -101,6 +128,13 @@ class ProtectRequest(BaseModel):
     # style-cloak if that pod is unreachable or unconfigured, so this never
     # turns "protected" into "unprotected".
     strongProtection: bool = False
+    # Advanced-options upload feature (2026-08-08) -- both None (the
+    # default) means run at HYBRID_FULL's own preset values, not "no
+    # protection." Ignored unless strongProtection is also true. See
+    # hybrid_protect.py's own override doc for why this exists and what
+    # it does and doesn't change.
+    strongProtectionLatentEpsilon: Optional[float] = None
+    strongProtectionPixelEpsilon: Optional[float] = None
 
 
 def _run_job(job_id: str, req: ProtectRequest) -> None:
@@ -123,6 +157,15 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
             size=size,
             eot=req.eot,
             strong_protection=req.strongProtection,
+            strong_protection_latent_epsilon=req.strongProtectionLatentEpsilon,
+            strong_protection_pixel_epsilon=req.strongProtectionPixelEpsilon,
+            # Cancel-upload feature (2026-08-14): as soon as the RunPod job
+            # actually exists, remember its id so POST /protect/{job_id}/
+            # cancel below has something real to cancel, not just this
+            # row's own status.
+            on_runpod_job_submitted=lambda runpod_job_id, endpoint_id: jobs_db.set_runpod_job_id(
+                _jobs_conn, job_id, runpod_job_id, endpoint_id
+            ),
         )
         jobs_db.set_completed(_jobs_conn, job_id, result)  # result already has "status": "completed"
     except Exception as exc:  # noqa: BLE001 -- report failure via job status, don't just kill the thread silently
@@ -214,6 +257,40 @@ def _run_score_protection_job(job_id: str, req: ScoreProtectionRequest) -> None:
         jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
 
 
+class LoraGenerationRequest(BaseModel):
+    imageUri: str
+    prompt: str = "artwork"
+    seed: int = 1
+    trainSteps: int = 150
+
+
+def _run_lora_generation_job(job_id: str, req: LoraGenerationRequest) -> None:
+    jobs_db.set_processing(_jobs_conn, job_id)
+    try:
+        if not USE_REMOTE_GPU:
+            # Same reasoning as score-protection's own check just above --
+            # lora_generate.py needs the same heavy diffusers/peft/SD1.5
+            # checkpoint stack that only exists in the RunPod Serverless
+            # strong_protection worker, no local fallback.
+            raise RuntimeError("generate-lora requires USE_REMOTE_GPU (RunPod Serverless) to be configured")
+
+        out_dir = Path(ML_ENGINE_DIR).parent / "out" / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / "lora.safetensors")
+
+        result = serverless_generate_lora(
+            image_path=req.imageUri,
+            output_path=output_path,
+            prompt=req.prompt,
+            seed=req.seed,
+            train_steps=req.trainSteps,
+        )
+        result["status"] = "completed"
+        jobs_db.set_completed(_jobs_conn, job_id, result)
+    except Exception as exc:  # noqa: BLE001 -- report failure via job status, mirrors _run_score_protection_job
+        jobs_db.set_failed(_jobs_conn, job_id, str(exc), traceback.format_exc())
+
+
 class SuggestTagsRequest(BaseModel):
     imageUri: str
     topK: int = 10
@@ -232,6 +309,11 @@ class RemeasureRequest(BaseModel):
     size: int = 256
 
 
+class OriginalPreviewRequest(BaseModel):
+    imageUri: str
+    watermarkPayloadHex: str = "deadbeefcafef00d"
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -248,6 +330,46 @@ def suggest_tags_endpoint(req: SuggestTagsRequest):
 
     tags = suggest_tags(req.imageUri, top_k=req.topK)
     return {"tags": tags}
+
+
+@app.post("/original-preview")
+def original_preview_endpoint(req: OriginalPreviewRequest):
+    """Creator-opt-in original-preview derivative (coin-system feature,
+    2026-08-10) -- synchronous like /suggest-tags above, not job-based:
+    original_preview.py is pure PIL (resize + watermark overlay), no
+    GPU/model involved, so this finishes in well under a second even at
+    the 2048px cap. See ml-engine/src/original_preview.py's module doc for
+    what this derivative actually is (never the real original bytes).
+
+    Embeds the same invisible watermarkPayloadHex as the real protected
+    image (rust-core's `embed`, same as orchestrate.py's own step 2/4) on
+    top of the visible tiled watermark original_preview.py already drew --
+    if this derivative leaks, detection-svc's existing matching logic can
+    still trace it back, no new payload scheme needed.
+    """
+    if not Path(req.imageUri).exists():
+        raise HTTPException(400, f"imageUri {req.imageUri!r} not found (local file path in this PoC, see module docstring)")
+
+    out_dir = Path(ML_ENGINE_DIR).parent / "out" / f"original_preview_{uuid.uuid4().hex[:16]}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = out_dir / "preview.png"
+    watermarked_path = out_dir / "preview_watermarked.png"
+
+    make_original_preview(req.imageUri, str(preview_path))
+    run_rust_core(
+        "embed",
+        "--input", str(preview_path),
+        "--output", str(watermarked_path),
+        "--payload-hex", req.watermarkPayloadHex,
+        "--strength", "24.0",
+    )
+
+    from PIL import Image as _Image
+
+    with _Image.open(watermarked_path) as im:
+        width, height = im.size
+
+    return {"previewUri": str(watermarked_path), "width": width, "height": height}
 
 
 @app.post("/remeasure")
@@ -314,6 +436,37 @@ def get_protect_job(job_id: str):
     return job
 
 
+@app.post("/protect/{job_id}/cancel")
+def cancel_protect_job(job_id: str):
+    """Cancel-upload feature (2026-08-14, asset-service's own POST
+    /artworks/:id/cancel is the real entry point a creator hits -- this is
+    what it calls in turn). Marks the job 'cancelled' in jobs_db
+    immediately (jobs_db.request_cancel's own doc explains the race guard
+    that keeps a late-finishing background thread from resurrecting it),
+    then best-effort asks RunPod to actually stop the GPU job if one was
+    ever submitted for it (strong_protection jobs only -- style_cloak's
+    local/SSH path has no equivalent mid-flight stop today, see this
+    route's own 200 response either way: from the caller's perspective the
+    job IS cancelled now regardless of whether RunPod's side finishes a
+    beat later).
+    """
+    row = jobs_db.request_cancel(_jobs_conn, job_id)
+    if row is None:
+        existing = jobs_db.get_job(_jobs_conn, job_id)
+        if existing is None:
+            raise HTTPException(404, f"no job {job_id!r}")
+        return {"jobId": job_id, "status": existing["status"], "alreadyTerminal": True}
+
+    runpod_job_id = row["runpod_job_id"]
+    runpod_endpoint_id = row["runpod_endpoint_id"]
+    if runpod_job_id and runpod_endpoint_id and USE_REMOTE_GPU:
+        from remote_gpu import cancel_runpod_job
+
+        cancel_runpod_job(runpod_endpoint_id, runpod_job_id)
+
+    return {"jobId": job_id, "status": "cancelled"}
+
+
 @app.post("/detect-model-leak", status_code=202)
 def create_detect_model_leak_job(req: DetectModelLeakRequest):
     """detection-svc's model-leak report pathway (PHASE4_SCOPING.md
@@ -369,12 +522,40 @@ def create_score_protection_job(req: ScoreProtectionRequest):
     job_id = f"scorejob_{uuid.uuid4().hex[:12]}"
     jobs_db.create_job(_jobs_conn, job_id, req.model_dump())
 
-    _executor.submit(_run_score_protection_job, job_id, req)
+    _cloud_executor.submit(_run_score_protection_job, job_id, req)  # Serverless-only, see _cloud_executor's own comment
     return {"jobId": job_id, "status": "queued"}
 
 
 @app.get("/score-protection/{job_id}")
 def get_score_protection_job(job_id: str):
+    job = jobs_db.get_job(_jobs_conn, job_id)
+    if job is None:
+        raise HTTPException(404, f"no job {job_id!r}")
+    return job
+
+
+@app.post("/lora-jobs", status_code=202)
+def create_lora_generation_job(req: LoraGenerationRequest):
+    """Coin-system feature (2026-08-10): trains a real, downloadable SD1.5
+    LoRA on a single artwork image (see ml-engine/src/lora_generate.py's
+    module doc). Job-based like /score-protection, not synchronous --
+    one LoRA training run, same order of cost as a single arm of
+    /score-protection's four, submitted to the same Serverless-only
+    _cloud_executor pool (see its own comment for why this and
+    /score-protection are split out from the local-GPU-risk executor).
+    """
+    if not Path(req.imageUri).exists():
+        raise HTTPException(400, f"imageUri {req.imageUri!r} not found (local file path in this PoC, see module docstring)")
+
+    job_id = f"lorajob_{uuid.uuid4().hex[:12]}"
+    jobs_db.create_job(_jobs_conn, job_id, req.model_dump())
+
+    _cloud_executor.submit(_run_lora_generation_job, job_id, req)
+    return {"jobId": job_id, "status": "queued"}
+
+
+@app.get("/lora-jobs/{job_id}")
+def get_lora_generation_job(job_id: str):
     job = jobs_db.get_job(_jobs_conn, job_id)
     if job is None:
         raise HTTPException(404, f"no job {job_id!r}")

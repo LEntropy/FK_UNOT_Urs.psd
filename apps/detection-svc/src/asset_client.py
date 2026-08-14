@@ -24,3 +24,17 @@ async def get_artwork(asset_service_url: str, artwork_id: str) -> dict:
         raise ArtworkNotFoundError(artwork_id)
     resp.raise_for_status()
     return resp.json()
+
+
+async def list_artworks(asset_service_url: str) -> list[dict]:
+    """Fetch the catalog for scheduled monitoring; accepts common envelope shapes."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"{asset_service_url}/artworks")
+    resp.raise_for_status()
+    payload = resp.json()
+    if isinstance(payload, list):
+        return payload
+    for key in ("artworks", "items", "data"):
+        if isinstance(payload.get(key), list):
+            return payload[key]
+    raise ValueError("asset-service artwork list response has no list payload")

@@ -1,7 +1,7 @@
 # detection-svc reuses two things from protection-svc rather than
-# duplicating them: rust-core's `detect` binary, and ml-engine's
-# perceptual_hash.py module. Build context for this Dockerfile is the repo
-# root (see docker-compose.yml) so both are reachable.
+# duplicating them: rust-core's `detect`/`c2pa-verify` binary, and
+# ml-engine's perceptual_hash.py module. Build context for this Dockerfile
+# is the repo root (see docker-compose.yml) so both are reachable.
 #
 # See apps/protection-svc/Dockerfile's header comment: a cross-compile
 # optimization here was tried and reverted after it caused build failures
@@ -15,12 +15,13 @@ RUN cargo build --release
 
 FROM python:3.11-slim AS runtime
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 COPY apps/detection-svc/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install --with-deps chromium
 
-COPY apps/detection-svc/server.py ./
+COPY apps/detection-svc/server.py apps/detection-svc/README.md apps/detection-svc/RUNBOOK.md ./
 COPY apps/detection-svc/src ./src
 
 # phash_match.py imports perceptual_hash.py via a relative sys.path lookup
@@ -29,9 +30,15 @@ COPY apps/detection-svc/src ./src
 # path there.
 COPY apps/protection-svc/ml-engine/src/perceptual_hash.py ../protection-svc/ml-engine/src/perceptual_hash.py
 
-# rust_watermark.py's default candidates also expect this relative layout
-# (../protection-svc/rust-core/target/release/rust-core from src/).
+# rust_watermark.py / c2pa_verify.py's default candidates also expect this
+# relative layout (../protection-svc/rust-core/target/release/rust-core
+# from src/).
 COPY --from=rust-build /rust-core/target/release/rust-core ../protection-svc/rust-core/target/release/rust-core
+
+# data/: SQLite case DB + pHash index; out/: per-case evidence artifacts;
+# credentials/: optional local EVIDENCE_SIGNING_KEY .pem (never baked into
+# the image itself -- mounted or generated at runtime).
+RUN mkdir -p /app/data /app/out /app/credentials
 
 EXPOSE 8003
 CMD ["python", "server.py"]

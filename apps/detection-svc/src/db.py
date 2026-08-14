@@ -12,10 +12,17 @@ Evidence, unlike protection-svc's in-memory job dict, must survive a
 restart -- losing a legal evidence record is a worse failure mode than
 losing a protect-job's in-flight status, so this is real persistent
 storage from the start, not a documented "known gap".
+
+Also carries three tables added for scheduled monitoring: `seen_candidates`
+(dedupe repeat candidate URLs across scan passes), `monitoring_state` (per-
+artwork last/next scan bookkeeping for GET /monitor/status), and
+`vision_usage` (persistent monthly Vision API call counter, since the quota
+must survive a restart the same way evidence does).
 """
 
 import sqlite3
 import time
+import threading
 from pathlib import Path
 
 SCHEMA = """
@@ -42,7 +49,31 @@ CREATE TABLE IF NOT EXISTS evidence_records (
     artifact_uri TEXT,
     detected_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seen_candidates (
+    artwork_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    scan_count INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (artwork_id, source_url)
+);
+
+CREATE TABLE IF NOT EXISTS monitoring_state (
+    artwork_id TEXT PRIMARY KEY,
+    last_scan_at REAL,
+    next_scan_at REAL,
+    last_status TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vision_usage (
+    month TEXT PRIMARY KEY,
+    request_count INTEGER NOT NULL DEFAULT 0
+);
 """
+
+_vision_lock = threading.Lock()
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -124,3 +155,66 @@ def get_case(conn: sqlite3.Connection, case_id: str) -> dict | None:
     ).fetchall()
     case["evidence"] = [dict(e) for e in evidence]
     return case
+
+
+def filter_new_candidates(conn: sqlite3.Connection, artwork_id: str, urls: list[str]) -> list[str]:
+    """Atomically record candidates and return URLs not seen for this artwork."""
+    now = time.time()
+    new_urls: list[str] = []
+    for url in dict.fromkeys(urls):
+        existing = conn.execute(
+            "SELECT 1 FROM seen_candidates WHERE artwork_id = ? AND source_url = ?", (artwork_id, url)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE seen_candidates SET last_seen_at = ?, scan_count = scan_count + 1 WHERE artwork_id = ? AND source_url = ?",
+                (now, artwork_id, url),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO seen_candidates (artwork_id, source_url, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)",
+                (artwork_id, url, now, now),
+            )
+            new_urls.append(url)
+    conn.commit()
+    return new_urls
+
+
+def update_monitoring_state(
+    conn: sqlite3.Connection, artwork_id: str, *, status: str, next_scan_at: float | None,
+    error: str | None = None
+) -> None:
+    now = time.time()
+    conn.execute(
+        "INSERT INTO monitoring_state (artwork_id, last_scan_at, next_scan_at, last_status, last_error) "
+        "VALUES (?, ?, ?, ?, ?) ON CONFLICT(artwork_id) DO UPDATE SET "
+        "last_scan_at=excluded.last_scan_at, next_scan_at=excluded.next_scan_at, "
+        "last_status=excluded.last_status, last_error=excluded.last_error",
+        (artwork_id, now, next_scan_at, status, error),
+    )
+    conn.commit()
+
+
+def get_monitoring_states(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(row) for row in conn.execute("SELECT * FROM monitoring_state ORDER BY artwork_id")]
+
+
+def consume_vision_quota(conn: sqlite3.Connection, monthly_limit: int) -> bool:
+    """Atomically reserve one Vision request inside the configured hard cap."""
+    month = time.strftime("%Y-%m", time.gmtime())
+    with _vision_lock:
+        conn.execute("INSERT OR IGNORE INTO vision_usage (month, request_count) VALUES (?, 0)", (month,))
+        count = conn.execute("SELECT request_count FROM vision_usage WHERE month = ?", (month,)).fetchone()[0]
+        if count >= monthly_limit:
+            conn.commit()
+            return False
+        conn.execute("UPDATE vision_usage SET request_count = request_count + 1 WHERE month = ?", (month,))
+        conn.commit()
+        return True
+
+
+def get_vision_usage(conn: sqlite3.Connection, monthly_limit: int) -> dict:
+    month = time.strftime("%Y-%m", time.gmtime())
+    row = conn.execute("SELECT request_count FROM vision_usage WHERE month = ?", (month,)).fetchone()
+    used = int(row[0]) if row else 0
+    return {"month": month, "used": used, "limit": monthly_limit, "remaining": max(0, monthly_limit - used)}

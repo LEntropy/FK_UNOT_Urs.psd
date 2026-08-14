@@ -235,6 +235,17 @@ const SCORE_VERDICT_LABEL: Record<protection.ScoreProtectionArchResult["verdict"
 function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
   const [jobId, setJobId] = useState<string | null>(null);
 
+  // The persisted last real result -- fetched on mount so a user who
+  // closed the tab mid-run (or just comes back later) still sees it
+  // without needing to remember a jobId that only ever lived in this
+  // component's own state. Skipped once a live job is being tracked
+  // (jobQuery below takes over as the source of truth then).
+  const storedQuery = useQuery({
+    queryKey: ["storedScoreProtectionResult", artwork.id],
+    queryFn: () => protection.getStoredScoreProtectionResult(artwork.id),
+    enabled: !jobId,
+  });
+
   const start = useMutation({
     mutationFn: () => protection.createScoreProtectionJob(artwork.id),
     onSuccess: (res) => setJobId(res.jobId),
@@ -253,7 +264,11 @@ function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
     refetchIntervalInBackground: true,
   });
 
-  const job = jobQuery.data;
+  // Live job (this tab started it) takes priority; otherwise fall back to
+  // whatever was last actually persisted for this artwork, from this tab
+  // or any earlier one.
+  const job = jobQuery.data ?? storedQuery.data ?? undefined;
+  const isLiveJob = Boolean(jobId);
 
   return (
     <div className="mt-6 rounded border border-neutral-800 bg-neutral-950/40 px-4 py-4">
@@ -271,13 +286,15 @@ function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
         효과를 그대로 반영합니다.
       </p>
 
+      {storedQuery.isLoading && !jobId && <p className="text-sm text-neutral-400">저장된 결과 확인 중...</p>}
+
       {!jobId && (
         <button
           onClick={() => start.mutate()}
           disabled={start.isPending}
           className="rounded bg-neutral-100 px-3 py-2 text-sm font-medium text-neutral-900 disabled:opacity-50"
         >
-          {start.isPending ? "요청 중..." : "지금 실제로 재학습해서 테스트"}
+          {start.isPending ? "요청 중..." : job ? "다시 실제로 재학습해서 테스트" : "지금 실제로 재학습해서 테스트"}
         </button>
       )}
 
@@ -295,13 +312,19 @@ function RealLoraScoreTest({ artwork }: { artwork: Artwork }) {
       )}
 
       {job?.status === "failed" && (
-        <p className="rounded border border-red-900 bg-red-950/40 px-3 py-3 text-sm text-red-300">
+        <p className="mt-3 rounded border border-red-900 bg-red-950/40 px-3 py-3 text-sm text-red-300">
           {job.error ?? "테스트에 실패했습니다."}
         </p>
       )}
 
       {job?.status === "completed" && (
-        <div className="flex flex-col gap-4">
+        <div className="mt-3 flex flex-col gap-4">
+          {!isLiveJob && "checkedAt" in job && (
+            <p className="text-xs text-neutral-500">
+              📌 저장된 결과 ({new Date((job as { checkedAt: number }).checkedAt).toLocaleString("ko-KR")}에 실행됨) --
+              탭을 닫았다 다시 열어도 이 결과는 남아있어요.
+            </p>
+          )}
           {job.sd15 && <ArchScoreCard title="SD1.5" result={job.sd15} />}
           {job.sdxl && <ArchScoreCard title="SDXL" result={job.sdxl} />}
           <button

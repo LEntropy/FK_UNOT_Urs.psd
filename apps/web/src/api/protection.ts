@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, ApiError } from "./client";
 
 export interface RemeasureResult {
   styleDriftScore: number | null;
@@ -39,3 +39,18 @@ export const createScoreProtectionJob = (artworkId: string) =>
 
 export const getScoreProtectionJob = (artworkId: string, jobId: string) =>
   api.get<ScoreProtectionJob>(`/artworks/${artworkId}/score-protection/${jobId}`);
+
+/** The persisted last real result for this artwork, if any -- survives a
+ * closed/reloaded tab, unlike the jobId a live run tracks in React state.
+ * Resolves to null (not a thrown ApiError) when nothing has been run yet,
+ * since that's the common, expected state for most artworks. */
+export async function getStoredScoreProtectionResult(
+  artworkId: string,
+): Promise<(ScoreProtectionJob & { checkedAt: number }) | null> {
+  try {
+    return await api.get<ScoreProtectionJob & { checkedAt: number }>(`/artworks/${artworkId}/score-protection-result`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}

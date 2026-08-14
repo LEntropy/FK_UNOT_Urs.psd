@@ -12,6 +12,11 @@ export const follow = (creatorId: string) => api.post<void>(`/users/${creatorId}
 export const unfollow = (creatorId: string) => api.delete<void>(`/users/${creatorId}/follow`);
 export const followerCount = (creatorId: string) =>
   api.get<{ count: number }>(`/users/${creatorId}/followers/count`);
+export const followStatus = (creatorId: string) => api.get<{ following: boolean }>(`/users/${creatorId}/follow-status`);
+export const listFollowers = (creatorId: string) =>
+  api.get<Array<{ userId: string; followedAt: string }>>(`/users/${creatorId}/followers`);
+export const listFollowing = (creatorId: string) =>
+  api.get<Array<{ userId: string; followedAt: string }>>(`/users/${creatorId}/following`);
 
 export const listComments = (artworkId: string) => api.get<Comment[]>(`/artworks/${artworkId}/comments`);
 export const postComment = (artworkId: string, body: string) =>

@@ -10,6 +10,7 @@ export interface AssetVersion {
 export interface Artwork {
   id: string;
   title: string;
+  tags: string[];
   sourceImageUri: string;
   creatorId: string;
   ownerWalletAddress: string;
@@ -35,6 +36,15 @@ export interface Artwork {
   createdAt: string;
   updatedAt: string;
   assetVersions: AssetVersion[];
+  // Coin-system feature (2026-08-10, opt-out redesign 2026-08-14) --
+  // originalPreviewAvailable is derived (!originalPreviewBlocked) and
+  // originalPreviewBlocked is the raw creator-set flag; both are sent so
+  // the detail page doesn't need to invert one to render the other.
+  // originalPreviewUnlockedByViewer: whether *this* requester has already
+  // unlocked it (creator always sees true).
+  originalPreviewAvailable: boolean;
+  originalPreviewBlocked: boolean;
+  originalPreviewUnlockedByViewer: boolean;
   ownershipRecords: Array<{
     txHash: string;
     chain: string;

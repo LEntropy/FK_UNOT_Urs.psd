@@ -1,25 +1,32 @@
-import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as community from "../api/community";
 import { useAuthStore } from "../store/auth";
 
-/** Same "no am-I-following endpoint" limitation as LikeButton -- see its
- * comment for why this starts every load assuming "not following yet". */
-export function FollowButton({ creatorId }: { creatorId: string }) {
+/** 2026-08-14: now backed by a real "am I following" check
+ * (community.followStatus) instead of assuming "not following" on every
+ * page load -- see asset-service routes/community.ts's follow-status
+ * route doc for the backend side of this fix. */
+export function FollowButton({ creatorId, className }: { creatorId: string; className?: string }) {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const queryClient = useQueryClient();
-  const [followingThisSession, setFollowingThisSession] = useState(false);
 
-  const { data } = useQuery({
+  const { data: countData } = useQuery({
     queryKey: ["followerCount", creatorId],
     queryFn: () => community.followerCount(creatorId),
   });
+  const { data: statusData } = useQuery({
+    queryKey: ["followStatus", creatorId],
+    queryFn: () => community.followStatus(creatorId),
+    enabled: currentUserId !== creatorId,
+  });
+
+  const following = statusData?.following ?? false;
 
   const toggle = useMutation({
-    mutationFn: () => (followingThisSession ? community.unfollow(creatorId) : community.follow(creatorId)),
+    mutationFn: () => (following ? community.unfollow(creatorId) : community.follow(creatorId)),
     onSuccess: () => {
-      setFollowingThisSession((v) => !v);
       queryClient.invalidateQueries({ queryKey: ["followerCount", creatorId] });
+      queryClient.invalidateQueries({ queryKey: ["followStatus", creatorId] });
     },
   });
 
@@ -29,13 +36,9 @@ export function FollowButton({ creatorId }: { creatorId: string }) {
     <button
       onClick={() => toggle.mutate()}
       disabled={toggle.isPending}
-      className={`rounded border px-3 py-1.5 text-sm ${
-        followingThisSession
-          ? "border-neutral-600 bg-neutral-800 text-neutral-200"
-          : "border-blue-700 bg-blue-950/40 text-blue-300"
-      }`}
+      className={`${following ? "btn-secondary" : "btn-primary"} ${className ?? ""}`}
     >
-      {followingThisSession ? "팔로잉" : "+ 팔로우"} {typeof data?.count === "number" ? `(${data.count})` : ""}
+      {following ? "팔로잉" : "팔로우"} {typeof countData?.count === "number" ? `(${countData.count})` : ""}
     </button>
   );
 }

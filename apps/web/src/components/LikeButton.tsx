@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as community from "../api/community";
+import { HeartIcon } from "./icons";
 
 /**
  * There's no "did the current user already like this" endpoint on the
@@ -32,13 +33,14 @@ export function LikeButton({ artworkId }: { artworkId: string }) {
     <button
       onClick={() => toggle.mutate()}
       disabled={toggle.isPending}
-      className={`rounded border px-3 py-1.5 text-sm ${
+      className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors ${
         likedThisSession
           ? "border-pink-700 bg-pink-950/40 text-pink-300"
-          : "border-neutral-700 hover:bg-neutral-900"
+          : "border-neutral-700 text-neutral-300 hover:border-pink-800 hover:text-pink-300"
       }`}
     >
-      {likedThisSession ? "♥ 좋아요 취소" : "♡ 좋아요"} {typeof data?.count === "number" ? `(${data.count})` : ""}
+      <HeartIcon filled={likedThisSession} className="h-4 w-4" />
+      {typeof data?.count === "number" ? data.count : ""}
     </button>
   );
 }

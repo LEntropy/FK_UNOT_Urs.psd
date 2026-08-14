@@ -1,1 +1,128 @@
 @import "tailwindcss";
+
+/* Design tokens (2026-08-14 redesign) -- a dark, X/Pixiv-inspired palette
+   layered on top of Tailwind v4's built-in neutral scale (still used
+   directly throughout for grays) rather than replacing it. `--color-brand-*`
+   generates bg-brand-500/text-brand-400/etc utility classes automatically
+   (Tailwind v4's @theme convention) -- one accent hue used consistently for
+   every primary action (follow, submit, active nav item, links) instead of
+   the old mix of blue-700/blue-950/neutral-100 scattered across components. */
+@theme {
+  --color-brand-50: #eef6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-400: #5b9df9;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2570eb;
+  --color-brand-700: #1d5bd1;
+  --color-brand-950: #0f2359;
+
+  /* System font stack, Korean-first fallbacks included (this app's content
+     is Korean-heavy) -- no external font load, so first paint never waits
+     on a font request or flashes unstyled text. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Malgun Gothic", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: var(--color-neutral-950);
+}
+
+/* Thin, dark scrollbar -- the browser-default light/chunky one is the kind
+   of detail that makes a page feel unfinished next to a real product. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-neutral-700) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-neutral-700);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+@layer components {
+  /* Shared card surface -- every panel/tile in the app (feed cards, side
+     panels, form sections) should read as the same visual "material"
+     instead of each page inventing its own border/radius/padding
+     combination. */
+  .card {
+    background-color: var(--color-neutral-900);
+    border: 1px solid var(--color-neutral-800);
+    border-radius: 1rem;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: 9999px;
+    background-color: var(--color-brand-500);
+    color: white;
+    font-weight: 600;
+    padding: 0.5rem 1.125rem;
+    font-size: 0.875rem;
+    transition: background-color 120ms ease;
+  }
+  .btn-primary:hover {
+    background-color: var(--color-brand-600);
+  }
+  .btn-primary:disabled {
+    opacity: 0.5;
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: 9999px;
+    background-color: transparent;
+    border: 1px solid var(--color-neutral-700);
+    color: var(--color-neutral-100);
+    font-weight: 600;
+    padding: 0.5rem 1.125rem;
+    font-size: 0.875rem;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  .btn-secondary:hover {
+    background-color: var(--color-neutral-800);
+    border-color: var(--color-neutral-600);
+  }
+  .btn-secondary:disabled {
+    opacity: 0.5;
+  }
+
+  /* Skeleton loading shimmer -- feed grids should never show a blank white
+     flash or "불러오는 중" text tile while thumbnails resolve. */
+  .skeleton {
+    background: linear-gradient(
+      100deg,
+      var(--color-neutral-900) 30%,
+      var(--color-neutral-800) 50%,
+      var(--color-neutral-900) 70%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-shimmer {
+    0% {
+      background-position: 150% 0;
+    }
+    100% {
+      background-position: -50% 0;
+    }
+  }
+}

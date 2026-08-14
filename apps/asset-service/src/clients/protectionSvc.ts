@@ -19,6 +19,13 @@ export interface ProtectRequest {
   // protection is a different mechanism entirely (dual-arch RunPod
   // Serverless attack), not another style_cloak preset.
   strongProtection?: boolean;
+  // Advanced-options upload feature (2026-08-08) -- ignored unless
+  // strongProtection is also true. Both undefined means run at
+  // hybrid_protect.py's own HYBRID_FULL preset values, not "no
+  // protection." See protection-svc's server.py ProtectRequest for the
+  // matching field names.
+  strongProtectionLatentEpsilon?: number;
+  strongProtectionPixelEpsilon?: number;
 }
 
 export interface VariantResult {
@@ -122,6 +129,31 @@ export async function remeasureProtection(
   });
 }
 
+/**
+ * Synchronous, like suggestTags above -- protection-svc's /original-preview
+ * is pure PIL (no GPU), see ml-engine/src/original_preview.py's module doc.
+ * Returns a local file path (protection-svc's own filesystem, same trust
+ * boundary as every other imageUri in this PoC) that routes/artworks.ts
+ * copies into this service's own storage before writing the asset_versions
+ * row.
+ */
+export async function createOriginalPreview(
+  imageUri: string,
+  watermarkPayloadHex: string,
+): Promise<{ previewUri: string; width: number; height: number }> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/original-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUri, watermarkPayloadHex }),
+    });
+    if (!res.ok) {
+      throw new Error(`protection-svc POST /original-preview failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
 export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: string; status: string }> {
   return withRetry(async () => {
     const res = await fetch(`${env.PROTECTION_SVC_URL}/protect`, {
@@ -134,6 +166,21 @@ export async function createProtectJob(req: ProtectRequest): Promise<{ jobId: st
     }
     return res.json();
   });
+}
+
+/** Cancel-upload feature (2026-08-14) -- best-effort, not retried through
+ * withRetry like the others above: a cancel request should fire once and
+ * return quickly, not spend several retry rounds against a service that
+ * might be mid-restart itself. Swallows its own failure (routes/artworks.ts's
+ * cancel route treats this as fire-and-forget) since the artwork's own
+ * status change is what the caller actually depends on, not this call
+ * succeeding. */
+export async function cancelProtectJob(jobId: string): Promise<void> {
+  try {
+    await fetch(`${env.PROTECTION_SVC_URL}/protect/${jobId}/cancel`, { method: "POST" });
+  } catch {
+    // best-effort, see this function's own doc
+  }
 }
 
 export async function getProtectJob(jobId: string): Promise<ProtectJob> {
@@ -159,7 +206,19 @@ export async function getProtectJob(jobId: string): Promise<ProtectJob> {
  */
 export async function pollProtectJob(
   jobId: string,
-  { intervalMs = 3000, timeoutMs = 30 * 60 * 1000 }: { intervalMs?: number; timeoutMs?: number } = {},
+  // 2026-08-14: was 30min, shorter than protection-svc's own worst-case
+  // ceiling for a real strong_protection job -- clean_protect.py's four-
+  // stage RunPod Serverless chain can legitimately run up to the RunPod
+  // endpoint's executionTimeoutMs (3000000ms/50min) or remote_gpu.py's own
+  // client-side poll timeout (3300s/55min), and a real production run on
+  // the actual Illustrious-XL checkpoint has been observed taking well
+  // over 30min for the SDXL stage alone. This outer poll must stay
+  // comfortably above BOTH of those inner ceilings, the same layered-
+  // timeout principle already applied there (each ceiling here must
+  // exceed the one it wraps) -- otherwise this is the one that always
+  // fires first and fails a real, still-succeeding job, exactly what
+  // happened live (errorMessage: "...did not complete within 1800000ms").
+  { intervalMs = 3000, timeoutMs = 70 * 60 * 1000 }: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<ProtectJob> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -226,6 +285,65 @@ export async function getScoreProtectionJob(jobId: string): Promise<ScoreProtect
     }
     return res.json();
   });
+}
+
+export interface LoraGenerationRequest {
+  imageUri: string;
+  prompt: string;
+  seed?: number;
+  trainSteps?: number;
+}
+
+export interface LoraGenerationJob {
+  status: "queued" | "processing" | "completed" | "failed";
+  outputPath?: string;
+  contentPrompt?: string;
+  error?: string;
+}
+
+/**
+ * Coin-system feature (2026-08-10): kicks off training a real, downloadable
+ * SD1.5 LoRA on a single artwork image (see ml-engine/src/lora_generate.py's
+ * module doc). Job-based like createScoreProtectionJob, not synchronous.
+ */
+export async function createLoraJob(req: LoraGenerationRequest): Promise<{ jobId: string; status: string }> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/lora-jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (res.status !== 202) {
+      throw new Error(`protection-svc POST /lora-jobs failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
+export async function getLoraJob(jobId: string): Promise<LoraGenerationJob> {
+  return withRetry(async () => {
+    const res = await fetch(`${env.PROTECTION_SVC_URL}/lora-jobs/${jobId}`);
+    if (!res.ok) {
+      throw new Error(`protection-svc GET /lora-jobs/${jobId} failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  });
+}
+
+/** Polls until the job reaches completed/failed -- same shape as
+ * pollScoreProtectionJob below, used from routes/loraJobs.ts's background
+ * (fire-and-forget) job runner. */
+export async function pollLoraJob(
+  jobId: string,
+  { intervalMs = 5000, timeoutMs = 30 * 60 * 1000 }: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<LoraGenerationJob> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await getLoraJob(jobId);
+    if (job.status === "completed" || job.status === "failed") return job;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`protection-svc job ${jobId} did not complete within ${timeoutMs}ms`);
 }
 
 /**

@@ -16,6 +16,13 @@ export const artworks = sqliteTable("artworks", {
   creatorId: text("creator_id").notNull(),
   ownerWalletAddress: text("owner_wallet_address").notNull(),
   protectionProfile: text("protection_profile").notNull(),
+  // Advanced-options upload feature (2026-08-08) -- only meaningful when
+  // protectionProfile is STRONG_PROTECTION; null means "use hybrid_
+  // protect.py's own HYBRID_FULL default," not "no protection." Set at
+  // upload time (routes/artworks.ts), read back by orchestration.ts when
+  // building the protect-svc job request.
+  strongProtectionLatentEpsilon: real("strong_protection_latent_epsilon"),
+  strongProtectionPixelEpsilon: real("strong_protection_pixel_epsilon"),
   allowAiTraining: integer("allow_ai_training", { mode: "boolean" }).notNull().default(false),
   // Generated at creation (routes/artworks.ts), passed through to
   // protection-svc's /protect request, and read back by detection-svc
@@ -96,6 +103,20 @@ export const artworks = sqliteTable("artworks", {
   // upload would likely surface a near-zero/negative delta, per this
   // project's own multi-mechanism validation history.
   usedStrongProtection: integer("used_strong_protection", { mode: "boolean" }).notNull().default(false),
+
+  // Creator-only opt-OUT from the coin-unlock original-preview feature
+  // (2026-08-14 redesign). Previously this was inverted: a creator had to
+  // opt IN (a separate "원본 미리보기 공개" toggle) before the coin button
+  // even appeared for anyone, and generation only happened on that toggle.
+  // Real product intent was the opposite -- the coin-unlock option should
+  // be available by default on every published artwork, with a creator who
+  // doesn't want their original ever unlockable (at any coin price) able
+  // to turn it off. Default false: coin-unlock is available unless a
+  // creator explicitly blocks it. See routes/artworks.ts's unlock route
+  // for how this gates both the button's visibility (GET /:id surfaces it
+  // as originalPreviewAvailable = !originalPreviewBlocked) and the actual
+  // spend (still checked server-side, not just hidden client-side).
+  originalPreviewBlocked: integer("original_preview_blocked", { mode: "boolean" }).notNull().default(false),
 
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
@@ -197,4 +218,167 @@ export const reports = sqliteTable("reports", {
   // PENDING -> RESOLVED | DISMISSED, set via the moderation queue endpoint.
   status: text("status").notNull().default("PENDING"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * Coin system (2026-08-10). No `users` table exists in this service (see
+ * module doc above) -- userId is the same unvalidated JWT-sub string every
+ * other table already trusts, so balances/ledger follow the same FK-less
+ * pattern rather than inventing a users table just for this.
+ *
+ * Real-money top-up is explicitly out of scope for this project (test/
+ * portfolio scope, not a real payment processor) -- the only way to gain
+ * coins right now is coins.ts's lazy signup bonus. `chainTxHash` on
+ * coinTransactions is a deliberately-unused skeleton column for a possible
+ * future on-chain top-up path; it is always null today.
+ */
+
+export const coinBalances = sqliteTable("coin_balances", {
+  userId: text("user_id").primaryKey(),
+  balance: integer("balance").notNull().default(0),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+export const coinTransactions = sqliteTable("coin_transactions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  // Positive = credit (e.g. signup_bonus), negative = spend.
+  amount: integer("amount").notNull(),
+  reason: text("reason").notNull(),
+  relatedArtworkId: text("related_artwork_id"),
+  // Always null today -- see module doc above.
+  chainTxHash: text("chain_tx_hash"),
+  balanceAfter: integer("balance_after").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+// A row existing here IS the grant -- one coin spend unlocks the viewer's
+// original-preview access to that artwork permanently, no expiry/re-spend.
+export const originalPreviewUnlocks = sqliteTable(
+  "original_preview_unlocks",
+  {
+    userId: text("user_id").notNull(),
+    artworkId: text("artwork_id").notNull(),
+    unlockedAt: integer("unlocked_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: uniqueIndex("original_preview_unlocks_pk").on(table.userId, table.artworkId),
+  }),
+);
+
+// Test Lab's real-LoRA-training score (routes/artworks.ts's POST
+// /:id/score-protection) used to only ever exist in the caller's own React
+// state -- closing or reloading the tab lost the last real result even
+// though the several-minutes RunPod job that produced it already happened.
+// One row per artwork (upserted each time a job completes), not a history
+// table -- "the last real result, always retrievable" is what was asked
+// for, not a timeline of every run.
+export const scoreProtectionResults = sqliteTable("score_protection_results", {
+  artworkId: text("artwork_id").primaryKey(),
+  // The full ScoreProtectionJob response body (protectionSvc.ts's own
+  // shape: sd15/sdxl arch results incl. base64 samples, threshold) --
+  // stored as opaque JSON rather than normalized into columns since
+  // nothing here needs to query into it, only round-trip it back to the
+  // client exactly as protection-svc produced it.
+  resultJson: text("result_json").notNull(),
+  checkedAt: integer("checked_at", { mode: "timestamp" }).notNull(),
+});
+
+// Tracks a score-protection job from the moment it's submitted until its
+// result lands in scoreProtectionResults -- exists solely so a restart
+// mid-job (asset-service gets redeployed a lot during active development,
+// see the real incident this fixed: a real ~11-minute RunPod job finished
+// with a real result, but the in-memory fire-and-forget poll that would
+// have persisted it had been killed by an unrelated restart hours
+// earlier, so the result just sat in protection-svc/RunPod, invisible to
+// this service and the UI, forever) doesn't silently lose the result.
+// One row per in-flight job; deleted once routes/artworks.ts's own
+// completion handler (live or recovered) persists the real result.
+export const pendingScoreProtectionJobs = sqliteTable("pending_score_protection_jobs", {
+  artworkId: text("artwork_id").primaryKey(),
+  jobId: text("job_id").notNull(),
+  submittedAt: integer("submitted_at", { mode: "timestamp" }).notNull(),
+});
+
+// Durable counterpart to delivery-gateway's in-memory BotPolicyStore
+// (src/bot_policy.rs) -- that store is a hot-path read/write cache only
+// (RwLock<HashMap>/Mutex<VecDeque>, lost on every restart), never intended
+// to be the system of record. asset-service already owns every other piece
+// of per-artwork settings/state, so the real per-artwork ALLOW/BLOCK/
+// LOG_ONLY policy lives here instead -- delivery-gateway write-through's a
+// PUT here before updating its own cache, and lazily hydrates its cache
+// from here on first read of an artwork it hasn't seen since its last
+// restart. One row per artwork that has ever had a policy explicitly set
+// (no row = the default policy applies, same default delivery-gateway's
+// own ArtworkBotPolicy::default() encodes).
+export const botPolicies = sqliteTable("bot_policies", {
+  artworkId: text("artwork_id").primaryKey(),
+  defaultAction: text("default_action").notNull(),
+  // JSON-encoded { [BotGroup]: BotAction } / { [botName]: BotAction } --
+  // small, sparse, per-artwork maps with no query need into individual
+  // keys, same reasoning as scoreProtectionResults.resultJson above.
+  groupPoliciesJson: text("group_policies_json").notNull().default("{}"),
+  botOverridesJson: text("bot_overrides_json").notNull().default("{}"),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+// Durable counterpart to delivery-gateway's in-memory bot-access ring
+// buffer -- that buffer is capped (max_logs) and process-lifetime only, so
+// a creator checking "who's been crawling my art" after a restart or after
+// the ring buffer rolled over would see nothing. delivery-gateway pushes
+// one row here per classified-bot request (best-effort, fire-and-forget --
+// see lib.rs's render_asset doc), in addition to still recording into its
+// own fast in-memory tail.
+export const botAccessLogs = sqliteTable("bot_access_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  artworkId: text("artwork_id").notNull(),
+  botName: text("bot_name").notNull(),
+  botGroup: text("bot_group").notNull(),
+  action: text("action").notNull(),
+  // Already /24-masked by delivery-gateway before this ever leaves that
+  // process (bot_policy.rs's mask_ip) -- never the real full client IP.
+  clientIp: text("client_ip").notNull(),
+  userAgent: text("user_agent").notNull(),
+  responseStatus: integer("response_status").notNull(),
+  timestamp: integer("timestamp", { mode: "timestamp" }).notNull(),
+});
+
+// Compliance audit trail (2026-08-14, adapted from the compliance handoff's
+// complience/Audit Log DB Schema.md -- ported from that draft's Postgres
+// syntax (BIGSERIAL, CREATE RULE) to this project's actual SQLite/drizzle
+// stack; the append-only enforcement lives as SQLite triggers in this
+// table's migration instead of Postgres RULEs, see drizzle/0013's own SQL).
+// Records consent/rights-relevant state changes a creator or viewer makes
+// (bot access policy, original-preview coin-unlock availability, upload-
+// time AI-training consent) -- the kind of "who changed what, when" trail
+// that matters if a Do-Not-Train claim or takedown ever gets legally
+// contested, distinct from this project's operational logs (which rotate/
+// aren't append-only). payloadHash (not the raw payload) is what actually
+// gets tamper-evidence from being append-only -- the full payload can
+// still change shape over time without invalidating old hashes.
+export const complianceAuditLogs = sqliteTable("compliance_audit_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  // Nullable -- not every logged action has a wallet address behind it
+  // (e.g. an anonymous bot-policy read has no actor identity today, see
+  // routes/artworks.ts's own trust-boundary notes elsewhere in this file).
+  userWallet: text("user_wallet"),
+  actionType: text("action_type").notNull(),
+  targetArtworkId: text("target_artwork_id"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  payloadHash: text("payload_hash").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+export const loraGenerationJobs = sqliteTable("lora_generation_jobs", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  sourceArtworkId: text("source_artwork_id").notNull(),
+  // QUEUED -> RUNNING -> COMPLETED | FAILED
+  status: text("status").notNull().default("QUEUED"),
+  resultPath: text("result_path"),
+  coinCost: integer("coin_cost").notNull(),
+  errorMessage: text("error_message"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });

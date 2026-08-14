@@ -1,0 +1,1 @@
+ALTER TABLE `artworks` ADD `original_preview_blocked` integer DEFAULT false NOT NULL;

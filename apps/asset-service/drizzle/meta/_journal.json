@@ -50,6 +50,55 @@
       "when": 1786095532019,
       "tag": "0006_many_polaris",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786181649930,
+      "tag": "0007_heavy_franklin_richards",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786353083270,
+      "tag": "0008_concerned_hobgoblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786387163523,
+      "tag": "0009_lame_glorian",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786390553730,
+      "tag": "0010_daffy_newton_destine",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786646232555,
+      "tag": "0011_aspiring_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786646556827,
+      "tag": "0012_simple_snowbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1786647537683,
+      "tag": "0013_abandoned_sally_floyd",
+      "breakpoints": true
     }
   ]
 }

@@ -16,6 +16,8 @@ export function createTestDb() {
       creator_id TEXT NOT NULL,
       owner_wallet_address TEXT NOT NULL,
       protection_profile TEXT NOT NULL,
+      strong_protection_latent_epsilon REAL,
+      strong_protection_pixel_epsilon REAL,
       allow_ai_training INTEGER NOT NULL DEFAULT 0,
       watermark_payload_hex TEXT NOT NULL DEFAULT 'deadbeefcafef00d',
       encrypted_image_path TEXT NOT NULL DEFAULT './data/encrypted/test.enc',
@@ -34,6 +36,7 @@ export function createTestDb() {
       style_similarity_to_original REAL,
       perceptual_psnr_db REAL,
       used_strong_protection INTEGER NOT NULL DEFAULT 0,
+      original_preview_blocked INTEGER NOT NULL DEFAULT 0,
       published_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -99,6 +102,76 @@ export function createTestDb() {
       reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'PENDING',
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE coin_balances (
+      user_id TEXT PRIMARY KEY,
+      balance INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE coin_transactions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      related_artwork_id TEXT,
+      chain_tx_hash TEXT,
+      balance_after INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE original_preview_unlocks (
+      user_id TEXT NOT NULL,
+      artwork_id TEXT NOT NULL,
+      unlocked_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX original_preview_unlocks_pk ON original_preview_unlocks (user_id, artwork_id);
+    CREATE TABLE lora_generation_jobs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      source_artwork_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'QUEUED',
+      result_path TEXT,
+      coin_cost INTEGER NOT NULL,
+      error_message TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE score_protection_results (
+      artwork_id TEXT PRIMARY KEY,
+      result_json TEXT NOT NULL,
+      checked_at INTEGER NOT NULL
+    );
+    CREATE TABLE pending_score_protection_jobs (
+      artwork_id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      submitted_at INTEGER NOT NULL
+    );
+    CREATE TABLE bot_policies (
+      artwork_id TEXT PRIMARY KEY,
+      default_action TEXT NOT NULL,
+      group_policies_json TEXT NOT NULL DEFAULT '{}',
+      bot_overrides_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE compliance_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_wallet TEXT,
+      action_type TEXT NOT NULL,
+      target_artwork_id TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      payload_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE bot_access_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      artwork_id TEXT NOT NULL,
+      bot_name TEXT NOT NULL,
+      bot_group TEXT NOT NULL,
+      action TEXT NOT NULL,
+      client_ip TEXT NOT NULL,
+      user_agent TEXT NOT NULL,
+      response_status INTEGER NOT NULL,
+      timestamp INTEGER NOT NULL
     );
   `);
   return drizzle(sqlite, { schema });

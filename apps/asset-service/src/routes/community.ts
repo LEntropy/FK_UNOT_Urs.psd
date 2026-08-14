@@ -155,6 +155,46 @@ export function communityRouter(db: Db): Router {
     res.json({ count: row?.count ?? 0 });
   });
 
+  // "Am I following this creator" (2026-08-14, FollowButton's own doc
+  // flagged this as missing -- it used to just assume "not following" on
+  // every page load). Query param, not the request body, since this is a
+  // GET (api-gateway's proxy injects userId from the verified JWT the same
+  // way it does for the POST/DELETE follow routes above).
+  router.get("/users/:creatorId/follow-status", (req, res) => {
+    const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
+    if (!userId) return res.status(400).json({ error: "userId query param is required" });
+    const row = db
+      .select({ followerId: follows.followerId })
+      .from(follows)
+      .where(and(eq(follows.followerId, userId), eq(follows.creatorId, req.params.creatorId)))
+      .get();
+    res.json({ following: row !== undefined });
+  });
+
+  // Follow-list page (2026-08-14) -- raw id lists only; resolving them to
+  // display names/avatars is api-gateway's job (its own users table, see
+  // clients/community.ts's followers()/following() there), same layering
+  // as every other cross-service id this service hands back un-enriched.
+  router.get("/users/:creatorId/followers", (req, res) => {
+    const rows = db
+      .select({ userId: follows.followerId, followedAt: follows.createdAt })
+      .from(follows)
+      .where(eq(follows.creatorId, req.params.creatorId))
+      .orderBy(desc(follows.createdAt))
+      .all();
+    res.json(rows);
+  });
+
+  router.get("/users/:creatorId/following", (req, res) => {
+    const rows = db
+      .select({ userId: follows.creatorId, followedAt: follows.createdAt })
+      .from(follows)
+      .where(eq(follows.followerId, req.params.creatorId))
+      .orderBy(desc(follows.createdAt))
+      .all();
+    res.json(rows);
+  });
+
   // --- comments ----------------------------------------------------------
   const createCommentSchema = z.object({ userId: z.string().min(1), body: z.string().min(1).max(2000) });
 

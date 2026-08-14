@@ -7,7 +7,13 @@ import request from "supertest";
 import { artworks, assetVersions } from "../src/db/schema.js";
 import { createTestDb } from "./testDb.js";
 
-vi.mock("../src/orchestration.js", () => ({ runUploadPipeline: vi.fn() }));
+vi.mock("../src/orchestration.js", () => ({
+  runUploadPipeline: vi.fn(),
+  // Fire-and-forget in the real route (routes/artworks.ts's own note) --
+  // defaults to an already-resolved promise so tests that don't care about
+  // the cleanup path don't need to stub this themselves.
+  persistScoreProtectionResult: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("../src/clients/protectionSvc.js", () => ({
   suggestTags: vi.fn(),
   remeasureProtection: vi.fn(),
@@ -31,9 +37,10 @@ vi.mock("../src/crypto/imageEncryption.js", async (importOriginal) => {
 });
 
 const { createApp } = await import("../src/app.js");
-const { suggestTags, remeasureProtection, createScoreProtectionJob, getScoreProtectionJob, pollScoreProtectionJob } =
+const { suggestTags, remeasureProtection, createScoreProtectionJob, getScoreProtectionJob } =
   await import("../src/clients/protectionSvc.js");
 const { decryptToTempFile, cleanupTempFile } = await import("../src/crypto/imageEncryption.js");
+const { persistScoreProtectionResult } = await import("../src/orchestration.js");
 
 function seed(db: ReturnType<typeof createTestDb>, overrides: Partial<typeof artworks.$inferInsert> = {}) {
   const now = new Date();
@@ -104,6 +111,40 @@ describe("GET /artworks", () => {
     expect(withImage.assetVersions).toHaveLength(1);
     expect(withImage.assetVersions[0].variantName).toBe("grid_thumbnail_150");
     expect(noImage.assetVersions).toEqual([]);
+  });
+
+  it("returns tags as a real array, not the raw JSON-encoded column value", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_tagged", tags: JSON.stringify(["가을", "수채화"]) });
+
+    const res = await request(createApp(db)).get("/artworks");
+    expect(res.status).toBe(200);
+    expect(res.body[0].tags).toEqual(["가을", "수채화"]);
+  });
+
+  it("tag search matches any artwork with that exact tag, case-insensitively", async () => {
+    const db = createTestDb();
+    seed(db, {
+      id: "ast_match",
+      tags: JSON.stringify(["가을", "수채화"]),
+      visibility: "public",
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+    });
+    seed(db, { id: "ast_nomatch", tags: JSON.stringify(["여름"]), visibility: "public", status: "PUBLISHED", publishedAt: new Date() });
+
+    const res = await request(createApp(db)).get("/artworks?tag=%EC%88%98%EC%B1%84%ED%99%94"); // "수채화"
+    expect(res.status).toBe(200);
+    expect(res.body.map((a: { id: string }) => a.id)).toEqual(["ast_match"]);
+  });
+
+  it("tag search only ever returns public+published rows, even without publicOnly explicitly set", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_draft", tags: JSON.stringify(["수채화"]), visibility: "private", status: "UPLOADED" });
+
+    const res = await request(createApp(db)).get("/artworks?tag=%EC%88%98%EC%B1%84%ED%99%94");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 });
 
@@ -374,7 +415,7 @@ describe("POST /artworks/:id/score-protection", () => {
   // block's own "not.toHaveBeenCalled()" assertions.
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(pollScoreProtectionJob).mockResolvedValue({ status: "completed" });
+    vi.mocked(persistScoreProtectionResult).mockResolvedValue(undefined);
   });
 
   it("404s for an unknown artwork", async () => {
@@ -395,7 +436,12 @@ describe("POST /artworks/:id/score-protection", () => {
 
   it("kicks off a protection-svc job and returns its jobId immediately, without waiting for it to finish", async () => {
     const db = createTestDb();
-    seed(db, { protectedImageUri: "/out/job_x/watermarked.png", usedStrongProtection: true, title: "낙엽" });
+    seed(db, {
+      protectedImageUri: "/out/job_x/watermarked.png",
+      usedStrongProtection: true,
+      title: "낙엽",
+      tags: JSON.stringify(["가을", "은행나무", "수채화"]),
+    });
 
     vi.mocked(decryptToTempFile).mockResolvedValue("/tmp/dontai-decrypted-ast_1.png");
     vi.mocked(createScoreProtectionJob).mockResolvedValue({ jobId: "scorejob_abc", status: "queued" });
@@ -404,16 +450,20 @@ describe("POST /artworks/:id/score-protection", () => {
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ jobId: "scorejob_abc" });
+    // Prompt comes from the creator's own upload-time tags, not the title
+    // -- protection_score.py needs a real content description to generate
+    // toward, and a freeform title (or no tags at all) risks the baseline
+    // LoRA collapsing toward the CLIP floor regardless of protection.
     expect(createScoreProtectionJob).toHaveBeenCalledWith({
       originalImageUri: "/tmp/dontai-decrypted-ast_1.png",
       protectedImageUri: "/out/job_x/watermarked.png",
-      prompt: "낙엽",
+      prompt: "가을, 은행나무, 수채화",
     });
     // Cleanup is deferred to the background poll, not this response --
-    // pollScoreProtectionJob's default mock resolves immediately (pure
-    // microtasks, no real I/O), so by the time supertest's request settles
-    // the fire-and-forget .finally() has already run.
-    expect(pollScoreProtectionJob).toHaveBeenCalledWith("scorejob_abc");
+    // persistScoreProtectionResult's default mock resolves immediately
+    // (pure microtasks, no real I/O), so by the time supertest's request
+    // settles the fire-and-forget .finally() has already run.
+    expect(persistScoreProtectionResult).toHaveBeenCalledWith(expect.anything(), "ast_1", "scorejob_abc");
     expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
   });
 
@@ -428,7 +478,7 @@ describe("POST /artworks/:id/score-protection", () => {
 
     expect(res.status).toBe(502);
     expect(cleanupTempFile).toHaveBeenCalledWith("/tmp/dontai-decrypted-ast_1.png");
-    expect(pollScoreProtectionJob).not.toHaveBeenCalled();
+    expect(persistScoreProtectionResult).not.toHaveBeenCalled();
   });
 });
 

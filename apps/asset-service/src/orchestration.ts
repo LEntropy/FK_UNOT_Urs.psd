@@ -1,7 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import type { Db } from "./db/client.js";
-import { artworks, assetVersions, ownershipRecords } from "./db/schema.js";
-import { createProtectJob, pollProtectJob } from "./clients/protectionSvc.js";
+import { artworks, assetVersions, ownershipRecords, scoreProtectionResults, pendingScoreProtectionJobs } from "./db/schema.js";
+import { createProtectJob, pollProtectJob, pollScoreProtectionJob } from "./clients/protectionSvc.js";
 import { registerAsset, verifyAsset, AlreadyRegisteredError } from "./clients/blockchainSvc.js";
 import { decryptToTempFile, cleanupTempFile } from "./crypto/imageEncryption.js";
 import { env } from "./env.js";
@@ -59,6 +59,12 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
       allowAiTraining: artwork.allowAiTraining,
       watermarkPayloadHex: artwork.watermarkPayloadHex,
       strongProtection: isStrongProtection,
+      // Advanced-options upload feature (2026-08-08) -- both null unless
+      // the uploader explicitly opted into a non-default epsilon at
+      // upload time (routes/artworks.ts). Ignored by protection-svc
+      // unless isStrongProtection is also true.
+      strongProtectionLatentEpsilon: artwork.strongProtectionLatentEpsilon ?? undefined,
+      strongProtectionPixelEpsilon: artwork.strongProtectionPixelEpsilon ?? undefined,
     });
 
     db.update(artworks).set({ protectJobId: jobId, updatedAt: new Date() }).where(eq(artworks.id, artworkId)).run();
@@ -261,4 +267,58 @@ async function setStatus(db: Db, artworkId: string, status: string, errorMessage
     })
     .where(eq(artworks.id, artworkId))
     .run();
+}
+
+/**
+ * Polls a score-protection job to completion and durably persists whatever
+ * it gets (success or failure) into scoreProtectionResults, then clears the
+ * pendingScoreProtectionJobs row that tracked it -- the whole reason that
+ * table exists (see its own schema.ts doc): a real ~11-minute RunPod job
+ * once completed with a real result that nothing ever recorded, because
+ * the in-memory fire-and-forget promise tracking it had been silently
+ * killed by an unrelated asset-service restart hours earlier. Called both
+ * from a live submission (routes/artworks.ts) and from
+ * recoverPendingScoreProtectionJobs below (a restart) -- pollScoreProtectionJob
+ * itself is a pure re-poll of protection-svc's own job state, so calling it
+ * again after a restart is always safe, never a duplicate GPU job.
+ */
+export async function persistScoreProtectionResult(db: Db, artworkId: string, jobId: string): Promise<void> {
+  try {
+    const job = await pollScoreProtectionJob(jobId);
+    const now = new Date();
+    db.insert(scoreProtectionResults)
+      .values({ artworkId, resultJson: JSON.stringify(job), checkedAt: now })
+      .onConflictDoUpdate({
+        target: scoreProtectionResults.artworkId,
+        set: { resultJson: JSON.stringify(job), checkedAt: now },
+      })
+      .run();
+  } catch (err) {
+    const now = new Date();
+    const failed = { status: "failed", error: err instanceof Error ? err.message : String(err) };
+    db.insert(scoreProtectionResults)
+      .values({ artworkId, resultJson: JSON.stringify(failed), checkedAt: now })
+      .onConflictDoUpdate({
+        target: scoreProtectionResults.artworkId,
+        set: { resultJson: JSON.stringify(failed), checkedAt: now },
+      })
+      .run();
+  } finally {
+    db.delete(pendingScoreProtectionJobs).where(eq(pendingScoreProtectionJobs.artworkId, artworkId)).run();
+  }
+}
+
+/**
+ * Called once at asset-service startup (index.ts), same pattern as
+ * recoverInterruptedUploads above -- any row still in pendingScoreProtection
+ * Jobs means its own persistScoreProtectionResult call never got to finish
+ * (the process died first). Re-polling is free to just resume: protection-svc
+ * keeps the job's real state independent of this process's lifetime.
+ */
+export async function recoverPendingScoreProtectionJobs(db: Db): Promise<void> {
+  const pending = db.select().from(pendingScoreProtectionJobs).all();
+  for (const row of pending) {
+    console.log(`[recovery] resuming score-protection poll for ${row.artworkId} (job ${row.jobId}) after a restart`);
+    await persistScoreProtectionResult(db, row.artworkId, row.jobId);
+  }
 }

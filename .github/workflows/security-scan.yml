@@ -1,0 +1,23 @@
+name: Security Scan
+
+# Adapted from the compliance handoff (complience/GitHub Actions Security
+# Scan.md, 2026-08-14) -- kept as its own workflow rather than folded into
+# ci.yml (main test workflow) since a secret leak is a different class of
+# finding than a failing test, and gitleaks-action needs fetch-depth: 0
+# (full history) which the other jobs don't.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  secret-scan:
+    name: Secret & key leakage scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

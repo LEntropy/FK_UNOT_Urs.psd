@@ -50,3 +50,24 @@ contracts/broadcast/
 runs_poll.json
 runs_check.json
 docker-compose.override.yml
+
+# Contains real private keys/certs (mTLS CA/server/client keys, per-team KMS
+# envelope keys) alongside a compiled binary -- excluded wholesale rather
+# than carving out just cert/keys, pending a real review of what else in
+# here (if anything) is actually meant to be tracked source.
+/KmsServer/
+
+# Presentation/pitch materials -- not application code, contains real
+# teammate names; kept on disk for the team's own use, not repo history.
+/DONTAI_발표대본.txt
+/DONTAI_발표자료.pptx
+/FK_UNOT_*.psd_*.txt
+/FK_UNOT_*.psd_*.jpg
+/scripts/gen_diagram.py
+/scripts/pptx_build/
+
+# Teammate's raw handoff drop -- reviewed and selectively merged into the
+# real apps/* source (see SESSION_HANDOFF_20260814.md); the copy here is a
+# now-redundant snapshot, not a second source of truth.
+/motection-changes-20260812-112347/
+/monitoring_detection/

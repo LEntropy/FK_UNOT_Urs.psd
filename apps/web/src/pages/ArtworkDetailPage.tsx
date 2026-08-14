@@ -167,7 +167,7 @@ export function ArtworkDetailPage() {
           {data.tags.map((tag) => (
             <Link
               key={tag}
-              to={`/feed?tag=${encodeURIComponent(tag)}`}
+              to={`/?tag=${encodeURIComponent(tag)}`}
               className="rounded-full bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-neutral-100"
             >
               #{tag}

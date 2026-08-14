@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use delivery_gateway::bot_policy::{ArtworkBotPolicy, BotAction, BotPolicyStore};
 use delivery_gateway::enumeration::EnumerationDetector;
 use delivery_gateway::honeypot::HoneypotTracker;
 use delivery_gateway::rate_limit::RateLimiter;
@@ -48,6 +49,7 @@ fn build_state(
         enumeration_detector,
         honeypot,
         sign_ttl_seconds: 300,
+        bot_policies: BotPolicyStore::new(1_000),
     })
 }
 
@@ -518,4 +520,123 @@ async fn requesting_a_variant_the_artwork_never_generated_is_a_404_not_a_500() {
     let uri = signed_render_uri("ast_no_variant", "public_preview_1280", 60);
     let res = send(app, request(&uri)).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+// -- src/bot_policy.rs: per-artwork ALLOW/BLOCK/LOG_ONLY policy --
+
+/// The default policy (bot_policy::ArtworkBotPolicy::default) still blocks
+/// the AiTraining group -- same real-world outcome as the old hardcoded
+/// `is_known_ai_crawler` 403 this replaced, just routed through
+/// crawlers::classify()/state.bot_policies.action() instead.
+#[tokio::test]
+async fn default_policy_still_blocks_ai_training_bots_with_no_override_configured() {
+    let mock_server = MockServer::start().await;
+    let state = state_with_mock_asset_service(&mock_server.uri());
+    let app = build_router(state);
+    let uri = signed_render_uri("ast_1", "public_preview_1280", 60);
+    let res = send(
+        app,
+        request_with_ua(
+            &uri,
+            "Mozilla/5.0 (compatible; GPTBot/1.0; +https://openai.com/gptbot)",
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+/// A per-artwork override (PUT /internal/bot-policies/:id) can allow a bot
+/// group the default policy would otherwise block -- the whole point of
+/// making this configurable instead of a single hardcoded 403.
+#[tokio::test]
+async fn artwork_override_allows_a_bot_the_default_policy_would_block() {
+    let mock_server = MockServer::start().await;
+    let tmp_file = std::env::temp_dir().join("delivery_gateway_test_bot_override.png");
+    tokio::fs::write(&tmp_file, b"fake-png-bytes-override")
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/artworks/ast_allow"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }]
+        })))
+        .mount(&mock_server)
+        .await;
+    // put_bot_policy write-throughs to asset-service (2026-08-14, see
+    // lib.rs's own doc) before updating its local cache -- stub the same
+    // echo-back shape asset-service's real PUT /:id/bot-policy returns.
+    Mock::given(method("PUT"))
+        .and(path("/artworks/ast_allow/bot-policy"))
+        .respond_with(|req: &wiremock::Request| ResponseTemplate::new(200).set_body_raw(req.body.clone(), "application/json"))
+        .mount(&mock_server)
+        .await;
+
+    let state = state_with_mock_asset_service(&mock_server.uri());
+    let app = build_router(state.clone());
+
+    let mut policy = ArtworkBotPolicy::default();
+    policy
+        .bot_overrides
+        .insert("GPTBot".to_string(), BotAction::Allow);
+    let put_res = send(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri("/internal/bot-policies/ast_allow")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&policy).unwrap()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(put_res.status(), StatusCode::OK);
+
+    let uri = signed_render_uri("ast_allow", "public_preview_1280", 60);
+    let res = send(
+        app,
+        request_with_ua(
+            &uri,
+            "Mozilla/5.0 (compatible; GPTBot/1.0; +https://openai.com/gptbot)",
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    tokio::fs::remove_file(&tmp_file).await.ok();
+}
+
+/// Search-engine and social-preview bots are logged, not blocked, under the
+/// default policy -- extended coverage beyond the old AI-training-only
+/// denylist, without changing the outcome for those bot groups.
+#[tokio::test]
+async fn search_engine_bot_is_not_blocked_by_the_default_policy_but_is_logged() {
+    let mock_server = MockServer::start().await;
+    let tmp_file = std::env::temp_dir().join("delivery_gateway_test_bot_searchengine.png");
+    tokio::fs::write(&tmp_file, b"fake-png-bytes-se").await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/artworks/ast_se"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "assetVersions": [{ "variantName": "public_preview_1280", "storageUri": tmp_file.to_str().unwrap(), "width": 1280 }]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let state = state_with_mock_asset_service(&mock_server.uri());
+    let app = build_router(state.clone());
+
+    let uri = signed_render_uri("ast_se", "public_preview_1280", 60);
+    let res = send(app.clone(), request_with_ua(&uri, "Googlebot/2.1")).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let logs_res = send(
+        app,
+        request("/internal/bot-access-logs?artworkId=ast_se"),
+    )
+    .await;
+    let logs_body = logs_res.into_body().collect().await.unwrap().to_bytes();
+    let logs: serde_json::Value = serde_json::from_slice(&logs_body).unwrap();
+    let logs_arr = logs.as_array().unwrap();
+    assert_eq!(logs_arr.len(), 1);
+    assert_eq!(logs_arr[0]["botName"], "Googlebot");
+
+    tokio::fs::remove_file(&tmp_file).await.ok();
 }

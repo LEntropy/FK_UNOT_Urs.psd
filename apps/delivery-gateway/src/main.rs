@@ -2,10 +2,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use delivery_gateway::bot_policy::BotPolicyStore;
 use delivery_gateway::enumeration::EnumerationDetector;
 use delivery_gateway::honeypot::HoneypotTracker;
 use delivery_gateway::rate_limit::RateLimiter;
-use delivery_gateway::{AppState, build_router};
+use delivery_gateway::{AppState, build_router, hydrate_bot_policies};
 
 #[tokio::main]
 async fn main() {
@@ -69,7 +70,10 @@ async fn main() {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(300),
+        bot_policies: BotPolicyStore::new(10_000),
     });
+
+    hydrate_bot_policies(&state).await;
 
     let app = build_router(state);
     let port: u16 = std::env::var("PORT")

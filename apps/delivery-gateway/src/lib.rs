@@ -1,3 +1,4 @@
+pub mod bot_policy;
 pub mod crawlers;
 pub mod enumeration;
 pub mod honeypot;
@@ -13,6 +14,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bot_policy::{ArtworkBotPolicy, BotAction, BotPolicyStore};
 use enumeration::EnumerationDetector;
 use honeypot::HoneypotTracker;
 use rate_limit::RateLimiter;
@@ -27,6 +29,56 @@ pub struct AppState {
     pub enumeration_detector: EnumerationDetector,
     pub honeypot: HoneypotTracker,
     pub sign_ttl_seconds: u64,
+    pub bot_policies: BotPolicyStore,
+}
+
+/// Loads every artwork's persisted bot policy from asset-service (the
+/// system of record, schema.ts's botPolicies table) into this process's
+/// own cache once at startup -- without this, a restart would silently
+/// reset every creator's ALLOW/BLOCK/LOG_ONLY choice back to the built-in
+/// default until someone happened to PUT it again (put_bot_policy's own
+/// write-through keeps it correct going forward, but does nothing for
+/// policies set before this restart). Best-effort: asset-service being
+/// unreachable at startup (e.g. this process wins a race to start first)
+/// logs a warning and leaves the cache empty rather than blocking startup
+/// or crashing -- individual policies still work correctly once GET/PUT
+/// bot-policy calls touch them, same as this cache always behaved before
+/// this hydration step existed.
+pub async fn hydrate_bot_policies(state: &Arc<AppState>) {
+    let url = format!("{}/artworks/bot-policies", state.asset_service_url);
+    let rows: Vec<serde_json::Value> = match state.http.get(&url).send().await {
+        Ok(res) if res.status().is_success() => match res.json().await {
+            Ok(rows) => rows,
+            Err(err) => {
+                eprintln!("bot-policy hydration: malformed asset-service response ({err}), starting with an empty cache");
+                return;
+            }
+        },
+        Ok(res) => {
+            eprintln!(
+                "bot-policy hydration: asset-service returned {}, starting with an empty cache",
+                res.status()
+            );
+            return;
+        }
+        Err(err) => {
+            eprintln!("bot-policy hydration: asset-service unreachable ({err}), starting with an empty cache");
+            return;
+        }
+    };
+
+    let mut loaded = 0usize;
+    for row in rows {
+        let Some(artwork_id) = row.get("artworkId").and_then(|v| v.as_str()) else { continue };
+        match serde_json::from_value::<ArtworkBotPolicy>(row.clone()) {
+            Ok(policy) => {
+                state.bot_policies.set(artwork_id.to_string(), policy);
+                loaded += 1;
+            }
+            Err(err) => eprintln!("bot-policy hydration: skipping {artwork_id} ({err})"),
+        }
+    }
+    println!("bot-policy hydration: loaded {loaded} artwork polic{}", if loaded == 1 { "y" } else { "ies" });
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -38,6 +90,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/robots.txt", get(robots_txt))
         .route("/internal/sign", post(sign_url))
         .route("/internal/honeypot-hits", get(honeypot_hits))
+        .route(
+            "/internal/bot-policies/{id}",
+            get(get_bot_policy).put(put_bot_policy),
+        )
+        .route("/internal/bot-access-logs", get(bot_access_logs))
         .route("/asset/{id}/render", get(render_asset))
         .route("/decoy/{token}", get(decoy))
         .with_state(state)
@@ -103,6 +160,94 @@ async fn honeypot_hits(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     Json(state.honeypot.recent_hits(100))
 }
 
+/// Per-artwork ALLOW/BLOCK/LOG_ONLY bot policy, read by render_asset's
+/// classify()+action() check below. Same "internal, no auth of its own"
+/// trust boundary as the other /internal/* endpoints in this file.
+async fn get_bot_policy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    Json(state.bot_policies.get(&id))
+}
+
+/// Write-through, not write-back: persists to asset-service (the system of
+/// record, see schema.ts's botPolicies doc) BEFORE updating this process's
+/// own cache, and only updates the cache if that succeeds -- keeps the two
+/// from silently diverging if asset-service is unreachable, rather than
+/// having a policy change "work" locally and then vanish on the next
+/// restart. Same asset_service_url + state.http this AppState already uses
+/// for render_asset's own artwork-detail lookup.
+async fn put_bot_policy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(policy): Json<ArtworkBotPolicy>,
+) -> impl IntoResponse {
+    let url = format!("{}/artworks/{}/bot-policy", state.asset_service_url, id);
+    match state.http.put(&url).json(&policy).send().await {
+        Ok(res) if res.status().is_success() => {
+            state.bot_policies.set(id, policy.clone());
+            (StatusCode::OK, Json(policy)).into_response()
+        }
+        Ok(res) => {
+            let status = res.status().as_u16();
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("asset-service rejected bot-policy write (status {status})")})),
+            )
+                .into_response()
+        }
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": "asset-service unreachable"})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogQuery {
+    artwork_id: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Best-effort, fire-and-forget durable log push (2026-08-14) -- render_
+/// asset's own response to the actual requester must never wait on or fail
+/// because of this. A dropped log entry here just means one row missing
+/// from the creator-facing history; the in-memory tail (BotPolicyStore's
+/// own ring buffer, still recorded synchronously before this is called)
+/// stays correct either way. Same "spawn a task, ignore the result" pattern
+/// this project already uses for other non-critical persistence (see
+/// remote_gpu.py's best-effort remote tmp-file cleanup for the Python-side
+/// equivalent reasoning).
+fn spawn_bot_access_log_push(state: Arc<AppState>, entry: bot_policy::BotAccessLog) {
+    tokio::spawn(async move {
+        let url = format!("{}/artworks/bot-access-logs", state.asset_service_url);
+        let body = serde_json::json!({
+            "artworkId": entry.artwork_id,
+            "botName": entry.bot_name,
+            "botGroup": entry.group,
+            "action": entry.action,
+            "clientIp": entry.client_ip,
+            "userAgent": entry.user_agent,
+            "responseStatus": entry.response_status,
+            "timestampUnixSeconds": entry.timestamp,
+        });
+        let _ = state.http.post(&url).json(&body).send().await;
+    });
+}
+
+async fn bot_access_logs(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogQuery>,
+) -> impl IntoResponse {
+    Json(
+        state
+            .bot_policies
+            .recent(q.artwork_id.as_deref(), q.limit.unwrap_or(100)),
+    )
+}
+
 #[derive(Deserialize)]
 struct SignRequest {
     #[serde(rename = "artworkId")]
@@ -116,6 +261,14 @@ enum Viewer {
     Anonymous,
     LoggedIn,
     Thumbnail,
+    // Coin-system feature (2026-08-10): the creator-opt-in, coin-unlocked
+    // near-original derivative (asset-service's POST /:id/original-preview,
+    // ml-engine/src/original_preview.py). Access control lives entirely on
+    // asset-service's side (does the "original_preview" asset_versions row
+    // exist, has this viewer unlocked it) -- api-gateway only requests this
+    // variant after that check already passed, same trust boundary as
+    // every other Viewer case here.
+    OriginalPreview,
 }
 
 impl Viewer {
@@ -136,6 +289,7 @@ impl Viewer {
             Viewer::Anonymous => "public_preview_1280",
             Viewer::LoggedIn => "public_preview_2048",
             Viewer::Thumbnail => "feed_thumbnail_original",
+            Viewer::OriginalPreview => "original_preview",
         }
     }
 }
@@ -216,11 +370,37 @@ async fn render_asset(
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if crawlers::is_known_ai_crawler(user_agent) {
-        // PROJECT_DESIGN.md \u{00a7}3-5 offers "차단 또는 decoy" -- decoy/honeypot
-        // responses are Phase 4 scope (Nightshade-style honeypot assets),
-        // not built here; blocking outright is the real defense today.
-        return (StatusCode::FORBIDDEN, "known AI crawler, blocked").into_response();
+    let client_ip: IpAddr = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(addr.ip());
+
+    // Policy-driven bot handling (src/bot_policy.rs): classify the request
+    // via crawlers::classify(), then resolve this artwork's configured
+    // action for that bot/group instead of a single hardcoded block. Not a
+    // regression from the old `is_known_ai_crawler` 403 -- the default
+    // policy (ArtworkBotPolicy::default) still blocks the AiTraining group,
+    // matching prior behavior, while extending coverage to search/social/
+    // SEO/AI-search/AI-assistant bots (logged, not blocked, by default) and
+    // letting a creator override per artwork.
+    if let Some(bot) = crawlers::classify(user_agent) {
+        let action = state.bot_policies.action(&artwork_id, &bot);
+        if action == BotAction::Block {
+            // PROJECT_DESIGN.md \u{00a7}3-5 offers "차단 또는 decoy" -- decoy/honeypot
+            // responses are Phase 4 scope (Nightshade-style honeypot assets),
+            // not built here; blocking outright is the real defense today.
+            let entry = state
+                .bot_policies
+                .record(&artwork_id, &bot, action, client_ip, user_agent, 403);
+            spawn_bot_access_log_push(state.clone(), entry);
+            return (StatusCode::FORBIDDEN, "bot blocked by artwork policy").into_response();
+        }
+        let entry = state
+            .bot_policies
+            .record(&artwork_id, &bot, action, client_ip, user_agent, 200);
+        spawn_bot_access_log_push(state.clone(), entry);
     }
 
     if !state.allowed_referer_hosts.is_empty() {
@@ -247,13 +427,6 @@ async fn render_asset(
         // "absent" the same as "disallowed" would break normal use, not
         // just hotlinking.
     }
-
-    let client_ip: IpAddr = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(addr.ip());
 
     // PHASE4_SCOPING.md §2's own recommendation, previously unimplemented:
     // "a honeypot hit should immediately and permanently flag that

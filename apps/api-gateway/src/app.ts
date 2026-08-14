@@ -4,10 +4,13 @@ import type { Db } from "./db/client.js";
 import { authRouter } from "./routes/auth.js";
 import { oauthRouter } from "./routes/oauth.js";
 import { meRouter } from "./routes/me.js";
+import { usersRouter } from "./routes/users.js";
 import { artworksRouter } from "./routes/artworks.js";
 import { communityRouter } from "./routes/community.js";
 import { internalRouter } from "./routes/internal.js";
 import { detectionRouter } from "./routes/detection.js";
+import { coinsRouter } from "./routes/coins.js";
+import { loraJobsRouter } from "./routes/loraJobs.js";
 
 export function createApp(db: Db) {
   const app = express();
@@ -21,6 +24,7 @@ export function createApp(db: Db) {
   app.use("/auth", authRouter(db));
   app.use("/auth", oauthRouter(db)); // /auth/google, /auth/kakao (+ /callback)
   app.use("/me", meRouter(db));
+  app.use("/users", usersRouter(db));
   app.use("/artworks", artworksRouter());
   // internalRouter has no auth of its own (network-level trust boundary,
   // see its own doc) -- must be mounted before detectionRouter/
@@ -36,6 +40,10 @@ export function createApp(db: Db) {
   // below) since it adds sub-paths under /artworks rather than owning the
   // whole prefix.
   app.use(detectionRouter());
+  // coinsRouter/loraJobsRouter also apply requireAuth via router.use() with
+  // no path prefix -- same reason they must stay after internalRouter, above.
+  app.use(coinsRouter());
+  app.use(loraJobsRouter());
   // communityRouter registers its own /artworks/:id/..., /users/:id/...,
   // /feed, /me/..., /collections, /moderation sub-paths -- mounted at root
   // since it owns multiple top-level prefixes, not just one (same reason as

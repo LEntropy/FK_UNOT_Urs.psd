@@ -43,6 +43,12 @@ export const follow = (creatorId: string, userId: string) =>
 export const unfollow = (creatorId: string, userId: string) =>
   call(`/users/${encodeURIComponent(creatorId)}/follow`, { method: "DELETE", body: JSON.stringify({ userId }) });
 export const followerCount = (creatorId: string) => call(`/users/${encodeURIComponent(creatorId)}/followers/count`);
+export const followStatus = (creatorId: string, userId: string): Promise<{ following: boolean }> =>
+  call(`/users/${encodeURIComponent(creatorId)}/follow-status?userId=${encodeURIComponent(userId)}`);
+export const listFollowers = (creatorId: string): Promise<Array<{ userId: string; followedAt: string }>> =>
+  call(`/users/${encodeURIComponent(creatorId)}/followers`);
+export const listFollowing = (creatorId: string): Promise<Array<{ userId: string; followedAt: string }>> =>
+  call(`/users/${encodeURIComponent(creatorId)}/following`);
 
 export const createComment = (artworkId: string, userId: string, body: string) =>
   call(`/artworks/${encodeURIComponent(artworkId)}/comments`, {

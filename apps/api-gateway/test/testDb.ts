@@ -14,6 +14,7 @@ export function createTestDb() {
       handle TEXT NOT NULL UNIQUE,
       display_name TEXT,
       avatar_uri TEXT,
+      bio TEXT,
       role TEXT NOT NULL DEFAULT 'CREATOR',
       wallet_address TEXT NOT NULL,
       encrypted_wallet_key TEXT NOT NULL,

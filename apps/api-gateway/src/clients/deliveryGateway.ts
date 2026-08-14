@@ -6,7 +6,7 @@ import { env } from "../env.js";
  * note) -- it claims a `viewer` on the caller's behalf, so only code that
  * has already verified the request (requireAuth, below) should call this.
  */
-export async function signRenderUrl(artworkId: string, viewer: "anonymous" | "logged_in" | "thumbnail") {
+export async function signRenderUrl(artworkId: string, viewer: "anonymous" | "logged_in" | "thumbnail" | "original_preview") {
   const res = await fetch(`${env.DELIVERY_GATEWAY_URL}/internal/sign`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

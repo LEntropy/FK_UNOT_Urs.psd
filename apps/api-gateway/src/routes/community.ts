@@ -110,6 +110,27 @@ export function communityRouter(): Router {
       forwardError(err, res);
     }
   });
+  router.get("/users/:creatorId/follow-status", async (req, res) => {
+    try {
+      res.json(await community.followStatus(req.params.creatorId, req.user!.sub));
+    } catch (err) {
+      forwardError(err, res);
+    }
+  });
+  router.get("/users/:creatorId/followers", async (req, res) => {
+    try {
+      res.json(await community.listFollowers(req.params.creatorId));
+    } catch (err) {
+      forwardError(err, res);
+    }
+  });
+  router.get("/users/:creatorId/following", async (req, res) => {
+    try {
+      res.json(await community.listFollowing(req.params.creatorId));
+    } catch (err) {
+      forwardError(err, res);
+    }
+  });
 
   // --- comments ----------------------------------------------------------
   const createCommentSchema = z.object({ body: z.string().min(1).max(2000) });

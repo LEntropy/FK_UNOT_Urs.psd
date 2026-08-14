@@ -25,6 +25,11 @@ export const users = sqliteTable(
     handle: text("handle").notNull().unique(),
     displayName: text("display_name"),
     avatarUri: text("avatar_uri"),
+    // Settings-page profile bio (2026-08-14) -- short freeform text shown on
+    // the public profile page, capped client- and server-side at 160 chars
+    // (routes/me.ts's PATCH). Null (never set) renders as no bio line, not
+    // an empty one.
+    bio: text("bio"),
     role: text("role").notNull().default("CREATOR"), // USER | CREATOR | MODERATOR | ADMIN
     walletAddress: text("wallet_address").notNull(),
     // RSA-PKCS1-wrapped custodial wallet private key (base64) -- only ever

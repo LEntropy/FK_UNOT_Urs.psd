@@ -7,10 +7,19 @@ import {
   createArtworkWithFile,
   getArtwork,
   listArtworks,
+  listPublicArtworksByCreator,
+  searchArtworksByTag,
   suggestTags,
   remeasureProtection,
   createScoreProtectionJob,
   getScoreProtectionJob,
+  getStoredScoreProtectionResult,
+  setOriginalPreviewBlocked,
+  unlockOriginalPreview,
+  cancelArtwork,
+  getBotPolicy,
+  setBotPolicy,
+  getBotAccessLogs,
   AssetServiceError,
 } from "../clients/assetService.js";
 import { signRenderUrl } from "../clients/deliveryGateway.js";
@@ -19,6 +28,11 @@ const createArtworkSchema = z.object({
   title: z.string().min(1),
   sourceImageUri: z.string().min(1).optional(),
   protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN", "STRONG_PROTECTION"]).optional(),
+  // Advanced-options upload feature (2026-08-08) -- see asset-service's
+  // identical field for the bounds reasoning. Passed through as-is;
+  // asset-service does the real validation.
+  strongProtectionLatentEpsilon: z.coerce.number().min(0).max(0.5).optional(),
+  strongProtectionPixelEpsilon: z.coerce.number().min(0).max(0.5).optional(),
   // Not z.coerce.boolean() -- Boolean("false") is true in JS, so a real
   // "false" multipart field would coerce to true. See asset-service's
   // identical fix (routes/artworks.ts) for the live bug this was caught
@@ -74,12 +88,28 @@ export function artworksRouter(): Router {
     try {
       const result = req.file
         ? await createArtworkWithFile(
-            { title: parsed.data.title, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining, tags: parsed.data.tags, file: req.file },
+            {
+              title: parsed.data.title,
+              protectionProfile: parsed.data.protectionProfile,
+              strongProtectionLatentEpsilon: parsed.data.strongProtectionLatentEpsilon,
+              strongProtectionPixelEpsilon: parsed.data.strongProtectionPixelEpsilon,
+              allowAiTraining: parsed.data.allowAiTraining,
+              tags: parsed.data.tags,
+              file: req.file,
+            },
             req.user!.sub,
             req.user!.walletAddress,
           )
         : await createArtwork(
-            { title: parsed.data.title, sourceImageUri: parsed.data.sourceImageUri!, protectionProfile: parsed.data.protectionProfile, allowAiTraining: parsed.data.allowAiTraining, tags: parsed.data.tags },
+            {
+              title: parsed.data.title,
+              sourceImageUri: parsed.data.sourceImageUri!,
+              protectionProfile: parsed.data.protectionProfile,
+              strongProtectionLatentEpsilon: parsed.data.strongProtectionLatentEpsilon,
+              strongProtectionPixelEpsilon: parsed.data.strongProtectionPixelEpsilon,
+              allowAiTraining: parsed.data.allowAiTraining,
+              tags: parsed.data.tags,
+            },
             req.user!.sub,
             req.user!.walletAddress,
           );
@@ -113,9 +143,89 @@ export function artworksRouter(): Router {
     }
   });
 
+  // Profile-page feature (2026-08-14) -- registered before GET "/:id" for
+  // the usual reason (both are single-vs-two-segment paths that could
+  // otherwise collide; "/by-creator" itself never matches "/:id" since
+  // that's a different path shape, but kept in this position to group with
+  // the other list route above). Any authenticated user can view any
+  // creator's public gallery -- see listPublicArtworksByCreator's own doc
+  // for why this can never leak drafts/private/failed rows.
+  router.get("/by-creator/:creatorId", async (req, res) => {
+    try {
+      res.json(await listPublicArtworksByCreator(req.params.creatorId));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Tag-search feature (2026-08-14) -- registered before GET "/:id" for the
+  // same reason as "/by-creator" above ("/search" would otherwise be
+  // swallowed as an artwork id). Query-param-driven rather than a path
+  // segment since a tag can contain characters path segments don't like.
+  router.get("/search", async (req, res) => {
+    const tag = typeof req.query.tag === "string" ? req.query.tag.trim() : "";
+    if (!tag) {
+      return res.status(400).json({ error: "tag query param is required" });
+    }
+    try {
+      res.json(await searchArtworksByTag(tag));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
   router.get("/:id", async (req, res) => {
     try {
-      res.json(await getArtwork(req.params.id));
+      res.json(await getArtwork(req.params.id, req.user!.sub));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Cancel-upload feature (2026-08-14) -- creator-only, same check pattern
+  // as every other creator-only route here. Works regardless of the
+  // artwork's current status (asset-service's own route decides whether
+  // that means "cancel the in-flight job" or "delete outright" -- see its
+  // doc), matching the user's own requirement that the button stay usable
+  // even after the upload has already finished.
+  router.post("/:id/cancel", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.json(await cancelArtwork(req.params.id));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Creator-only opt-OUT (2026-08-14 redesign, replaces the old enable/
+  // disable pair) -- see clients/assetService.ts's setOriginalPreviewBlocked
+  // doc. Same creator-check pattern as remeasure-protection below.
+  const originalPreviewBlockedSchema = z.object({ blocked: z.boolean() });
+  router.put("/:id/original-preview-blocked", async (req, res) => {
+    const parsed = originalPreviewBlockedSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.json(await setOriginalPreviewBlocked(req.params.id, parsed.data.blocked));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Viewer-side unlock -- no creator check (deliberately callable by any
+  // authenticated user, see asset-service's own route doc); identity comes
+  // from the verified JWT, never the request body.
+  router.post("/:id/original-preview/unlock", async (req, res) => {
+    try {
+      res.json(await unlockOriginalPreview(req.params.id, req.user!.sub));
     } catch (err) {
       forwardAssetServiceError(err, res);
     }
@@ -170,22 +280,145 @@ export function artworksRouter(): Router {
     }
   });
 
-  const renderVariantQuery = z.object({ variant: z.enum(["logged_in", "thumbnail"]).default("logged_in") });
+  // The persisted counterpart to score-protection above -- returns the
+  // last real result whenever the creator wants it, not just while the
+  // job that produced it is still tracked in their own browser tab.
+  router.get("/:id/score-protection-result", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      const stored = await getStoredScoreProtectionResult(req.params.id);
+      if (!stored) {
+        return res.status(404).json({ error: `no stored score-protection result for ${req.params.id}` });
+      }
+      res.json(stored);
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  const batchRenderUrlSchema = z.object({
+    ids: z.array(z.string().min(1)).min(1).max(100),
+    variant: z.enum(["logged_in", "thumbnail"]).default("thumbnail"),
+  });
+
+  // Feed/gallery performance fix (2026-08-14): a grid of N thumbnails used
+  // to make N separate GET /:id/render-url round trips, one per
+  // <ArtworkImage>, before a single <img> could even start loading -- on
+  // top of the N actual image fetches that follow, this routinely blew
+  // past the browser's ~6-connections-per-origin limit and serialized
+  // most of the grid behind that queue. One batched call here (still N
+  // signRenderUrl calls server-to-server, but in parallel, and it's a pure
+  // local HMAC computation on delivery-gateway's side, not a DB/network
+  // call -- see clients/deliveryGateway.ts's own doc) cuts the browser
+  // side down to a single request. Deliberately doesn't support
+  // variant="original" -- that path needs a per-artwork asset-service
+  // unlock check (see the single-artwork route below), which would defeat
+  // the "no per-id asset-service round trip" point of batching; the
+  // original-preview image is only ever rendered one at a time (artwork
+  // detail page), where the existing single-artwork route already suffices.
+  router.post("/render-urls", async (req, res) => {
+    const parsed = batchRenderUrlSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    const entries = await Promise.all(
+      parsed.data.ids.map(async (id) => {
+        try {
+          return [id, await signRenderUrl(id, parsed.data.variant)] as const;
+        } catch {
+          // One artwork's signing failure (e.g. it has no variants yet)
+          // shouldn't 502 the whole batch -- the frontend already handles
+          // a missing url per-card (same fallback ArtworkImage shows when
+          // hasVariants is false).
+          return [id, null] as const;
+        }
+      }),
+    );
+    res.json(Object.fromEntries(entries));
+  });
+
+  const renderVariantQuery = z.object({ variant: z.enum(["logged_in", "thumbnail", "original"]).default("logged_in") });
 
   // Every caller of this web app is authenticated (ProtectedRoute wraps
   // the whole gallery/feed/detail UI) -- there's no "anonymous browsing"
-  // path in this app yet, so this always signs as "logged_in"/"thumbnail",
-  // never "anonymous". A future public-browsing feature would need its
-  // own unauthenticated route that signs "anonymous" instead.
+  // path in this app yet, so this always signs as "logged_in"/"thumbnail"/
+  // "original", never "anonymous". A future public-browsing feature would
+  // need its own unauthenticated route that signs "anonymous" instead.
   router.get("/:id/render-url", async (req, res) => {
     const parsed = renderVariantQuery.safeParse(req.query);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
     try {
-      const url = await signRenderUrl(req.params.id, parsed.data.variant);
+      // "original" needs an extra check delivery-gateway itself doesn't do
+      // (it just serves whatever variant asset-service reports) -- the
+      // per-viewer unlock gate is asset-service's own
+      // originalPreviewUnlockedByViewer flag, re-checked here on every
+      // request rather than trusted from an earlier call.
+      if (parsed.data.variant === "original") {
+        const artwork = await getArtwork(req.params.id, req.user!.sub);
+        if (!artwork.originalPreviewUnlockedByViewer) {
+          return res.status(403).json({ error: "original preview not unlocked for this viewer" });
+        }
+      }
+      const viewer = parsed.data.variant === "original" ? "original_preview" : parsed.data.variant;
+      const url = await signRenderUrl(req.params.id, viewer);
       res.json({ url });
-    } catch {
+    } catch (err) {
+      if (err instanceof AssetServiceError) {
+        return res.status(err.status).json(err.body);
+      }
       res.status(502).json({ error: "delivery-gateway unreachable" });
+    }
+  });
+
+  // Per-artwork bot ALLOW/BLOCK/LOG_ONLY policy (motection-changes handoff
+  // feature, 2026-08-14 DB-backed follow-up -- see asset-service schema.ts's
+  // botPolicies doc). GET has no creator check (matches asset-service's own
+  // reasoning: nothing sensitive in reading back the current policy); PUT
+  // is creator-only, same pattern as original-preview-blocked above.
+  const botActionSchema = z.enum(["ALLOW", "BLOCK", "LOG_ONLY"]);
+  const botPolicyBodySchema = z.object({
+    defaultAction: botActionSchema,
+    groupPolicies: z.record(z.string(), botActionSchema).default({}),
+    botOverrides: z.record(z.string(), botActionSchema).default({}),
+  });
+
+  router.get("/:id/bot-policy", async (req, res) => {
+    try {
+      res.json(await getBotPolicy(req.params.id));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  router.put("/:id/bot-policy", async (req, res) => {
+    const parsed = botPolicyBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      res.json(await setBotPolicy(req.params.id, parsed.data));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  router.get("/:id/bot-access-logs", async (req, res) => {
+    try {
+      const artwork = await getArtwork(req.params.id);
+      if (artwork.creatorId !== req.user!.sub) {
+        return res.status(403).json({ error: "not this artwork's creator" });
+      }
+      const limit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
+      res.json(await getBotAccessLogs(req.params.id, limit));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
     }
   });
 

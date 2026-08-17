@@ -15,6 +15,18 @@ import time
 
 import httpx
 
+# Same real bug as evidence_capture.py's own _BROWSER_USER_AGENT (see that
+# module's comment for how this was found: httpx's default UA gets a real
+# host's basic bot-filtering to reject the request outright, independent
+# of whatever the download itself would otherwise succeed at). A suspect
+# model URL is just as likely to sit behind a host that filters on this
+# as a suspect image URL is -- Civitai in particular fronts downloads with
+# bot protection.
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 class LeakDetectionTimeoutError(Exception):
     pass
@@ -36,7 +48,9 @@ def download_suspect_model(url: str, dest_path: str, max_bytes: int, timeout: fl
     project).
     """
     written = 0
-    with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as resp:
+    with httpx.stream(
+        "GET", url, timeout=timeout, follow_redirects=True, headers={"User-Agent": _BROWSER_USER_AGENT}
+    ) as resp:
         resp.raise_for_status()
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_bytes(chunk_size=1024 * 1024):

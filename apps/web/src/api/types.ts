@@ -75,7 +75,16 @@ export type FeedType = "latest" | "popular" | "following";
 export interface DetectionCase {
   id: string;
   artwork_id: string;
-  status: "OPEN" | "EVIDENCE_READY" | "NO_MATCH_FOUND" | "FAILED" | "NOTIFIED" | "RESOLVED" | "ESCALATED";
+  status:
+    | "OPEN"
+    | "EVIDENCE_READY"
+    | "NO_MATCH_FOUND"
+    | "FAILED"
+    | "NOTIFIED"
+    | "RESOLVED"
+    | "ESCALATED"
+    | "AUTH_REQUIRED"
+    | "ACCESS_DENIED";
   trigger: "scan" | "report" | "model_report";
   error_message: string | null;
   note: string | null;

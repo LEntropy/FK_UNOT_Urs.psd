@@ -398,6 +398,12 @@ const CASE_STATUS_LABEL: Record<DetectionCase["status"], string> = {
   NOTIFIED: "권리자 알림 완료",
   RESOLVED: "해결됨",
   ESCALATED: "에스컬레이션됨",
+  // detection-svc can land a case here when the suspect URL itself required
+  // a login to fetch (server.py) -- most common trap: testing with an
+  // artwork's own DETAIL PAGE url instead of its signed image url. Not a
+  // pipeline failure, just an unreachable source.
+  AUTH_REQUIRED: "접근 시 로그인 필요 (원본 URL 확인)",
+  ACCESS_DENIED: "접근 거부됨 (원본 URL 확인)",
 };
 
 function DetectionTest({ artwork }: { artwork: Artwork }) {

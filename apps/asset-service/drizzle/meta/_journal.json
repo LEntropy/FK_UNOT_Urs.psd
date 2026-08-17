@@ -99,6 +99,13 @@
       "when": 1786647537683,
       "tag": "0013_abandoned_sally_floyd",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1786725307793,
+      "tag": "0014_rename_strong_protection_epsilon",
+      "breakpoints": true
     }
   ]
 }

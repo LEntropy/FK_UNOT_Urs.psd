@@ -442,8 +442,7 @@ def serverless_dual_arch_cloak(
     output_path: str,
     prompt: str,
     hybrid_preset: str = "CLEAN_FULL",
-    latent_epsilon: float | None = None,
-    pixel_epsilon: float | None = None,
+    epsilon: float | None = None,
     poll_interval_seconds: float = 5.0,
     timeout_seconds: float = 3300.0,
     on_submitted: Callable[[str, str], None] | None = None,
@@ -465,12 +464,15 @@ def serverless_dual_arch_cloak(
     clean_protect.CLEAN_PRESETS name ("CLEAN_FULL" or "CALIBRATION"), not
     a hybrid_protect.py preset; renaming the parameter is left for a
     follow-up since orchestrate.py's callers pass it positionally-safe
-    keyword args either way. `latent_epsilon`/`pixel_epsilon` are
-    currently NOT threaded through to clean_protect() (it has no latent
-    stage, so "latent_epsilon" has no meaning, and per-stage pixel
-    epsilon overrides aren't wired yet) -- passing them is a silent no-op
-    for now; a caller relying on the old "advanced options" epsilon
-    override will not get the effect they expect until that's built.
+    keyword args either way. `epsilon` (2026-08-15, replacing the old
+    `latent_epsilon`/`pixel_epsilon` pair that were silent no-ops under
+    clean_protect -- it has no latent stage at all, so "latent_epsilon"
+    never meant anything here) is the user-facing "강도" override: None
+    runs CLEAN_PRESETS[hybrid_preset] unmodified, a real value scales all
+    four of clean_protect.py's stage epsilons proportionally -- see that
+    module's own epsilon_override/_scale_preset doc for the mapping and
+    the [0.01, 0.30] bound (enforced there too, not just wherever this
+    value originated).
     timeout_seconds raised from the four-stage hybrid chain's 2400s to
     3300s (2026-08-13, first real deployment run): the dontai-strongprotect
     RunPod endpoint's own executionTimeoutMs was 1800000 (30min), shorter
@@ -530,12 +532,7 @@ def serverless_dual_arch_cloak(
                     "image_b64": image_b64,
                     "prompt": prompt,
                     "clean_preset": hybrid_preset,
-                    # NOT currently wired to clean_protect() -- see this
-                    # function's own doc. Sent anyway (harmlessly ignored by
-                    # the handler) so a future override implementation
-                    # doesn't also need an orchestrate.py-side change.
-                    "latent_epsilon": latent_epsilon,
-                    "pixel_epsilon": pixel_epsilon,
+                    "epsilon": epsilon,
                 }
             },
             timeout=30.0,

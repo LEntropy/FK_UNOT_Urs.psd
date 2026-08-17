@@ -19,13 +19,12 @@ export interface ProtectRequest {
   // protection is a different mechanism entirely (dual-arch RunPod
   // Serverless attack), not another style_cloak preset.
   strongProtection?: boolean;
-  // Advanced-options upload feature (2026-08-08) -- ignored unless
-  // strongProtection is also true. Both undefined means run at
-  // hybrid_protect.py's own HYBRID_FULL preset values, not "no
-  // protection." See protection-svc's server.py ProtectRequest for the
-  // matching field names.
-  strongProtectionLatentEpsilon?: number;
-  strongProtectionPixelEpsilon?: number;
+  // Advanced-options upload feature (2026-08-08, redesigned 2026-08-15) --
+  // ignored unless strongProtection is also true. undefined means run at
+  // clean_protect.py's own CLEAN_FULL preset values, not "no protection."
+  // See protection-svc's server.py ProtectRequest for the matching field
+  // name.
+  strongProtectionEpsilon?: number;
 }
 
 export interface VariantResult {

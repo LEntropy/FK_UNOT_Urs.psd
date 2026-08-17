@@ -128,13 +128,14 @@ class ProtectRequest(BaseModel):
     # style-cloak if that pod is unreachable or unconfigured, so this never
     # turns "protected" into "unprotected".
     strongProtection: bool = False
-    # Advanced-options upload feature (2026-08-08) -- both None (the
-    # default) means run at HYBRID_FULL's own preset values, not "no
+    # Advanced-options upload feature (2026-08-08, redesigned 2026-08-15
+    # around clean_protect.py's single-epsilon "강도" control) -- None
+    # (the default) means run at CLEAN_FULL's own preset values, not "no
     # protection." Ignored unless strongProtection is also true. See
-    # hybrid_protect.py's own override doc for why this exists and what
-    # it does and doesn't change.
-    strongProtectionLatentEpsilon: Optional[float] = None
-    strongProtectionPixelEpsilon: Optional[float] = None
+    # clean_protect.py's epsilon_override/_scale_preset doc for why this
+    # exists, its [0.01, 0.30] bound, and how one number maps onto the
+    # mechanism's four distinct per-stage epsilons.
+    strongProtectionEpsilon: Optional[float] = None
 
 
 def _run_job(job_id: str, req: ProtectRequest) -> None:
@@ -157,8 +158,7 @@ def _run_job(job_id: str, req: ProtectRequest) -> None:
             size=size,
             eot=req.eot,
             strong_protection=req.strongProtection,
-            strong_protection_latent_epsilon=req.strongProtectionLatentEpsilon,
-            strong_protection_pixel_epsilon=req.strongProtectionPixelEpsilon,
+            strong_protection_epsilon=req.strongProtectionEpsilon,
             # Cancel-upload feature (2026-08-14): as soon as the RunPod job
             # actually exists, remember its id so POST /protect/{job_id}/
             # cancel below has something real to cancel, not just this

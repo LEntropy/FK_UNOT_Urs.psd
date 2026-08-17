@@ -12,7 +12,11 @@ latest (this image is FROM that one, see the sibling Dockerfile):
   artwork. Same STATUS CAVEAT as dual_arch_cloak had: n=1, single-image
   validated, not this project's usual n=30-plus-replication bar -- wired
   in ahead of that (2026-08-13 decision) because shipping a visually
-  honest n=1 mechanism beats leaving a known-broken one live.
+  honest n=1 mechanism beats leaving a known-broken one live. Optional
+  job_input["epsilon"] (2026-08-15, upload-time "강도" control): see
+  clean_protect.py's epsilon_override doc -- clamped there to [0.01, 0.30]
+  regardless of what this job_input actually contains, so a bad/missing
+  caller-side clamp can't reach the mechanism itself.
 - "dual_arch_cloak" (LEGACY, explicit-only -- no longer the default):
   hybrid_protect.py's four-stage latent-then-pixel composition
   (2026-08-08). Kept only for an explicit rollback; do not point new
@@ -60,6 +64,11 @@ def _run_clean_cloak(job_input: dict, tmp: str) -> dict:
     image_b64 = job_input["image_b64"]
     caller_prompt = job_input.get("prompt", "artwork")
     preset = job_input.get("clean_preset", "CLEAN_FULL")
+    # Upload-time "강도" (intensity) override (2026-08-15) -- optional,
+    # only present when a caller opted into a non-default epsilon (see
+    # clean_protect.py's own epsilon_override doc). None here means "run
+    # the preset unmodified", same as clean_protect() itself defaults to.
+    epsilon_override = job_input.get("epsilon")
 
     original_path = os.path.join(tmp, "original.png")
     with open(original_path, "wb") as f:
@@ -78,6 +87,7 @@ def _run_clean_cloak(job_input: dict, tmp: str) -> dict:
         output_path=final_path,
         preset_name=preset,
         work_dir=os.path.join(tmp, "_clean_stages"),
+        epsilon_override=epsilon_override,
     )
 
     with open(final_path, "rb") as f:

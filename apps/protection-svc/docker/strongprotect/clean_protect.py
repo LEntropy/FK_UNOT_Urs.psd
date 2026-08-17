@@ -64,7 +64,7 @@ import argparse
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ML_SRC = Path(__file__).resolve().parent
@@ -104,6 +104,44 @@ CLEAN_PRESETS = {
 }
 
 
+# User-facing "강도" (intensity) control (2026-08-15). Bounds match this
+# project's own real measurements, not an arbitrary UI choice: every
+# validated epsilon in this project's history tops out around 0.3 (the
+# latent-space experiments already showed a real illustration's character
+# becoming barely recognizable at that point -- see [[lora-protection-
+# research]]'s 13th experiment), and the floor of 0.01 is well below
+# CLEAN_FULL's own smallest stage budget (0.02) so it can only ever weaken,
+# never zero out, the attack. Enforced here (not just at the API/UI layers)
+# because this function is also reachable directly via the CLI below and
+# from RunPod's handler.py -- the last line of defense against a caller
+# sending something that would visibly destroy a real upload belongs next
+# to the mechanism itself, not only in a form validator three services away.
+EPSILON_OVERRIDE_MIN = 0.01
+EPSILON_OVERRIDE_MAX = 0.30
+
+
+def _scale_preset(preset: CleanPreset, epsilon_override: float) -> CleanPreset:
+    """Scales all four stage epsilons by a single ratio, derived from how
+    epsilon_override compares to CLEAN_FULL's own sd15_epsilon (the stage a
+    user-facing "epsilon" number is defined relative to). Scaling
+    proportionally -- not just overwriting sd15_epsilon and leaving the
+    other three at their CLEAN_FULL values -- preserves the per-stage
+    ratios this preset's own n=1 measurement was taken at (see this
+    module's doc: SDXL's budget is already 1.2x SD1.5's, top-ups are 0.4x
+    their own stage's full budget), rather than introducing an untested
+    imbalance between stages on top of an already-untested epsilon value.
+    """
+    epsilon_override = max(EPSILON_OVERRIDE_MIN, min(EPSILON_OVERRIDE_MAX, epsilon_override))
+    scale = epsilon_override / preset.sd15_epsilon
+    return replace(
+        preset,
+        sd15_epsilon=preset.sd15_epsilon * scale,
+        sdxl_epsilon=preset.sdxl_epsilon * scale,
+        sd15_topup_epsilon=preset.sd15_topup_epsilon * scale,
+        sdxl_topup_epsilon=preset.sdxl_topup_epsilon * scale,
+    )
+
+
 def _run_stage(label: str, cmd: list[str]) -> float:
     print(f"=== {label} ===", flush=True)
     t0 = time.time()
@@ -126,12 +164,23 @@ def clean_protect(
     preset_name: str = "CLEAN_FULL",
     seed: int = 0,
     work_dir: str | None = None,
+    epsilon_override: float | None = None,
 ) -> dict:
     """Runs the four-stage native pixel-space stack and writes the final
     protected image. Each stage is a subprocess -- same reason
     hybrid_protect.py's stages are: each attack script loads its own full
-    pipeline into VRAM and expects to tear it down on exit."""
+    pipeline into VRAM and expects to tear it down on exit.
+
+    epsilon_override: None (default) runs the preset exactly as measured
+    (see CLEAN_PRESETS' own doc). A real value opts into the "강도"
+    control (2026-08-15, user-facing upload feature) -- see
+    _scale_preset()'s own doc for how a single number maps onto this
+    preset's four distinct per-stage epsilons, and EPSILON_OVERRIDE_MIN/
+    MAX's doc for why the bound is 0.01-0.30 and not wider.
+    """
     preset = CLEAN_PRESETS[preset_name]
+    if epsilon_override is not None:
+        preset = _scale_preset(preset, epsilon_override)
     work = Path(work_dir) if work_dir else Path(output_path).parent / "_clean_stages"
     work.mkdir(parents=True, exist_ok=True)
 
@@ -225,6 +274,13 @@ if __name__ == "__main__":
     parser.add_argument("--preset", default="CLEAN_FULL", choices=list(CLEAN_PRESETS.keys()))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--work-dir", default=None)
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help=f"user-facing intensity override, clamped to [{EPSILON_OVERRIDE_MIN}, {EPSILON_OVERRIDE_MAX}] -- "
+        "see _scale_preset()'s doc. Omit (default) to run the preset unmodified.",
+    )
     args = parser.parse_args()
 
     clean_protect(
@@ -236,4 +292,5 @@ if __name__ == "__main__":
         preset_name=args.preset,
         seed=args.seed,
         work_dir=args.work_dir,
+        epsilon_override=args.epsilon,
     )

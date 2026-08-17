@@ -59,12 +59,11 @@ export async function runUploadPipeline(db: Db, artworkId: string): Promise<void
       allowAiTraining: artwork.allowAiTraining,
       watermarkPayloadHex: artwork.watermarkPayloadHex,
       strongProtection: isStrongProtection,
-      // Advanced-options upload feature (2026-08-08) -- both null unless
-      // the uploader explicitly opted into a non-default epsilon at
-      // upload time (routes/artworks.ts). Ignored by protection-svc
-      // unless isStrongProtection is also true.
-      strongProtectionLatentEpsilon: artwork.strongProtectionLatentEpsilon ?? undefined,
-      strongProtectionPixelEpsilon: artwork.strongProtectionPixelEpsilon ?? undefined,
+      // Advanced-options upload feature (2026-08-08, redesigned
+      // 2026-08-15) -- null unless the uploader explicitly opted into a
+      // non-default epsilon at upload time (routes/artworks.ts). Ignored
+      // by protection-svc unless isStrongProtection is also true.
+      strongProtectionEpsilon: artwork.strongProtectionEpsilon ?? undefined,
     });
 
     db.update(artworks).set({ protectJobId: jobId, updatedAt: new Date() }).where(eq(artworks.id, artworkId)).run();

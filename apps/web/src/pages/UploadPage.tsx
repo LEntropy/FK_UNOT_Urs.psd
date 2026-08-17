@@ -8,6 +8,17 @@ import { api, ApiError } from "../api/client";
 // user-configurable yet.
 const STRONG_PROTECTION_COIN_COST = 1;
 
+// "강도" (intensity) advanced option (2026-08-15) -- see clean_protect.py's
+// EPSILON_OVERRIDE_MIN/MAX and _scale_preset doc for where these numbers
+// come from. RECOMMENDED matches CLEAN_FULL's own sd15_epsilon exactly, so
+// leaving the slider untouched and submitting it would be a no-op -- the
+// checkbox below still gates whether it's sent at all, so a user who never
+// opens this section changes nothing about what gets sent (same pattern
+// the old two-epsilon version of this feature used).
+const STRONG_PROTECTION_EPSILON_MIN = 0.01;
+const STRONG_PROTECTION_EPSILON_MAX = 0.3;
+const STRONG_PROTECTION_EPSILON_RECOMMENDED = 0.05;
+
 const PRESETS = [
   { value: "L1_PREVIEW", label: "L1 · 미리보기 (약한 보호)" },
   { value: "L2_PORTFOLIO", label: "L2 · 포트폴리오 (중간 보호)" },
@@ -23,55 +34,13 @@ interface SuggestedTag {
   score: number;
 }
 
-// Advanced-options upload feature (2026-08-08, user request) -- STRONG_
-// PROTECTION only. hybrid_protect.py's own HYBRID_FULL preset (latent
-// 0.15 + pixel top-up 0.02) is "권장" here, unchanged from the server-
-// side default -- picking it sends no override at all (undefined), so a
-// user who never opens this section gets exactly what they always did.
-// "약하게"/"강하게" are reasoned points on the same tradeoff curve
-// (smaller epsilon = closer to the original, less-tested resistance;
-// larger = the opposite), not independently validated values -- see the
-// warning copy below and hybrid_protect.py's own module doc for the real
-// numbers this is based on (epsilon=0.3 was this project's own original,
-// pre-recalibration value; epsilon=0.08 is a reasoned weaker point, not
-// separately measured).
-const EPSILON_PRESETS = [
-  {
-    key: "recommended" as const,
-    label: "권장 (기본값)",
-    latent: 0.15,
-    pixel: 0.02,
-    description: "이 프로젝트가 실측으로 확인한 균형점이에요. 대부분의 경우 이 값을 그대로 쓰는 걸 추천해요.",
-  },
-  {
-    key: "weaker" as const,
-    label: "약하게 (원본에 더 가깝게)",
-    latent: 0.08,
-    pixel: 0.01,
-    description:
-      "원본과 더 비슷해 보이도록 왜곡을 줄여요. 대신 AI 학습을 얼마나 잘 방해하는지는 권장값만큼 확인되지 않았어요.",
-  },
-  {
-    key: "stronger" as const,
-    label: "강하게 (방어 강화, 왜곡 커짐)",
-    latent: 0.3,
-    pixel: 0.02,
-    description:
-      "더 강하게 방해하려는 값이에요. 색 번짐이나 무늬가 두드러져서 원본을 알아보기 어려울 수 있고, 권장값보다 검증이 부족해요.",
-  },
-];
-
 export function UploadPage() {
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [protectionProfile, setProtectionProfile] = useState("L3_ANTI_TRAIN");
-  // null = "권장" (no override sent, server-side default applies) --
-  // deliberately not defaulted to EPSILON_PRESETS[0]'s own values here,
-  // so a user who never touches this section changes nothing about what
-  // gets sent, matching this feature's opt-in-only design.
-  const [epsilonPresetKey, setEpsilonPresetKey] = useState<(typeof EPSILON_PRESETS)[number]["key"] | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [customEpsilonEnabled, setCustomEpsilonEnabled] = useState(false);
+  const [strongProtectionEpsilon, setStrongProtectionEpsilon] = useState(STRONG_PROTECTION_EPSILON_RECOMMENDED);
   const [allowAiTraining, setAllowAiTraining] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState("");
@@ -136,14 +105,8 @@ export function UploadPage() {
       const form = new FormData();
       form.set("title", title);
       form.set("protectionProfile", protectionProfile);
-      // Only sent when STRONG_PROTECTION and the user picked something
-      // other than "권장" -- otherwise no override field goes at all, so
-      // the server-side default (hybrid_protect.py's own HYBRID_FULL)
-      // applies exactly as it did before this feature existed.
-      if (protectionProfile === "STRONG_PROTECTION" && epsilonPresetKey && epsilonPresetKey !== "recommended") {
-        const preset = EPSILON_PRESETS.find((p) => p.key === epsilonPresetKey)!;
-        form.set("strongProtectionLatentEpsilon", String(preset.latent));
-        form.set("strongProtectionPixelEpsilon", String(preset.pixel));
+      if (protectionProfile === "STRONG_PROTECTION" && customEpsilonEnabled) {
+        form.set("strongProtectionEpsilon", String(strongProtectionEpsilon));
       }
       form.set("allowAiTraining", String(allowAiTraining));
       form.set("tags", JSON.stringify(tags));
@@ -240,8 +203,8 @@ export function UploadPage() {
             onChange={(e) => {
               setProtectionProfile(e.target.value);
               if (e.target.value !== "STRONG_PROTECTION") {
-                setEpsilonPresetKey(null);
-                setAdvancedOpen(false);
+                setCustomEpsilonEnabled(false);
+                setStrongProtectionEpsilon(STRONG_PROTECTION_EPSILON_RECOMMENDED);
               }
             }}
             className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2"
@@ -256,46 +219,62 @@ export function UploadPage() {
             <>
               <p className="text-xs text-amber-300">🪙 코인 {STRONG_PROTECTION_COIN_COST}개가 소모돼요.</p>
               <p className="text-xs text-yellow-400">
-                실제 GPU에서 LoRA 공격을 두 번(SD1.5, SDXL) 순차로 돌리는 방식이라 업로드 처리에 10분 이상 걸릴 수 있어요.
-                일시적으로 실패하면 자동으로 L3 단계로 대체 처리됩니다.
-                이 단계는 두 공격이 이어지며 효과가 서로 증폭되도록 검증된 방식이라, 완성된 이미지에 눈에 띄는 색
-                번짐이나 왜곡이 나타날 수 있어요 — 다른 단계처럼 원본과 거의 구분되지 않는 수준이 아닙니다.
+                실제 GPU에서 LoRA 공격을 SD1.5·SDXL 각각 2단계(총 4단계)로 돌리는 방식이라 업로드 처리에 수십 분
+                걸릴 수 있어요. 일시적으로 실패하면 자동으로 L3 단계로 대체 처리됩니다. 색 번짐은 없지만, 하늘처럼
+                넓고 평평한 영역엔 옅은 무늬가 남을 수 있어요 — 다른 단계처럼 원본과 완전히 구분되지 않는 수준은
+                아닙니다.
               </p>
-              <div className="mt-2 rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                <button
-                  type="button"
-                  onClick={() => setAdvancedOpen((v) => !v)}
-                  className="text-xs text-neutral-400 underline hover:text-neutral-200"
-                >
-                  {advancedOpen ? "고급 옵션 숨기기 ▲" : "고급 옵션 (원본과 얼마나 비슷하게 남길지 직접 조절) ▼"}
-                </button>
-                {advancedOpen && (
+              <div className="mt-2 rounded border border-neutral-800 bg-neutral-950/40 px-3 py-3">
+                <label className="flex items-center gap-2 text-xs text-neutral-300">
+                  <input
+                    type="checkbox"
+                    checked={customEpsilonEnabled}
+                    onChange={(e) => setCustomEpsilonEnabled(e.target.checked)}
+                  />
+                  강도 직접 설정
+                </label>
+                {!customEpsilonEnabled ? (
+                  <p className="mt-1 text-xs text-neutral-500">
+                    기본값을 쓰면 이 프로젝트가 실제로 측정해 확인한 균형점(epsilon {STRONG_PROTECTION_EPSILON_RECOMMENDED})으로
+                    처리돼요. 잘 모르겠으면 건드리지 않는 걸 추천해요.
+                  </p>
+                ) : (
                   <div className="mt-3 flex flex-col gap-2">
                     <p className="text-xs text-neutral-500">
-                      "원본과 얼마나 비슷하게 보일지"와 "AI 학습을 얼마나 잘 방해할지"는 서로 트레이드오프예요. 권장값이
-                      아닌 다른 값은 이 프로젝트가 실제로 LoRA를 재학습시켜 검증한 것이 아니라서, 방어 효과가 권장값만큼
-                      확실하지 않을 수 있어요.
+                      <strong className="text-neutral-300">epsilon</strong>은 그림에 섞는, 눈에는 잘 안 보이는 방해
+                      신호의 세기예요. 값이 클수록 AI 학습을 더 강하게 방해하지만, 그만큼 그림 자체의 색·질감도 더
+                      많이 바뀔 수 있어요 — "더 강하게 = 항상 더 좋게"가 아니라 방어력과 원본 보존 사이의
+                      트레이드오프예요. {STRONG_PROTECTION_EPSILON_RECOMMENDED}가 이 프로젝트가 실제로 측정해본
+                      기준값이고, 그보다 큰 값은 아직 실측하지 않은 구간이라 방어 효과가 항상 더 세진다고 보장되지
+                      않아요.
                     </p>
-                    <div className="flex flex-col gap-2">
-                      {EPSILON_PRESETS.map((p) => {
-                        const selected = (epsilonPresetKey ?? "recommended") === p.key;
-                        return (
-                          <button
-                            key={p.key}
-                            type="button"
-                            onClick={() => setEpsilonPresetKey(p.key === "recommended" ? null : p.key)}
-                            className={`rounded border px-3 py-2 text-left text-xs ${
-                              selected
-                                ? "border-neutral-100 bg-neutral-800"
-                                : "border-neutral-800 bg-neutral-950/40 hover:border-neutral-700"
-                            }`}
-                          >
-                            <span className="font-medium text-neutral-100">{p.label}</span>
-                            <p className="mt-1 text-neutral-400">{p.description}</p>
-                          </button>
-                        );
-                      })}
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={STRONG_PROTECTION_EPSILON_MIN}
+                        max={STRONG_PROTECTION_EPSILON_MAX}
+                        step={0.01}
+                        value={strongProtectionEpsilon}
+                        onChange={(e) => setStrongProtectionEpsilon(Number(e.target.value))}
+                        className="flex-1"
+                      />
+                      <span className="w-12 shrink-0 text-right font-mono text-xs text-neutral-200">
+                        {strongProtectionEpsilon.toFixed(2)}
+                      </span>
                     </div>
+                    <p className="text-xs text-neutral-500">
+                      {strongProtectionEpsilon <= STRONG_PROTECTION_EPSILON_RECOMMENDED
+                        ? "약하게 — 원본에 더 가깝지만, 이 값에서의 방어 효과는 따로 검증되지 않았어요."
+                        : strongProtectionEpsilon <= STRONG_PROTECTION_EPSILON_RECOMMENDED * 2
+                          ? "권장값보다 강하게 — 방어력이 더 세질 가능성이 있지만 아직 실측된 값은 아니에요."
+                          : "많이 강하게 — 하늘처럼 넓고 평평한 영역에 무늬가 더 뚜렷하게 보일 수 있어요."}
+                    </p>
+                    {strongProtectionEpsilon > STRONG_PROTECTION_EPSILON_RECOMMENDED * 4 && (
+                      <p className="text-xs text-red-400">
+                        ⚠ {STRONG_PROTECTION_EPSILON_RECOMMENDED * 4} 이상은 이 프로젝트의 과거 실험에서 원본을
+                        알아보기 어려울 정도로 왜곡됐던 값에 가까워요. 신중하게 선택해주세요.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

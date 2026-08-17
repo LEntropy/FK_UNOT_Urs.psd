@@ -51,18 +51,21 @@ const createArtworkSchema = z.object({
   // take), which is why it's a fourth, separately-priced-in-spirit option
   // rather than folded into L3_ANTI_TRAIN's existing meaning.
   protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN", "STRONG_PROTECTION"]).default("L3_ANTI_TRAIN"),
-  // Advanced-options upload feature (2026-08-08) -- opt-in, only
-  // meaningful when protectionProfile is STRONG_PROTECTION (silently
+  // Advanced-options upload feature (2026-08-08, redesigned 2026-08-15
+  // around clean_protect.py's single-epsilon "강도" control) -- opt-in,
+  // only meaningful when protectionProfile is STRONG_PROTECTION (silently
   // ignored otherwise, same as protection-svc's own handling). Bounds
-  // (0, 0.5] match hybrid_protect.py's own real range: 0 would be no
-  // protection at all, values much above what this project has ever
-  // measured (0.3) risk the exact "unrecognizable" failure this feature
-  // exists to let a user step back from, not just forward into.
+  // [0.01, 0.30] match clean_protect.py's own EPSILON_OVERRIDE_MIN/MAX --
+  // this project's own R&D never validated anything above ~0.3 (already
+  // shown to make a real illustration's character barely recognizable at
+  // that point), and clean_protect.py itself re-clamps to this same range
+  // regardless, so a caller sending something outside it would just get
+  // silently clamped three services away rather than told why -- validating
+  // here gives an honest 400 instead.
   // z.coerce.number() (not a union like allowAiTraining above) is safe
-  // here specifically because these are never boolean-shaped -- no
+  // here specifically because this is never boolean-shaped -- no
   // "coerces falsy-looking strings to true" trap to avoid.
-  strongProtectionLatentEpsilon: z.coerce.number().min(0).max(0.5).optional(),
-  strongProtectionPixelEpsilon: z.coerce.number().min(0).max(0.5).optional(),
+  strongProtectionEpsilon: z.coerce.number().min(0.01).max(0.3).optional(),
   // multipart/form-data fields arrive as strings, never real booleans, so
   // this needs to accept both shapes -- a real boolean from a JSON body,
   // or "true"/"false" from a multipart field. Deliberately NOT
@@ -212,8 +215,7 @@ export function artworksRouter(db: Db): Router {
         creatorId: parsed.data.creatorId,
         ownerWalletAddress: parsed.data.ownerWalletAddress,
         protectionProfile: parsed.data.protectionProfile,
-        strongProtectionLatentEpsilon: parsed.data.strongProtectionLatentEpsilon ?? null,
-        strongProtectionPixelEpsilon: parsed.data.strongProtectionPixelEpsilon ?? null,
+        strongProtectionEpsilon: parsed.data.strongProtectionEpsilon ?? null,
         allowAiTraining: parsed.data.allowAiTraining,
         tags: JSON.stringify(parsed.data.tags),
         watermarkPayloadHex,

@@ -10,8 +10,7 @@ export interface CreateArtworkRequest {
   title: string;
   sourceImageUri: string;
   protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN" | "STRONG_PROTECTION";
-  strongProtectionLatentEpsilon?: number;
-  strongProtectionPixelEpsilon?: number;
+  strongProtectionEpsilon?: number;
   allowAiTraining?: boolean;
   tags?: string[];
 }
@@ -32,8 +31,7 @@ export async function createArtwork(req: CreateArtworkRequest, creatorId: string
 export interface CreateArtworkWithFileRequest {
   title: string;
   protectionProfile?: "L1_PREVIEW" | "L2_PORTFOLIO" | "L3_ANTI_TRAIN" | "STRONG_PROTECTION";
-  strongProtectionLatentEpsilon?: number;
-  strongProtectionPixelEpsilon?: number;
+  strongProtectionEpsilon?: number;
   allowAiTraining?: boolean;
   tags?: string[];
   file: { buffer: Buffer; originalname: string; mimetype: string };
@@ -58,8 +56,7 @@ export async function createArtworkWithFile(
   form.set("creatorId", creatorId);
   form.set("ownerWalletAddress", ownerWalletAddress);
   if (req.protectionProfile) form.set("protectionProfile", req.protectionProfile);
-  if (req.strongProtectionLatentEpsilon !== undefined) form.set("strongProtectionLatentEpsilon", String(req.strongProtectionLatentEpsilon));
-  if (req.strongProtectionPixelEpsilon !== undefined) form.set("strongProtectionPixelEpsilon", String(req.strongProtectionPixelEpsilon));
+  if (req.strongProtectionEpsilon !== undefined) form.set("strongProtectionEpsilon", String(req.strongProtectionEpsilon));
   if (req.allowAiTraining !== undefined) form.set("allowAiTraining", String(req.allowAiTraining));
   if (req.tags !== undefined) form.set("tags", JSON.stringify(req.tags)); // multipart has no array type -- see asset-service's own identical parsing
   form.set("image", new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype }), req.file.originalname);

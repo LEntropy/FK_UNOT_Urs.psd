@@ -16,13 +16,15 @@ export const artworks = sqliteTable("artworks", {
   creatorId: text("creator_id").notNull(),
   ownerWalletAddress: text("owner_wallet_address").notNull(),
   protectionProfile: text("protection_profile").notNull(),
-  // Advanced-options upload feature (2026-08-08) -- only meaningful when
-  // protectionProfile is STRONG_PROTECTION; null means "use hybrid_
-  // protect.py's own HYBRID_FULL default," not "no protection." Set at
-  // upload time (routes/artworks.ts), read back by orchestration.ts when
-  // building the protect-svc job request.
-  strongProtectionLatentEpsilon: real("strong_protection_latent_epsilon"),
-  strongProtectionPixelEpsilon: real("strong_protection_pixel_epsilon"),
+  // Advanced-options upload feature (2026-08-08, redesigned 2026-08-15
+  // around clean_protect.py's single-epsilon "강도" control -- was two
+  // columns, strongProtectionLatentEpsilon/PixelEpsilon, back when the
+  // production mechanism was hybrid_protect.py's latent+pixel design) --
+  // only meaningful when protectionProfile is STRONG_PROTECTION; null
+  // means "use clean_protect.py's own CLEAN_FULL default," not "no
+  // protection." Set at upload time (routes/artworks.ts), read back by
+  // orchestration.ts when building the protect-svc job request.
+  strongProtectionEpsilon: real("strong_protection_epsilon"),
   allowAiTraining: integer("allow_ai_training", { mode: "boolean" }).notNull().default(false),
   // Generated at creation (routes/artworks.ts), passed through to
   // protection-svc's /protect request, and read back by detection-svc

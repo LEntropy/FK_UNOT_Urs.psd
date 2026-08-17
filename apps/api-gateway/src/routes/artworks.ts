@@ -29,11 +29,10 @@ const createArtworkSchema = z.object({
   title: z.string().min(1),
   sourceImageUri: z.string().min(1).optional(),
   protectionProfile: z.enum(["L1_PREVIEW", "L2_PORTFOLIO", "L3_ANTI_TRAIN", "STRONG_PROTECTION"]).optional(),
-  // Advanced-options upload feature (2026-08-08) -- see asset-service's
-  // identical field for the bounds reasoning. Passed through as-is;
-  // asset-service does the real validation.
-  strongProtectionLatentEpsilon: z.coerce.number().min(0).max(0.5).optional(),
-  strongProtectionPixelEpsilon: z.coerce.number().min(0).max(0.5).optional(),
+  // Advanced-options upload feature (2026-08-08, redesigned 2026-08-15) --
+  // see asset-service's identical field for the bounds reasoning. Passed
+  // through as-is; asset-service does the real validation.
+  strongProtectionEpsilon: z.coerce.number().min(0.01).max(0.3).optional(),
   // Not z.coerce.boolean() -- Boolean("false") is true in JS, so a real
   // "false" multipart field would coerce to true. See asset-service's
   // identical fix (routes/artworks.ts) for the live bug this was caught
@@ -92,8 +91,7 @@ export function artworksRouter(): Router {
             {
               title: parsed.data.title,
               protectionProfile: parsed.data.protectionProfile,
-              strongProtectionLatentEpsilon: parsed.data.strongProtectionLatentEpsilon,
-              strongProtectionPixelEpsilon: parsed.data.strongProtectionPixelEpsilon,
+              strongProtectionEpsilon: parsed.data.strongProtectionEpsilon,
               allowAiTraining: parsed.data.allowAiTraining,
               tags: parsed.data.tags,
               file: req.file,
@@ -106,8 +104,7 @@ export function artworksRouter(): Router {
               title: parsed.data.title,
               sourceImageUri: parsed.data.sourceImageUri!,
               protectionProfile: parsed.data.protectionProfile,
-              strongProtectionLatentEpsilon: parsed.data.strongProtectionLatentEpsilon,
-              strongProtectionPixelEpsilon: parsed.data.strongProtectionPixelEpsilon,
+              strongProtectionEpsilon: parsed.data.strongProtectionEpsilon,
               allowAiTraining: parsed.data.allowAiTraining,
               tags: parsed.data.tags,
             },

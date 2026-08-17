@@ -320,8 +320,7 @@ def protect(
     eot: bool | None = None,
     concept_misalign_target_path: str | None = None,
     strong_protection: bool = False,
-    strong_protection_latent_epsilon: float | None = None,
-    strong_protection_pixel_epsilon: float | None = None,
+    strong_protection_epsilon: float | None = None,
     on_runpod_job_submitted: Callable[[str, str], None] | None = None,
 ) -> dict:
     start = time.time()
@@ -399,8 +398,7 @@ def protect(
                 original_path=input_path,
                 output_path=str(cloaked_path),
                 prompt=title,
-                latent_epsilon=strong_protection_latent_epsilon,
-                pixel_epsilon=strong_protection_pixel_epsilon,
+                epsilon=strong_protection_epsilon,
                 on_submitted=on_runpod_job_submitted,
             )
             used_strong_protection = True
@@ -708,13 +706,12 @@ def protect(
         # for -- only a strong_protection artwork has cleared this
         # project's own n=30-plus-replication real-effect validation bar.
         "usedStrongProtection": used_strong_protection,
-        # None when the caller didn't opt into the advanced-options
-        # override -- the actual values used were HYBRID_FULL's own
-        # defaults in that case (see hybrid_protect.py's HYBRID_PRESETS),
+        # None when the caller didn't opt into the "강도" override -- the
+        # actual epsilons used were clean_protect.py's own CLEAN_FULL
+        # defaults in that case (see clean_protect.py's CLEAN_PRESETS),
         # not "no protection." Surfaced so a caller can show the user
         # what strength was actually applied, not just that some was.
-        "strongProtectionLatentEpsilon": strong_protection_latent_epsilon if used_strong_protection else None,
-        "strongProtectionPixelEpsilon": strong_protection_pixel_epsilon if used_strong_protection else None,
+        "strongProtectionEpsilon": strong_protection_epsilon if used_strong_protection else None,
         "eotUsed": eot,
         "size": size,
         "sizeValidated": size == 256,  # see the `size` param's doc comment above

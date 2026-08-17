@@ -72,6 +72,33 @@ def test_manifest_signature_detects_tampering(tmp_path):
     assert verify_manifest_signature(manifest)["status"] == "INVALID"
 
 
+def test_verify_reports_file_integrity_independent_of_signing(tmp_path):
+    """Regression test for a real production bug: a deployment with no
+    EVIDENCE_SIGNING_KEY configured (signing is opt-in) reported every
+    evidence directory as INVALID forever, even with every file hash
+    intact, because the old code ANDed signature validity into the
+    top-level verdict. File integrity and signing are independent facts."""
+    evidence = tmp_path / "candidate.bin"
+    evidence.write_bytes(b"evidence")
+    import hashlib
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "algorithm": "SHA-256",
+                "signatureStatus": "UNSIGNED",
+                "files": [{"path": "candidate.bin", "sha256": hashlib.sha256(b"evidence").hexdigest(), "size": 8}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = verify_evidence_directory(tmp_path)
+    assert result["valid"] is True
+    assert result["status"] == "VALID"
+    assert result["signature"]["status"] == "UNSIGNED"
+
+
 def test_scheduler_tracks_success_and_failure():
     calls = []
     scheduler = MonitorScheduler(lambda: calls.append("ok"), 60)

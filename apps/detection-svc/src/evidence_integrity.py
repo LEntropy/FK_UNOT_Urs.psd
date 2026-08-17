@@ -93,7 +93,16 @@ def verify_evidence_directory(directory: str | Path) -> dict:
         file_results.append({"path": item["path"], "valid": valid, "sha256": digest})
         all_valid &= valid
     signature = verify_manifest_signature(manifest_path)
-    return {"valid": all_valid and signature["valid"], "status": "VALID" if all_valid and signature["valid"] else "INVALID",
+    # `valid`/`status` report file integrity only -- independent of whether
+    # the manifest happens to be signed. Signing is opt-in local-dev
+    # tooling (this module's own doc), off by default; ANDing it into the
+    # top-level verdict meant every evidence directory on a deployment
+    # without a signing key configured reported INVALID forever, even with
+    # every file hash intact -- caught live via a real production case
+    # (six files, all individually valid, top-level verdict still INVALID
+    # solely because signing was never configured). A caller that also
+    # cares about cryptographic signing checks `signature` separately.
+    return {"valid": all_valid, "status": "VALID" if all_valid else "INVALID",
             "signature": signature, "files": file_results, "sealed": (root / ".sealed").exists()}
 
 

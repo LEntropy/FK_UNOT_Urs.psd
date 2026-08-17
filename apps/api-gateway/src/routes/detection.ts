@@ -2,7 +2,18 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { getArtwork, AssetServiceError } from "../clients/assetService.js";
-import { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, getDmcaNotice, DetectionServiceError } from "../clients/detectionService.js";
+import {
+  scanArtwork,
+  reportArtwork,
+  reportModelLeak,
+  getCase,
+  getEvidence,
+  getDmcaNotice,
+  verifyEvidence,
+  updateCaseStatus,
+  getVisionUsage,
+  DetectionServiceError,
+} from "../clients/detectionService.js";
 
 /**
  * Authenticated proxy in front of detection-svc (which has no auth of its
@@ -107,6 +118,50 @@ export function detectionRouter(): Router {
       const owns = await assertOwnsArtwork(detectionCase.artwork_id, req.user!.sub);
       if (!owns.ok) return res.status(owns.status).json(owns.body);
       res.json(await getDmcaNotice(req.params.caseId));
+    } catch (err) {
+      forwardDetectionError(err, res);
+    }
+  });
+
+  router.get("/detection-cases/:caseId/verify", async (req, res) => {
+    try {
+      const detectionCase = await getCase(req.params.caseId);
+      const owns = await assertOwnsArtwork(detectionCase.artwork_id, req.user!.sub);
+      if (!owns.ok) return res.status(owns.status).json(owns.body);
+      res.json(await verifyEvidence(req.params.caseId));
+    } catch (err) {
+      forwardDetectionError(err, res);
+    }
+  });
+
+  const updateStatusSchema = z.object({
+    status: z.enum(["NOTIFIED", "RESOLVED", "ESCALATED"]),
+    note: z.string().max(2000).optional(),
+  });
+
+  // RUNBOOK.md §7 steps 4-6's manual case-management progression -- only
+  // the case's own artwork creator can move it forward, same ownership
+  // check as every other detection-cases route above.
+  router.patch("/detection-cases/:caseId", async (req, res) => {
+    const parsed = updateStatusSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    try {
+      const detectionCase = await getCase(req.params.caseId);
+      const owns = await assertOwnsArtwork(detectionCase.artwork_id, req.user!.sub);
+      if (!owns.ok) return res.status(owns.status).json(owns.body);
+      res.json(await updateCaseStatus(req.params.caseId, parsed.data.status, parsed.data.note));
+    } catch (err) {
+      forwardDetectionError(err, res);
+    }
+  });
+
+  // Global monthly quota, not scoped to any one creator's artworks -- no
+  // ownership check needed, just a real login (matches the router-level
+  // requireAuth above).
+  router.get("/vision-usage", async (_req, res) => {
+    try {
+      res.json(await getVisionUsage());
     } catch (err) {
       forwardDetectionError(err, res);
     }

@@ -22,3 +22,31 @@ export interface DmcaNoticeResult {
 
 export const getDmcaNotice = (caseId: string) =>
   api.get<DmcaNoticeResult>(`/detection-cases/${caseId}/dmca-notice`);
+
+export interface EvidenceVerifyResult {
+  caseId: string;
+  manifests: Array<{
+    artifactUri: string;
+    valid: boolean;
+    status: string;
+    signature: { valid: boolean; status: string; keyId?: string } | null;
+    files: Array<{ path: string; valid: boolean; sha256?: string; error?: string }>;
+    sealed: boolean;
+  }>;
+}
+
+export const verifyEvidence = (caseId: string) =>
+  api.get<EvidenceVerifyResult>(`/detection-cases/${caseId}/verify`);
+
+export const updateCaseStatus = (caseId: string, status: "NOTIFIED" | "RESOLVED" | "ESCALATED", note?: string) =>
+  api.patch<DetectionCase>(`/detection-cases/${caseId}`, { status, note });
+
+export interface VisionUsage {
+  configured: boolean;
+  month: string;
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+export const getVisionUsage = () => api.get<VisionUsage>("/vision-usage");

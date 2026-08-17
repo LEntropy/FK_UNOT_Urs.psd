@@ -23,6 +23,9 @@ vi.mock("../src/clients/detectionService.js", () => ({
   getCase: vi.fn(),
   getEvidence: vi.fn(),
   getDmcaNotice: vi.fn(),
+  verifyEvidence: vi.fn(),
+  updateCaseStatus: vi.fn(),
+  getVisionUsage: vi.fn(),
   DetectionServiceError: class DetectionServiceError extends Error {
     constructor(public status: number, public body: unknown) {
       super("detection-svc request failed");
@@ -31,9 +34,18 @@ vi.mock("../src/clients/detectionService.js", () => ({
 }));
 
 const { getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
-const { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, getDmcaNotice, DetectionServiceError } = await import(
-  "../src/clients/detectionService.js"
-);
+const {
+  scanArtwork,
+  reportArtwork,
+  reportModelLeak,
+  getCase,
+  getEvidence,
+  getDmcaNotice,
+  verifyEvidence,
+  updateCaseStatus,
+  getVisionUsage,
+  DetectionServiceError,
+} = await import("../src/clients/detectionService.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -338,5 +350,150 @@ describe("GET /detection-cases/:caseId/dmca-notice", () => {
     expect(res.status).toBe(200);
     expect(res.body.notices).toHaveLength(1);
     expect(res.body.notices[0].notice).toContain("To: [host]");
+  });
+});
+
+describe("GET /detection-cases/:caseId/verify", () => {
+  it("403s when the case's artwork isn't the caller's own", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .get("/detection-cases/case_1/verify")
+      .set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(403);
+    expect(verifyEvidence).not.toHaveBeenCalled();
+  });
+
+  it("returns the re-hashed integrity result for the case's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(verifyEvidence).mockResolvedValue({
+      caseId: "case_1",
+      manifests: [{ artifactUri: "/out/case_1/x", valid: true, status: "VALID", signature: null, files: [], sealed: false }],
+    });
+
+    const res = await request(app)
+      .get("/detection-cases/case_1/verify")
+      .set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.manifests[0].valid).toBe(true);
+  });
+});
+
+describe("PATCH /detection-cases/:caseId", () => {
+  it("400s on an invalid status", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+
+    const res = await request(app)
+      .patch("/detection-cases/case_1")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ status: "NOT_A_REAL_STATUS" });
+    expect(res.status).toBe(400);
+    expect(getCase).not.toHaveBeenCalled();
+  });
+
+  it("403s when the case's artwork isn't the caller's own", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .patch("/detection-cases/case_1")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ status: "RESOLVED" });
+    expect(res.status).toBe(403);
+    expect(updateCaseStatus).not.toHaveBeenCalled();
+  });
+
+  it("updates the status for the case's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(updateCaseStatus).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "RESOLVED",
+      trigger: "report",
+      error_message: null,
+      note: "handled directly with the host",
+      created_at: 0,
+      updated_at: 1,
+      evidence: [],
+    });
+
+    const res = await request(app)
+      .patch("/detection-cases/case_1")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ status: "RESOLVED", note: "handled directly with the host" });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("RESOLVED");
+    expect(updateCaseStatus).toHaveBeenCalledWith("case_1", "RESOLVED", "handled directly with the host");
+  });
+});
+
+describe("GET /vision-usage", () => {
+  it("rejects unauthenticated requests", async () => {
+    const app = createApp(createTestDb());
+    const res = await request(app).get("/vision-usage");
+    expect(res.status).toBe(401);
+    expect(getVisionUsage).not.toHaveBeenCalled();
+  });
+
+  it("returns the quota for any real login, no ownership check", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getVisionUsage).mockResolvedValue({ configured: true, month: "2026-08", used: 3, limit: 900, remaining: 897 });
+
+    const res = await request(app).get("/vision-usage").set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.remaining).toBe(897);
   });
 });

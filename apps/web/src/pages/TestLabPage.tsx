@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import * as delivery from "../api/delivery";
@@ -452,6 +452,31 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
     enabled: Boolean(caseId) && caseQuery.data?.status === "EVIDENCE_READY",
   });
 
+  const visionUsageQuery = useQuery({
+    queryKey: ["visionUsage"],
+    queryFn: () => detection.getVisionUsage(),
+    staleTime: 30_000,
+  });
+
+  const verify = useMutation({ mutationFn: () => detection.verifyEvidence(caseId!) });
+
+  const [statusNote, setStatusNote] = useState("");
+  const updateStatus = useMutation({
+    mutationFn: (status: "NOTIFIED" | "RESOLVED" | "ESCALATED") =>
+      detection.updateCaseStatus(caseId!, status, statusNote.trim() || undefined),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["detectionCase", caseId], updated);
+      setStatusNote("");
+    },
+  });
+
+  // Mirrors server.py's own eligibility check ({"EVIDENCE_READY"} | MANUAL_STATUSES)
+  // for update_case_status -- shown here so the buttons only appear when a
+  // click would actually succeed, not as the source of truth (the server
+  // still re-checks this itself).
+  const STATUS_MANAGEABLE_FROM = ["EVIDENCE_READY", "NOTIFIED", "RESOLVED", "ESCALATED"] as const;
+  const canManageStatus = caseQuery.data && (STATUS_MANAGEABLE_FROM as readonly string[]).includes(caseQuery.data.status);
+
   async function fillWithOwnUrl() {
     setFillError(null);
     try {
@@ -482,7 +507,17 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
           >
             {scan.isPending ? "요청 중..." : "웹에서 자동 검색 (Google Vision)"}
           </button>
-          <p className="mt-1 text-xs text-neutral-500">GOOGLE_VISION_API_KEY가 설정되어 있어야 실제 검색이 됩니다.</p>
+          {visionUsageQuery.data ? (
+            visionUsageQuery.data.configured ? (
+              <p className="mt-1 text-xs text-neutral-500">
+                이번 달 남은 검색 횟수: {visionUsageQuery.data.remaining} / {visionUsageQuery.data.limit}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-neutral-500">GOOGLE_VISION_API_KEY가 설정되어 있지 않아 실제 검색은 되지 않습니다.</p>
+            )
+          ) : (
+            <p className="mt-1 text-xs text-neutral-500">GOOGLE_VISION_API_KEY가 설정되어 있어야 실제 검색이 됩니다.</p>
+          )}
         </div>
 
         <form
@@ -586,7 +621,119 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
             <EvidenceCard key={i} bundle={bundle} />
           ))}
 
+          {caseQuery.data && caseQuery.data.evidence.length > 0 && (
+            <div className="rounded border border-neutral-800 bg-neutral-950/60 px-4 py-3 text-xs">
+              <p className="mb-2 font-medium text-neutral-300">증거 저장 위치</p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                {caseQuery.data.evidence.map((e) => {
+                  const worm = e.artifact_uri?.includes("/worm/objects/") ?? false;
+                  return (
+                    <Fragment key={e.id}>
+                      <dt className="text-neutral-500">
+                        {worm ? (
+                          <span className="rounded bg-emerald-950/60 px-1.5 py-0.5 text-emerald-300">WORM 봉인됨</span>
+                        ) : (
+                          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-400">일반 저장</span>
+                        )}
+                      </dt>
+                      <dd className="break-all font-mono text-neutral-400">{e.artifact_uri ?? "—"}</dd>
+                    </Fragment>
+                  );
+                })}
+              </dl>
+            </div>
+          )}
+
           {dmcaQuery.data?.notices.map((n, i) => <DmcaNoticeCard key={i} notice={n} />)}
+
+          {caseQuery.data?.status === "EVIDENCE_READY" && (
+            <div className="rounded border border-neutral-800 bg-neutral-950/60 px-4 py-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-neutral-200">증거 무결성 재검증</p>
+                <button
+                  onClick={() => verify.mutate()}
+                  disabled={verify.isPending}
+                  className="rounded border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-900 disabled:opacity-50"
+                >
+                  {verify.isPending ? "확인 중..." : "지금 다시 확인"}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-neutral-500">
+                증거 파일이 처음 저장된 이후 디스크에서 조작되지 않았는지, 지금 이 순간 다시 해시를 계산해서
+                확인해요.
+              </p>
+              {verify.data?.manifests.map((m, i) => (
+                <div key={i} className="mt-2 rounded bg-neutral-900 px-3 py-2 text-xs">
+                  <p className={m.valid ? "text-green-300" : "text-red-300"}>
+                    {m.valid ? "✓ 파일 무결성 확인됨 — 조작되지 않았어요" : "✗ 불일치 발견 — 파일이 변경됐어요"}
+                    {m.sealed && <span className="ml-2 text-neutral-500">(읽기전용 봉인됨)</span>}
+                  </p>
+                  {/* 서명 여부는 무결성과 별개예요 -- 서명이 없다고 파일이 조작된 건 아니에요. */}
+                  <p className="mt-0.5 text-neutral-500">
+                    서명:{" "}
+                    {m.signature?.status === "VALID"
+                      ? "유효한 서명 있음"
+                      : m.signature?.status === "UNSIGNED"
+                        ? "서명 없음 (이 설정에서는 선택 사항)"
+                        : "서명 검증 실패"}
+                  </p>
+                  {!m.valid && (
+                    <ul className="mt-1 list-disc pl-4 text-neutral-400">
+                      {m.files
+                        .filter((f) => !f.valid)
+                        .map((f, j) => (
+                          <li key={j}>
+                            {f.path}: {f.error ?? "해시 불일치"}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {canManageStatus && (
+            <div className="rounded border border-neutral-800 bg-neutral-950/60 px-4 py-3">
+              <p className="mb-2 text-sm font-medium text-neutral-200">케이스 처리 상태 기록</p>
+              <p className="mb-2 text-xs text-neutral-500">
+                실제로 권리자에게 연락했거나, 상황이 해결됐거나, 더 심각한 조치가 필요할 때 기록해두는
+                수동 단계예요 (RUNBOOK.md의 사람이 직접 확인하는 절차).
+              </p>
+              <input
+                value={statusNote}
+                onChange={(e) => setStatusNote(e.target.value)}
+                placeholder="메모 (선택)"
+                className="mb-2 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs"
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => updateStatus.mutate("NOTIFIED")}
+                  disabled={updateStatus.isPending}
+                  className="rounded border border-neutral-700 px-2.5 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                >
+                  권리자 알림 완료로 표시
+                </button>
+                <button
+                  onClick={() => updateStatus.mutate("RESOLVED")}
+                  disabled={updateStatus.isPending}
+                  className="rounded border border-neutral-700 px-2.5 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                >
+                  해결됨으로 표시
+                </button>
+                <button
+                  onClick={() => updateStatus.mutate("ESCALATED")}
+                  disabled={updateStatus.isPending}
+                  className="rounded border border-amber-800 px-2.5 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
+                >
+                  에스컬레이션
+                </button>
+              </div>
+              {caseQuery.data?.note && (
+                <p className="mt-2 text-xs text-neutral-500">최근 메모: {caseQuery.data.note}</p>
+              )}
+            </div>
+          )}
 
           <button
             onClick={() => {
@@ -761,6 +908,22 @@ function EvidenceCard({ bundle }: { bundle: EvidenceBundle }) {
           <>
             <dt className="text-neutral-500">증거 서명</dt>
             <dd className="text-neutral-300">{bundle.signature.algorithm} (KMS 연동 서명 완료)</dd>
+          </>
+        )}
+
+        {bundle.evidenceAnchor && (
+          <>
+            <dt className="text-neutral-500">증거 온체인 앵커링</dt>
+            <dd>
+              <a
+                href={`https://amoy.polygonscan.com/tx/${bundle.evidenceAnchor.txHash}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-400 underline"
+              >
+                발견 시점 자체를 블록체인에 기록 ↗
+              </a>
+            </dd>
           </>
         )}
       </dl>

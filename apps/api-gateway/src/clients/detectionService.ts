@@ -78,6 +78,16 @@ export interface Case {
 
 export const getCase = (caseId: string) => request<Case>(`/cases/${encodeURIComponent(caseId)}`);
 
+/** RUNBOOK.md §7 steps 4-6's manual runbook progression -- server.py only
+ * allows this from EVIDENCE_READY (or another manual status), never from
+ * an automated-only state like OPEN/NO_MATCH_FOUND/FAILED. */
+export const updateCaseStatus = (caseId: string, status: "NOTIFIED" | "RESOLVED" | "ESCALATED", note?: string) =>
+  request<Case>(`/cases/${encodeURIComponent(caseId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, note }),
+  });
+
 export interface EvidenceBundle {
   originalHash: string | null;
   protectedHash: string | null;
@@ -135,3 +145,35 @@ export interface DmcaNoticeResult {
  * a copy of the work" situation a DMCA notice applies to. */
 export const getDmcaNotice = (caseId: string) =>
   request<DmcaNoticeResult>(`/cases/${encodeURIComponent(caseId)}/dmca-notice`);
+
+export interface EvidenceVerifyResult {
+  caseId: string;
+  manifests: Array<{
+    artifactUri: string;
+    valid: boolean;
+    status: string;
+    signature: { valid: boolean; status: string; keyId?: string } | null;
+    files: Array<{ path: string; valid: boolean; sha256?: string; error?: string }>;
+    sealed: boolean;
+  }>;
+}
+
+/** Independent of GET /evidence/{caseId}'s bundle-level `signature` --
+ * re-hashes each evidence directory's files against manifest.json right
+ * now, so a "still valid" answer means the files on disk today, not just
+ * at capture time. See evidence_integrity.py's module doc. */
+export const verifyEvidence = (caseId: string) =>
+  request<EvidenceVerifyResult>(`/evidence/${encodeURIComponent(caseId)}/verify`);
+
+export interface VisionUsage {
+  configured: boolean;
+  month: string;
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+/** Global (not per-artwork) Google Vision reverse-image-search quota --
+ * see server.py's VISION_MONTHLY_LIMIT. No ownership check needed, this
+ * isn't scoped to any one creator's data. */
+export const getVisionUsage = () => request<VisionUsage>("/vision/usage");

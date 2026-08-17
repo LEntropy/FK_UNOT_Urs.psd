@@ -134,6 +134,18 @@ export async function searchArtworksByTag(tag: string) {
   return body;
 }
 
+/** Platform-wide real counters (2026-08-16 redesign) -- backs the web
+ * right-sidebar widget. See asset-service's GET /stats doc for why these
+ * are always real aggregate counts, never placeholder numbers. */
+export async function getPlatformStats() {
+  const res = await fetch(`${env.ASSET_SERVICE_URL}/artworks/stats`);
+  const body = await res.json();
+  if (!res.ok) {
+    throw new AssetServiceError(res.status, body);
+  }
+  return body as { publishedArtworks: number; strongProtectionArtworks: number };
+}
+
 export interface RemeasureResult {
   styleDriftScore: number | null;
   styleSimilarityToOriginal: number | null;

@@ -9,6 +9,7 @@ import {
   listArtworks,
   listPublicArtworksByCreator,
   searchArtworksByTag,
+  getPlatformStats,
   suggestTags,
   remeasureProtection,
   createScoreProtectionJob,
@@ -169,6 +170,15 @@ export function artworksRouter(): Router {
     }
     try {
       res.json(await searchArtworksByTag(tag));
+    } catch (err) {
+      forwardAssetServiceError(err, res);
+    }
+  });
+
+  // Same "/:id" collision reasoning as "/search" and "/by-creator" above.
+  router.get("/stats", async (_req, res) => {
+    try {
+      res.json(await getPlatformStats());
     } catch (err) {
       forwardAssetServiceError(err, res);
     }

@@ -115,3 +115,16 @@ export const MenuIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M4 17h16" />
   </Icon>
 );
+
+export const SearchIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="10.5" cy="10.5" r="6.5" />
+    <path d="m20 20-4.8-4.8" />
+  </Icon>
+);
+
+export const ActivityIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M3 12h4l2.5-7L14 19l2.5-7H21" />
+  </Icon>
+);

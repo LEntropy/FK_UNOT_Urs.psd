@@ -148,6 +148,19 @@ describe("GET /artworks", () => {
   });
 });
 
+describe("GET /artworks/stats", () => {
+  it("counts only PUBLISHED artworks, and only strong-protection ones for the second counter", async () => {
+    const db = createTestDb();
+    seed(db, { id: "ast_pub_strong", status: "PUBLISHED", usedStrongProtection: true });
+    seed(db, { id: "ast_pub_plain", status: "PUBLISHED", usedStrongProtection: false });
+    seed(db, { id: "ast_draft", status: "UPLOADED", usedStrongProtection: true });
+
+    const res = await request(createApp(db)).get("/artworks/stats");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ publishedArtworks: 2, strongProtectionArtworks: 1 });
+  });
+});
+
 describe("POST /artworks (envelope encryption at rest)", () => {
   it("encrypts the upload, deletes the plaintext, and stores no plaintext path anywhere", async () => {
     const db = createTestDb();

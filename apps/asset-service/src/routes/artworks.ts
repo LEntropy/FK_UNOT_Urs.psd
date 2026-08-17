@@ -3,7 +3,7 @@ import { mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { Router } from "express";
 import multer from "multer";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import {
@@ -340,6 +340,26 @@ export function artworksRouter(db: Db): Router {
     // route never did.
     const withVersions = attachAssetVersions(db, rows.filter(matchesTag));
     res.json(withVersions.map((row) => ({ ...row, tags: JSON.parse(row.tags) })));
+  });
+
+  // Public platform-wide counters (2026-08-16 redesign) -- backs the web
+  // right-sidebar "실시간 현황" widget. Real aggregate counts only, no
+  // per-row data -- this project doesn't put fabricated numbers in front
+  // of users (same principle as STRONG_PROTECTION's UI copy honesty fix).
+  // Registered before GET "/:id" for the usual reason ("/stats" would
+  // otherwise be swallowed as an artwork id).
+  router.get("/stats", (_req, res) => {
+    const [published] = db
+      .select({ count: sql<number>`count(*)` })
+      .from(artworks)
+      .where(eq(artworks.status, "PUBLISHED"))
+      .all();
+    const [strongProtected] = db
+      .select({ count: sql<number>`count(*)` })
+      .from(artworks)
+      .where(and(eq(artworks.status, "PUBLISHED"), eq(artworks.usedStrongProtection, true)))
+      .all();
+    res.json({ publishedArtworks: published.count, strongProtectionArtworks: strongProtected.count });
   });
 
   // Bot access log ingest + query (registered before GET "/:id" -- both

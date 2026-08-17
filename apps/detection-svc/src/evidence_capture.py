@@ -42,6 +42,18 @@ class CapturedEvidence:
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_REDIRECTS = 5
 
+# Real bug, found live: httpx's default User-Agent ("python-httpx/x.x.x")
+# gets a real site's basic bot-filtering to reject the request outright --
+# confirmed against imgur specifically, which returns 429 for the default
+# UA and 200 for this one, same URL, nothing else different. Every fetch
+# in this module needs a browser-shaped UA or evidence capture silently
+# can't even download the candidate image, regardless of how well the
+# pHash/watermark matching itself works downstream.
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 class _ImageFinder(HTMLParser):
     def __init__(self) -> None:
@@ -93,7 +105,9 @@ async def capture(url: str, out_dir: Path, *, bearer_token: str | None = None,
     access_status = "UNKNOWN"
     final_url = url
     allowed_hosts = {host.strip().lower() for host in (auth_hosts or set()) if host.strip()}
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        timeout=15.0, follow_redirects=False, headers={"User-Agent": _BROWSER_USER_AGENT}
+    ) as client:
         try:
             current_url = url
             redirects = []
@@ -218,7 +232,9 @@ async def capture(url: str, out_dir: Path, *, bearer_token: str | None = None,
     # JavaScript runs. Download every rendered/network image, rather than
     # treating the first logo or social-preview image as the whole page.
     if rendered_urls:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=15.0, follow_redirects=True, headers={"User-Agent": _BROWSER_USER_AGENT}
+        ) as client:
             seen = set()
             for index, image_url in enumerate(rendered_urls[:50], start=1):
                 if image_url in seen or image_url.startswith(("data:", "blob:")):

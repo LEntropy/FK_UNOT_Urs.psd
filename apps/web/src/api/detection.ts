@@ -14,3 +14,11 @@ export const getDetectionCase = (caseId: string) => api.get<DetectionCase>(`/det
 
 export const getDetectionEvidence = (caseId: string) =>
   api.get<{ caseId: string; status: string; bundles: EvidenceBundle[] }>(`/detection-cases/${caseId}/evidence`);
+
+export interface DmcaNoticeResult {
+  caseId: string;
+  notices: Array<{ sourceUrl: string | null; notice: string | null; note: string | null }>;
+}
+
+export const getDmcaNotice = (caseId: string) =>
+  api.get<DmcaNoticeResult>(`/detection-cases/${caseId}/dmca-notice`);

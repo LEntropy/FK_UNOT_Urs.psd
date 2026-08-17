@@ -446,6 +446,12 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
     enabled: Boolean(caseId) && caseQuery.data?.status === "EVIDENCE_READY",
   });
 
+  const dmcaQuery = useQuery({
+    queryKey: ["dmcaNotice", caseId],
+    queryFn: () => detection.getDmcaNotice(caseId!),
+    enabled: Boolean(caseId) && caseQuery.data?.status === "EVIDENCE_READY",
+  });
+
   async function fillWithOwnUrl() {
     setFillError(null);
     try {
@@ -580,6 +586,8 @@ function DetectionTest({ artwork }: { artwork: Artwork }) {
             <EvidenceCard key={i} bundle={bundle} />
           ))}
 
+          {dmcaQuery.data?.notices.map((n, i) => <DmcaNoticeCard key={i} notice={n} />)}
+
           <button
             onClick={() => {
               setCaseId(null);
@@ -606,6 +614,46 @@ function CaseStatusBadge({ status }: { status: DetectionCase["status"] }) {
           ? "bg-neutral-800 text-neutral-400"
           : "bg-neutral-800 text-neutral-300";
   return <span className={`rounded px-2 py-0.5 text-xs font-medium ${color}`}>{CASE_STATUS_LABEL[status]}</span>;
+}
+
+function DmcaNoticeCard({ notice }: { notice: { sourceUrl: string | null; notice: string | null; note: string | null } }) {
+  const [copied, setCopied] = useState(false);
+
+  if (!notice.notice) {
+    // Model-leak bundle -- dmca_notice.py's own is_dmca_applicable() says
+    // "this URL hosts a copy of the work" doesn't apply to a suspected
+    // training-data leak, so the server sends an explanatory note instead.
+    return (
+      <div className="rounded border border-neutral-800 bg-neutral-900 px-4 py-3 text-xs text-neutral-400">
+        {notice.note}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-950/60 px-4 py-4">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-sm font-medium text-neutral-200">DMCA 통지서 초안</p>
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(notice.notice!);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+          className="rounded border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-900"
+        >
+          {copied ? "복사됨!" : "복사"}
+        </button>
+      </div>
+      <p className="mb-2 text-xs text-neutral-500">
+        실제 증거로 자동 채워진 초안이에요 — 대괄호(<code>[ ]</code>)로 남은 항목(수신처, 서명 등)만 직접
+        채워서 사용하세요.
+      </p>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-neutral-900 p-3 text-xs text-neutral-300">
+        {notice.notice}
+      </pre>
+    </div>
+  );
 }
 
 function EvidenceCard({ bundle }: { bundle: EvidenceBundle }) {

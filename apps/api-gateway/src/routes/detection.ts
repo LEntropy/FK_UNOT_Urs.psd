@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { getArtwork, AssetServiceError } from "../clients/assetService.js";
-import { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, DetectionServiceError } from "../clients/detectionService.js";
+import { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, getDmcaNotice, DetectionServiceError } from "../clients/detectionService.js";
 
 /**
  * Authenticated proxy in front of detection-svc (which has no auth of its
@@ -96,6 +96,17 @@ export function detectionRouter(): Router {
       const owns = await assertOwnsArtwork(detectionCase.artwork_id, req.user!.sub);
       if (!owns.ok) return res.status(owns.status).json(owns.body);
       res.json(await getEvidence(req.params.caseId));
+    } catch (err) {
+      forwardDetectionError(err, res);
+    }
+  });
+
+  router.get("/detection-cases/:caseId/dmca-notice", async (req, res) => {
+    try {
+      const detectionCase = await getCase(req.params.caseId);
+      const owns = await assertOwnsArtwork(detectionCase.artwork_id, req.user!.sub);
+      if (!owns.ok) return res.status(owns.status).json(owns.body);
+      res.json(await getDmcaNotice(req.params.caseId));
     } catch (err) {
       forwardDetectionError(err, res);
     }

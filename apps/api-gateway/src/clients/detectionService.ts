@@ -122,3 +122,16 @@ export const getEvidence = (caseId: string) =>
   request<{ caseId: string; status: string; bundles: EvidenceBundle[] }>(
     `/evidence/${encodeURIComponent(caseId)}`,
   );
+
+export interface DmcaNoticeResult {
+  caseId: string;
+  notices: Array<{ sourceUrl: string | null; notice: string | null; note: string | null }>;
+}
+
+/** RUNBOOK.md Step 5's DMCA template, auto-filled from the case's real
+ * evidence bundles -- see dmca_notice.py's own doc for what's filled in
+ * vs left as a bracketed placeholder. `notice` is null (with `note`
+ * explaining why) for a model-leak bundle, which isn't a "this URL hosts
+ * a copy of the work" situation a DMCA notice applies to. */
+export const getDmcaNotice = (caseId: string) =>
+  request<DmcaNoticeResult>(`/cases/${encodeURIComponent(caseId)}/dmca-notice`);

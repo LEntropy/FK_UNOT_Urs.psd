@@ -22,6 +22,7 @@ vi.mock("../src/clients/detectionService.js", () => ({
   reportModelLeak: vi.fn(),
   getCase: vi.fn(),
   getEvidence: vi.fn(),
+  getDmcaNotice: vi.fn(),
   DetectionServiceError: class DetectionServiceError extends Error {
     constructor(public status: number, public body: unknown) {
       super("detection-svc request failed");
@@ -30,7 +31,7 @@ vi.mock("../src/clients/detectionService.js", () => ({
 }));
 
 const { getArtwork, AssetServiceError } = await import("../src/clients/assetService.js");
-const { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, DetectionServiceError } = await import(
+const { scanArtwork, reportArtwork, reportModelLeak, getCase, getEvidence, getDmcaNotice, DetectionServiceError } = await import(
   "../src/clients/detectionService.js"
 );
 
@@ -284,5 +285,58 @@ describe("GET /detection-cases/:caseId/evidence", () => {
       .set("Authorization", `Bearer ${accessToken}`);
     expect(res.status).toBe(200);
     expect(res.body.bundles).toHaveLength(1);
+  });
+});
+
+describe("GET /detection-cases/:caseId/dmca-notice", () => {
+  it("403s when the case's artwork isn't the caller's own", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: "someone-else" });
+
+    const res = await request(app)
+      .get("/detection-cases/case_1/dmca-notice")
+      .set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(403);
+    expect(getDmcaNotice).not.toHaveBeenCalled();
+  });
+
+  it("returns the auto-filled notice for the case's own creator", async () => {
+    const app = createApp(createTestDb());
+    const { accessToken, userId } = await signupAndGetToken(app);
+    vi.mocked(getCase).mockResolvedValue({
+      id: "case_1",
+      artwork_id: "ast_1",
+      status: "EVIDENCE_READY",
+      trigger: "report",
+      error_message: null,
+      note: null,
+      created_at: 0,
+      updated_at: 0,
+      evidence: [],
+    });
+    vi.mocked(getArtwork).mockResolvedValue({ id: "ast_1", creatorId: userId });
+    vi.mocked(getDmcaNotice).mockResolvedValue({
+      caseId: "case_1",
+      notices: [{ sourceUrl: "https://x", notice: "To: [host]...", note: null }],
+    });
+
+    const res = await request(app)
+      .get("/detection-cases/case_1/dmca-notice")
+      .set("Authorization", `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.notices).toHaveLength(1);
+    expect(res.body.notices[0].notice).toContain("To: [host]");
   });
 });
